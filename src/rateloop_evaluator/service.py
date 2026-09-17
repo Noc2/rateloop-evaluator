@@ -59,7 +59,7 @@ class BodyLimit:
 
 
 def create_app(*, backend: Backend, bundle: dict, learning: LearningStore, runtime: RuntimeStore,
-               tokens: dict[str,Principal], validate_bundle=None) -> FastAPI:
+               tokens: dict[str,Principal], validate_bundle=None, allow_training_retention=None) -> FastAPI:
     """tokens maps SHA256 token hashes to workspace roles; raw tokens are never persisted.
 
     validate_bundle rechecks registry signature/lineage and returns current mode.
@@ -160,7 +160,9 @@ def create_app(*, backend: Backend, bundle: dict, learning: LearningStore, runti
                                  abstainReason=reason,criteria=criteria,durationMs=duration,observedAt=utc_now())
             retained = None
             try:
-                require_right("private_training"); retained = request.input.model_dump()
+                require_right("private_training")
+                if allow_training_retention is None or allow_training_retention(request):
+                    retained = request.input.model_dump()
             except PermissionError: pass
             learning.record_evaluation(evaluation_id=input_digest,workspace_id=request.workspaceId,case_id=request.caseId,
                 input_commitment=input_digest,template_commitment=template_digest,template=request.template.model_dump(),

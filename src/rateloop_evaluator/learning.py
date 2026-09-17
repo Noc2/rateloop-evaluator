@@ -322,7 +322,8 @@ class LearningStore:
 
     def create_snapshot(self, workspace_id: str, template_id: str, template_version: int | str, *,
                         train_fraction: float = .7, calibration_fraction: float = .15, seed: str = "rateloop-v1",
-                        minimum_groups: int = 3, purpose: str = "private_training", now: float | None = None) -> dict:
+                        minimum_groups: int = 3, purpose: str = "private_training", now: float | None = None,
+                        template_commitment: str | None = None) -> dict:
         current = time.time() if now is None else now
         if purpose not in ("private_training", "shared_contribution", "public_weight_distribution"):
             raise ValueError("Invalid snapshot purpose")
@@ -332,6 +333,8 @@ class LearningStore:
             examples, grant_ids = [], set()
             for row in state["evaluations"].values():
                 if row["workspace_id"] != workspace_id or row["template"]["id"] != template_id or row["template"]["version"] != template_version or row["input"] is None:
+                    continue
+                if template_commitment is not None and row["template_commitment"] != template_commitment:
                     continue
                 labels = [f for f in state["feedback"].values() if f["evaluation_id"] == row["evaluation_id"] and not f["quarantine_reasons"]]
                 if not labels:
@@ -467,6 +470,8 @@ class LearningStore:
                 connector["audits"] = {k:v for k,v in connector.get("audits", {}).items()
                     if k not in matching_keys and not (connector.get("workspace_id") == workspace_id and v.get("case_id") == case_id)}
                 connector["imports"] = {k:v for k,v in connector.get("imports", {}).items() if v.get("feedback_id") not in feedback_ids}
+                for collection in ("worker_jobs","receipt_jobs","collections"):
+                    connector[collection]={k:v for k,v in connector.get(collection,{}).items() if v.get("caseId")!=case_id}
             for evaluation_id in ids:
                 self._invalidate_evaluation(state, evaluation_id, current, "source_deleted")
                 del state["evaluations"][evaluation_id]

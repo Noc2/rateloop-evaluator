@@ -210,6 +210,25 @@ class RateLoopConnector:
                 raise ValueError("Invalid remote revocation timestamp")
         return deepcopy(grant)
 
+    def _sync_deletions(self, response: dict) -> None:
+        """Apply explicit workspace case-erasure tombstones, never infer deletion from auth failures."""
+        if "deletedCases" not in response: return
+        deleted=response["deletedCases"]; watermark=response.get("deletionWatermark")
+        if not isinstance(deleted,list) or len(deleted)>100000 or type(watermark) is not int or watermark<0:
+            raise ValueError("Invalid deletion synchronization")
+        with self.learning.transaction() as database:
+            previous=self._state(database).get("deletion_watermark",0)
+        if watermark<previous: raise PermissionError("Deletion watermark moved backwards")
+        for item in deleted:
+            if not isinstance(item,dict) or set(item)!={"caseId","deletedAt"}:
+                raise ValueError("Invalid deleted-case tombstone")
+            _opaque(item["caseId"]); _timestamp(item["deletedAt"])
+        for item in deleted:
+            self.learning.delete_case(self.workspace_id,item["caseId"])
+            self.runtime.delete_case(self.workspace_id,item["caseId"])
+        with self.learning.transaction() as database:
+            self._state(database)["deletion_watermark"]=watermark
+
     def _validate_consent(self, consent: dict, *, now: float, watermark: int) -> dict:
         if not isinstance(consent,dict) or set(consent) != _CONSENT_KEYS:
             raise ValueError("Incomplete or unexpected durable consent fields")
@@ -287,12 +306,26 @@ class RateLoopConnector:
         return len(mirrored)
 
     def sync_grants(self, *, now: float | None = None) -> dict:
-        current=time.time() if now is None else now
         response=self._request("GET","/grants")
+        # The server issues the lease during this request, after our send time.
+        current=time.time() if now is None else now
         created_ids=[]
         try:
             if response.get("workspaceId") != self.workspace_id or response.get("recipientApiKeyId") != self.api_key_id:
                 raise PermissionError("Grant response is not bound to the configured workspace and API-key recipient")
+            if response.get("workspaceDeletion") is not None:
+                notice=response["workspaceDeletion"]
+                if not isinstance(notice,dict) or set(notice)!={"deletedAt"} or not 0<_timestamp(notice["deletedAt"])<=current+300:
+                    raise ValueError("Invalid owner workspace-deletion notice")
+                self._revoke_mirrors("owner_workspace_deleted")
+                if response.get("deletedCases"): self._sync_deletions(response)
+                with self.learning.transaction() as database:
+                    self._state(database).update(mode="off",workspace_deleted_at=notice["deletedAt"])
+                return {"mode":"off","workspaceDeleted":True,"mirroredGrants":0,"mirroredConsents":0,
+                    "localErasure":"Explicit case tombstones or owner delete-case commands are required for remaining local data."}
+            with self.learning.transaction() as database:
+                if self._state(database).get("workspace_deleted_at") is not None:
+                    raise PermissionError("An owner-deleted workspace cannot renew execution permissions")
             watermark=response.get("revocationWatermark")
             if type(watermark) is not int or watermark < 0 or not isinstance(response.get("grants"),list):
                 raise ValueError("Invalid remote revocation watermark")
@@ -306,6 +339,7 @@ class RateLoopConnector:
                 previous=deepcopy(self._state(database))
             if watermark < previous["watermark"]:
                 raise PermissionError("Remote revocation watermark moved backwards")
+            self._sync_deletions(response)
             consent_count=self._sync_consents(response,now=current,watermark=watermark)
             received={g["grantId"]:g for g in grants}
             for remote_id,old in previous["grants"].items():
@@ -354,13 +388,21 @@ class RateLoopConnector:
         return {"schemaVersion":"rateloop.automated-eval-receipt.v2","agentId":self.agent_id,
                 "agentVersionId":self.agent_version_id,"result":result.model_dump()}
 
-    def queue_result(self, result: EvaluationResult | dict) -> str:
+    def queue_result(self, result: EvaluationResult | dict, *, job_context: dict | None = None) -> str:
         if not self.metadata_upload_enabled:
             raise PermissionError("Receipt metadata upload has not been explicitly enabled")
         receipt=self._receipt(result)
         with self.learning.transaction() as database:
             self._case_live(database,receipt["result"]["caseId"])
         receipt_id="receipt_"+self.namespace[:16]+"_"+hashlib.sha256((self.namespace+receipt["result"]["resultCommitment"]).encode()).hexdigest()
+        if job_context is not None:
+            if not isinstance(job_context,dict) or set(job_context)!={"jobId","workerId","leaseToken"}:
+                raise ValueError("Job receipts require their exact execution fence")
+            _opaque(job_context["jobId"]); _opaque(job_context["workerId"])
+            if not isinstance(job_context["leaseToken"],str) or not 16<=len(job_context["leaseToken"])<=512 or any(c in job_context["leaseToken"] for c in "\r\n"):
+                raise ValueError("Invalid receipt execution fence")
+            with self.learning.transaction() as database:
+                self._state(database).setdefault("receipt_jobs",{})[receipt_id]={**job_context,"caseId":receipt["result"]["caseId"]}
         self.runtime.enqueue(receipt_id,receipt)
         return receipt_id
 
@@ -383,14 +425,21 @@ class RateLoopConnector:
                 observed=_timestamp(receipt["result"]["observedAt"])
                 if not current-86400 <= observed <= current+300:
                     raise ValueError("Receipt expired outside the server's 24-hour ingest window")
-                response=self._request("POST","/receipts",json=receipt,headers={"Idempotency-Key":receipt_id})
-                if (response.get("schemaVersion") != "rateloop.automated-eval-ingest-result.v2" or response.get("outcome") != receipt["result"]["outcome"]
+                headers={"Idempotency-Key":receipt_id}
+                with self.learning.transaction() as database:
+                    job=self._state(database).get("receipt_jobs",{}).get(receipt_id)
+                if job:
+                    headers.update({"X-Evaluator-Job":job["jobId"],"X-Evaluator-Worker":job["workerId"],"X-Evaluator-Lease":job["leaseToken"]})
+                response=self._request("POST","/receipts",json=receipt,headers=headers)
+                if (response.get("schemaVersion") != "rateloop.automated-eval-ingest-result.v2" or response.get("outcome") not in (None,receipt["result"]["outcome"])
                     or response.get("receiptHash") != commitment(receipt,"rateloop.product-evaluator.v2")
                     or not re.fullmatch(r"aev_[0-9a-f]{40}",str(response.get("receiptId", "")))
                     or response.get("policy",{}).get("mayReduceHumanReview") is not False):
                     raise ValueError("Receipt acknowledgment does not match the submitted result")
                 self.runtime.acknowledge(receipt_id,{"workspaceId":self.workspace_id,"caseId":receipt["result"]["caseId"],
                     "receiptId":response["receiptId"],"receiptHash":response["receiptHash"]}); delivered+=1
+                with self.learning.transaction() as database:
+                    self._state(database)["dead_letters"].pop(receipt_id,None)
             except ConnectorUnavailable:
                 self.runtime.retry(receipt_id); retried+=1
             except PermissionError:
@@ -402,12 +451,15 @@ class RateLoopConnector:
                 self.runtime.delivered(receipt_id); rejected+=1
         return {"delivered":delivered,"retrying":retried,"rejected":rejected}
 
-    def select_audit_before_scoring(self, request: EvaluationRequest, review_context: dict, *, kind: str = "random") -> dict:
+    def select_audit_before_scoring(self, request: EvaluationRequest, review_context: dict, *, frozen_question_hash: str, kind: str = "random") -> dict:
         if not self.metadata_upload_enabled:
             raise PermissionError("Audit metadata upload has not been explicitly enabled")
         if request.workspaceId != self.workspace_id or kind not in ("random","mandatory"):
             raise ValueError("Pre-scoring audits require this workspace and random/mandatory selection")
         context=_review_context(review_context)
+        bindings={"sourceContentHash":"sha256:"+hashlib.sha256(request.input.context.encode()).hexdigest(),
+            "suggestedContentHash":"sha256:"+hashlib.sha256(request.input.text.encode()).hexdigest(),
+            "frozenQuestionHash":_hash(frozen_question_hash)}
         key=request.input_commitment()
         with self.learning.transaction() as database:
             self._case_live(database,request.caseId)
@@ -416,7 +468,7 @@ class RateLoopConnector:
                 raise PermissionError("This case has already been scored; independent pre-scoring audit is unavailable")
         response=self._request("POST","/audits",json={"caseId":request.caseId,"modelBundleId":request.modelBundleId,
             "templateCommitment":request.template_commitment(),"inputCommitment":key,"agentId":self.agent_id,
-            "agentVersionId":self.agent_version_id,"kind":kind,"aiExposed":False,"reviewContext":context})
+            "agentVersionId":self.agent_version_id,"kind":kind,"aiExposed":False,"reviewContext":context,**bindings})
         if (response.get("kind") != kind or response.get("aiExposed") is not False or type(response.get("selected")) is not bool
             or response.get("blindingAssurance") != "connector_attested"):
             raise ValueError("Audit response does not establish the requested pre-scoring selection")
@@ -428,14 +480,14 @@ class RateLoopConnector:
             self._case_live(database,request.caseId)
             self._state(database)["audits"][key]={"response":response,"case_id":request.caseId,
                 "model_bundle_id":request.modelBundleId,"template_commitment":request.template_commitment(),
-                "selected_before_scoring":True,"ai_exposed":False,"selected_at":time.time()}
+                "selected_before_scoring":True,"ai_exposed":False,"selected_at":time.time(),**bindings}
         return response
 
     def run_with_audit(self, request: EvaluationRequest, evaluate: Callable[[EvaluationRequest],EvaluationResult | dict],
-                       review_context: dict, *, allow_offline: bool = False) -> dict:
+                       review_context: dict, *, frozen_question_hash: str, allow_offline: bool = False) -> dict:
         audit=None
         try:
-            audit=self.select_audit_before_scoring(request,review_context)
+            audit=self.select_audit_before_scoring(request,review_context,frozen_question_hash=frozen_question_hash)
         except ConnectorUnavailable:
             if not allow_offline:
                 raise

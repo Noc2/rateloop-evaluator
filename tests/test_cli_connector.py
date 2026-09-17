@@ -102,7 +102,7 @@ def connected(tmp_path, capsys, monkeypatch):
 
 
 def evaluation_args(config_path, request_path, context_path):
-    return ("connect-evaluate", "--config", config_path, "--request", request_path, "--review-context", context_path)
+    return ("connect-evaluate", "--config", config_path, "--request", request_path, "--review-context", context_path, "--frozen-question-hash", "sha256:"+"e"*64)
 
 
 def test_cli_connector_config_requires_private_permissions_and_explicit_opt_in(connected, capsys):

@@ -34,6 +34,46 @@ class OutboundWorker:
         self.connector=connector; self.worker_id=worker_id; self.model_bundle_ids=model_bundle_ids
         self.evaluate=evaluate; self.poll_seconds=poll_seconds; self.heartbeat_seconds=heartbeat_seconds
         self.stop=threading.Event()
+        self.last_label_sync=0.0
+
+    def sync_labels(self) -> dict:
+        """Import only the website's exact overall-question labels under explicit learning consent."""
+        from .protocol import commitment
+        with self.connector.learning.transaction() as database:
+            consents=deepcopy(self.connector._state(database).get("consents",{}))
+        imported=0; rejected=0; truncated=False
+        for consent_id,record in consents.items():
+            consent=record["consent"]
+            if consent["purpose"] != "private_learning" or "human_labels" not in consent["fields"]: continue
+            for language in ("en","de"):
+                template_digest=commitment(overall_approval(language).model_dump(),"rateloop.evaluator.template.v1")
+                if template_digest not in consent["templateCommitments"]: continue
+                report=self.connector.fetch_and_import_labels(consent_id,question_id="overall_approval",template_commitment=template_digest,
+                    outcome_labels={"positive":"approved","negative":"rejected"})
+                imported+=report["imported"]; rejected+=len(report["rejected"]); truncated=truncated or report["truncated"]
+        self.last_label_sync=time.monotonic()
+        return {"imported":imported,"rejected":rejected,"truncated":truncated}
+
+    def _remember_collection(self, request: EvaluationRequest, body: dict) -> None:
+        created_at=_timestamp(body.get("createdAt"))
+        if not 0<created_at<=time.time()+300 or type(body.get("retainForTraining")) is not bool:
+            raise ValueError("Website content must declare its original collection and training permission")
+        fields={"human_labels","input"}
+        if request.input.context: fields.add("context")
+        if request.input.evidence: fields.add("evidence")
+        with self.connector.learning.transaction() as database:
+            state=self.connector._state(database)
+            permitted=any(c["consent"]["purpose"]=="private_learning" and _timestamp(c["consent"]["issuedAt"])<=created_at
+                and request.modelBundleId in c["consent"]["modelBundleIds"]
+                and request.template_commitment() in c["consent"]["templateCommitments"]
+                and fields<=set(c["consent"]["fields"]) for c in state.get("consents",{}).values())
+            value={"caseId":request.caseId,"createdAt":body["createdAt"],"trainingAllowed":body["retainForTraining"] and permitted}
+            collections=state.setdefault("collections",{})
+            old=collections.get(request.input_commitment())
+            if old and (old["createdAt"]!=value["createdAt"] or old["caseId"]!=request.caseId):
+                raise ValueError("Website collection identity changed")
+            if old: value["trainingAllowed"]=old["trainingAllowed"] and value["trainingAllowed"]
+            collections[request.input_commitment()]=value
 
     def _saved(self) -> dict | None:
         with self.connector.learning.transaction() as database:
@@ -121,6 +161,7 @@ class OutboundWorker:
                 or request.input_commitment()!=job["inputCommitment"] or request.template_commitment()!=job["templateCommitment"]):
             raise ValueError("Job content does not match its committed workspace, template and model")
         self._remember_audit(request,body)
+        self._remember_collection(request,body)
         job["caseId"]=request.caseId; self._save(job)
         with self._renew_while_working(job) as failed:
             result=EvaluationResult.model_validate(self.evaluate(request))
@@ -134,7 +175,7 @@ class OutboundWorker:
         with self.connector.learning.transaction() as database:
             self.connector._case_live(database,request.caseId)
             self.connector._state(database)["results"][result.inputCommitment]=result.model_dump()
-        receipt_key=self.connector.queue_result(result)
+        receipt_key=self.connector.queue_result(result,job_context={"jobId":job["jobId"],"workerId":self.worker_id,"leaseToken":job["leaseToken"]})
         acknowledgment=self.connector.runtime.acknowledgment(receipt_key)
         if acknowledgment is None:
             self.connector.flush()
@@ -181,6 +222,7 @@ class OutboundWorker:
         while not self.stop.is_set():
             try:
                 self.run_once(); failures=0
+                if time.monotonic()-self.last_label_sync>=60: self.sync_labels()
             except (ConnectorUnavailable,ConnectorRejected,PermissionError,ValueError):
                 failures+=1
             self.stop.wait(min(60,self.poll_seconds*2**min(failures,5)))

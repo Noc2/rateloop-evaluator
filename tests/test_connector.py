@@ -49,7 +49,7 @@ def setup(tmp_path):
         if path.endswith("/receipts"):
             receipt=json.loads(request.content)
             return httpx.Response(behavior["receipt_status"],json={"schemaVersion":"rateloop.automated-eval-ingest-result.v2",
-                "receiptId":"aev_"+"1"*40,"receiptHash":commitment(receipt,"rateloop.product-evaluator.v2"),"outcome":receipt["result"]["outcome"],
+                "receiptId":"aev_"+"1"*40,"receiptHash":commitment(receipt,"rateloop.product-evaluator.v2"),"outcome":None if behavior.get("blind_receipt") else receipt["result"]["outcome"],
                 "policy":{"mayReduceHumanReview":False},"replayed":False})
         if path.endswith("/labeled-data"):
             return httpx.Response(200,json=behavior["labels"])
@@ -102,7 +102,7 @@ def test_destination_and_opt_in_boundaries(setup):
     local.close()
     disabled=RateLoopConnector(**kwargs)
     with pytest.raises(PermissionError):
-        disabled.select_audit_before_scoring(req,review_context())
+        disabled.select_audit_before_scoring(req,review_context(),frozen_question_hash="sha256:"+"e"*64)
     with pytest.raises(PermissionError):
         disabled.flush()
     assert not calls
@@ -201,7 +201,7 @@ def test_blind_audit_precedes_scoring_and_selected_result_is_withheld(setup):
     def local(request):
         assert calls[-1].url.path.endswith("/audits")
         return evaluate(learning,request)
-    result=connector.run_with_audit(req,local,review_context())
+    result=connector.run_with_audit(req,local,review_context(),frozen_question_hash="sha256:"+"e"*64)
     assert result["result"] is None and result["awaitingIndependentHuman"] is True
     behavior["labels"]=export_labels(connector,req,remote)
     imported=import_labels(connector,req)
@@ -209,13 +209,13 @@ def test_blind_audit_precedes_scoring_and_selected_result_is_withheld(setup):
     assert import_labels(connector,req)["duplicates"]==1
     assert connector.release_result(req.input_commitment())["caseId"]==req.caseId
     with pytest.raises(PermissionError,match="already been scored"):
-        connector.select_audit_before_scoring(req,review_context())
+        connector.select_audit_before_scoring(req,review_context(),frozen_question_hash="sha256:"+"e"*64)
 
 
 def test_exposed_result_cannot_create_independent_label(setup):
     connector,req,learning,_,remote,behavior,_,_=setup
     connector.sync_grants()
-    connector.run_with_audit(req,lambda r:evaluate(learning,r),review_context())
+    connector.run_with_audit(req,lambda r:evaluate(learning,r),review_context(),frozen_question_hash="sha256:"+"e"*64)
     connector.release_result(req.input_commitment())
     behavior["labels"]=export_labels(connector,req,remote)
     report=import_labels(connector,req)
@@ -226,11 +226,11 @@ def test_offline_evaluation_never_claims_blinding(setup):
     connector,req,learning,_,_,behavior,_,_=setup
     connector.sync_grants(); behavior["audit_status"]=503
     with pytest.raises(ConnectorUnavailable):
-        connector.run_with_audit(req,lambda r:evaluate(learning,r),review_context())
-    report=connector.run_with_audit(req,lambda r:evaluate(learning,r),review_context(),allow_offline=True)
+        connector.run_with_audit(req,lambda r:evaluate(learning,r),review_context(),frozen_question_hash="sha256:"+"e"*64)
+    report=connector.run_with_audit(req,lambda r:evaluate(learning,r),review_context(),frozen_question_hash="sha256:"+"e"*64,allow_offline=True)
     assert report["result"] is not None and report["blindingAssurance"]=="none" and not report["awaitingIndependentHuman"]
     with pytest.raises(PermissionError):
-        connector.select_audit_before_scoring(req,review_context())
+        connector.select_audit_before_scoring(req,review_context(),frozen_question_hash="sha256:"+"e"*64)
 
 
 def test_offline_permission_cannot_override_a_known_pause(setup):
@@ -238,7 +238,7 @@ def test_offline_permission_cannot_override_a_known_pause(setup):
     remote["settings"]["mode"]="paused"
     connector.sync_grants(); behavior["audit_status"]=503
     with pytest.raises(PermissionError,match="enabled workspace"):
-        connector.run_with_audit(req,lambda r:evaluate(learning,r),review_context(),allow_offline=True)
+        connector.run_with_audit(req,lambda r:evaluate(learning,r),review_context(),frozen_question_hash="sha256:"+"e"*64,allow_offline=True)
     with learning.transaction() as database:
         assert req.input_commitment() not in database["evaluations"]
 
@@ -258,17 +258,17 @@ def test_raw_human_context_is_rejected_before_any_upload(setup):
     connector,req,_,_,_,_,calls,_=setup
     context=review_context(); context["outputSummary"]="Secret customer content"
     with pytest.raises(ValueError,match="documented metadata"):
-        connector.select_audit_before_scoring(req,context)
+        connector.select_audit_before_scoring(req,context,frozen_question_hash="sha256:"+"e"*64)
     context=review_context(); context["execution"]["generationSpans"][0]["requestedModel"]="Secret customer content"
     with pytest.raises(ValueError,match="never free-form"):
-        connector.select_audit_before_scoring(req,context)
+        connector.select_audit_before_scoring(req,context,frozen_question_hash="sha256:"+"e"*64)
     assert calls==[]
 
 
 def test_multicriterion_and_wrong_commitment_imports_are_rejected(setup):
     connector,req,learning,_,remote,behavior,_,_=setup
     connector.sync_grants()
-    connector.run_with_audit(req,lambda r:evaluate(learning,r),review_context())
+    connector.run_with_audit(req,lambda r:evaluate(learning,r),review_context(),frozen_question_hash="sha256:"+"e"*64)
     behavior["labels"]=export_labels(connector,req,remote)
     behavior["labels"]["items"][0]["caseId"]="different-case"
     body={k:v for k,v in behavior["labels"].items() if k!="exportDigest"}
@@ -311,12 +311,12 @@ def test_auth_failure_revokes_mirrored_training_permission(setup):
 def test_deleted_case_cannot_reappear_in_connector_metadata(setup):
     connector,req,learning,_,_,_,_,_=setup
     connector.sync_grants()
-    connector.run_with_audit(req,lambda r:evaluate(learning,r),review_context())
+    connector.run_with_audit(req,lambda r:evaluate(learning,r),review_context(),frozen_question_hash="sha256:"+"e"*64)
     old_result=connector.release_result(req.input_commitment())
     learning.delete_case(req.workspaceId,req.caseId)
     with pytest.raises(PermissionError,match="deleted"):
         connector.queue_result(old_result)
     with pytest.raises(PermissionError,match="deleted"):
-        connector.select_audit_before_scoring(req,review_context())
+        connector.select_audit_before_scoring(req,review_context(),frozen_question_hash="sha256:"+"e"*64)
     with pytest.raises(KeyError):
         connector.release_result(req.input_commitment())

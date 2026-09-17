@@ -64,7 +64,7 @@ def test_source_snapshot_requires_current_lease_even_with_another_active_grant(s
 def test_frozen_blind_human_answer_remains_independent_after_reveal(setup):
     connector,req,learning,_,remote,behavior,_,_=setup
     connector.sync_grants()
-    connector.run_with_audit(req,lambda r:evaluate(learning,r),__import__("test_connector").review_context())
+    connector.run_with_audit(req,lambda r:evaluate(learning,r),__import__("test_connector").review_context(),frozen_question_hash="sha256:"+"e"*64)
     behavior["labels"]=export_labels(connector,req,remote)
     item=behavior["labels"]["items"][0]
     bindings={k:"sha256:"+"c"*64 for k in ("sourceContentHash","suggestedContentHash","frozenQuestionHash")}
@@ -83,7 +83,7 @@ def test_frozen_blind_human_answer_remains_independent_after_reveal(setup):
 def test_exposure_before_frozen_answer_is_rejected(setup):
     connector,req,learning,_,remote,behavior,_,_=setup
     connector.sync_grants()
-    connector.run_with_audit(req,lambda r:evaluate(learning,r),__import__("test_connector").review_context())
+    connector.run_with_audit(req,lambda r:evaluate(learning,r),__import__("test_connector").review_context(),frozen_question_hash="sha256:"+"e"*64)
     behavior["labels"]=export_labels(connector,req,remote)
     item=behavior["labels"]["items"][0]
     item["audit"].update(blindingAssurance="server_enforced",independent=True,reviewFrozenAt=utc_now(),resultsReleasedAt=iso(time.time()-60))

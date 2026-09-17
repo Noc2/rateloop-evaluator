@@ -53,6 +53,7 @@ def main(argv=None):
     serve = commands.add_parser("serve"); serve.add_argument("--bundle-id",required=True); serve.add_argument("--device",choices=["cpu","mps","cuda"],default="cpu")
     serve.add_argument("--host",default="127.0.0.1"); serve.add_argument("--port",type=int,default=8765); serve.add_argument("--tls-cert"); serve.add_argument("--tls-key")
     snapshot = commands.add_parser("snapshot"); snapshot.add_argument("--template",required=True); snapshot.add_argument("--version",type=int,required=True)
+    snapshot.add_argument("--template-commitment",help="Select one exact language/rubric definition when an ID has multiple translations")
     snapshot.add_argument("--purpose",choices=["private_training","shared_contribution","public_weight_distribution"],default="private_training")
     train = commands.add_parser("train"); train.add_argument("--snapshot-id",required=True); train.add_argument("--model-dir",required=True); train.add_argument("--output",required=True); train.add_argument("--bundle-id",required=True)
     train.add_argument("--device",choices=["cpu","mps","cuda"],default="cpu"); train.add_argument("--method",choices=["full","lora"],default="lora"); train.add_argument("--epochs",type=int,default=3); train.add_argument("--max-steps",type=int,default=-1)
@@ -77,6 +78,7 @@ def main(argv=None):
         command = commands.add_parser(name); command.add_argument("--config",required=True,help="Private connector JSON, mode 0600")
         if name == "connect-evaluate":
             command.add_argument("--request",required=True); command.add_argument("--review-context",required=True)
+            command.add_argument("--frozen-question-hash",required=True,help="Existing frozen human-review question commitment")
             command.add_argument("--endpoint",default="http://127.0.0.1:8765"); command.add_argument("--client-credentials")
             command.add_argument("--allow-offline",action="store_true",help="Permit local evaluation without claiming a blind audit when RateLoop is unreachable")
         if name == "connect-import-labels":
@@ -154,8 +156,11 @@ def run(args):
                             active=registry.active(workspace,value.template_commitment(),value.template.language,verify_artifacts=False)
                             if active["bundle_id"] != bundle_id: raise PermissionError("Queued model is no longer active")
                             return active
+                        def allow_retention(value):
+                            with store.transaction() as database:
+                                return connector._state(database).get("collections",{}).get(value.input_commitment(),{}).get("trainingAllowed") is True
                         apps[bundle_id]=create_app(backend=backend,bundle=record["manifest"],learning=store,runtime=connector.runtime,
-                            tokens={"0"*64:identity},validate_bundle=validate)
+                            tokens={"0"*64:identity},validate_bundle=validate,allow_training_retention=allow_retention)
                     return apps[bundle_id].state.evaluate(request,identity)
                 return run_worker(OutboundWorker(connector,worker_id=args.worker_id,model_bundle_ids=args.bundle_id,
                     evaluate=evaluate_job,poll_seconds=args.poll_seconds),root,once=args.once)
@@ -188,7 +193,8 @@ def run(args):
                             if size > 100_000: raise ValueError("Local evaluator response exceeds limit")
                             chunks.append(chunk)
                         return json.loads(b"".join(chunks))
-                return connector.run_with_audit(request,evaluate,read_json(args.review_context),allow_offline=args.allow_offline)
+                return connector.run_with_audit(request,evaluate,read_json(args.review_context),
+                    frozen_question_hash=args.frozen_question_hash,allow_offline=args.allow_offline)
         finally: connector.close()
     if args.command == "issue-reviewer-token":
         token = secrets.token_urlsafe(32)
@@ -207,7 +213,8 @@ def run(args):
         deleted["runtimeDeleted"] = RuntimeStore(root / "runtime.sqlite",config["encryptionKey"]).delete_case(workspace,args.case_id)
         return deleted
     if args.command == "snapshot":
-        snapshot = store.create_snapshot(workspace,args.template,args.version,purpose=args.purpose)
+        snapshot = store.create_snapshot(workspace,args.template,args.version,purpose=args.purpose,
+            template_commitment=getattr(args,"template_commitment",None))
         return {"snapshotId":snapshot["id"],"groups":snapshot["group_count"],"purpose":snapshot["purpose"]}
     if args.command == "train":
         from .training import TrainOptions, train_snapshot

@@ -32,7 +32,8 @@ def test_real_train_optimizer_save_reload_and_revocation(tmp_path, monkeypatch, 
     key.chmod(0o600)
     store = LearningStore(tmp_path / "learning", key)
     grant = store.add_grant(workspace_id="synthetic", rights=["ai_use", "private_training"],
-                            expires_at=time.time() + 3600, evidence="Authored synthetic hardware fixture")
+                            expires_at=time.time() + 3600, authorization_until=time.time()+60,
+                            evidence="Authored synthetic hardware fixture with renewable execution lease")
     template = {"id": "politeness", "version": 1, "language": "en", "maxTokens": 512,
                 "questions": [{"id": "tone", "text": "Is the customer reply polite?", "labels": [
                     {"id": "yes", "description": "Polite and courteous"},
@@ -56,10 +57,18 @@ def test_real_train_optimizer_save_reload_and_revocation(tmp_path, monkeypatch, 
             annotator_id="synthetic-fixture-author", labels={"tone": label}, exposed_to_ai=False,
             independent_human=True)
     snapshot = store.create_snapshot("synthetic", "politeness", 1)
+    original_load=store.load_snapshot
+    authorizations=[]
+    def renewing_load(*args,**kwargs):
+        authorizations.append(time.time())
+        store.renew_authorization(grant["id"],"synthetic",time.time()+899)
+        return original_load(*args,**kwargs)
+    monkeypatch.setattr(store,"load_snapshot",renewing_load)
     result = train_snapshot(store, snapshot["id"], "synthetic", os.environ["RATELOOP_TEST_MODEL_DIR"],
         tmp_path / "training", bundle_id=f"smoke-{method}", options=TrainOptions(method=method,
         device=os.environ.get("RATELOOP_TEST_DEVICE", "cpu"), max_steps=1, epochs=1))
     assert result["training"]["optimizerSteps"] == 1
+    assert len(authorizations)>=3  # Startup, pre-training and actual optimizer authorization.
     assert result["training"]["trainableParametersChanged"] is True
     assert result["training"]["reloadMaxAbsoluteError"] < 1e-4
     assert set(result["training"]["trainingExampleIds"]) == {row["evaluation_id"] for row in snapshot["train"]}
