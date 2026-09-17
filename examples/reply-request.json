@@ -1,0 +1,17 @@
+{
+  "schemaVersion": "rateloop.evaluator.request.v1",
+  "workspaceId": "example-workspace",
+  "caseId": "synthetic-reply-001",
+  "idempotencyKey": "synthetic-reply-001-v1",
+  "template": {
+    "id": "customer-reply-tone", "version": 1, "language": "en", "maxTokens": 512,
+    "questions": [{
+      "id": "tone", "text": "Is the reply polite and suitable for a customer?",
+      "labels": [{"id": "suitable", "description": "The reply is polite and suitable for a customer."}, {"id": "unsuitable", "description": "The reply is rude or unsuitable for a customer."}, {"id": "unknown", "description": "There is insufficient context to assess the tone."}],
+      "passLabels": ["suitable"]
+    }]
+  },
+  "input": {"text": "Thank you for contacting us. Your refund was approved and will arrive within five working days.", "context": "The customer asks when an approved refund will arrive.", "evidence": "The refund was approved. The published refund timeframe is five working days."},
+  "modelBundleId": "gliner25-multi-shadow-v1",
+  "deadlineMs": 5000
+}

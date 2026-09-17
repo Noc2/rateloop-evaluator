@@ -1,0 +1,16 @@
+.venv/
+__pycache__/
+.pytest_cache/
+*.egg-info/
+dist/
+.env
+*.sqlite*
+*.db
+*.key
+*.safetensors
+*.bin
+*.pt
+*.pth
+data/
+artifacts/
+.DS_Store

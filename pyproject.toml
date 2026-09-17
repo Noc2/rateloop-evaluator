@@ -1,0 +1,26 @@
+[build-system]
+requires = ["hatchling>=1.27,<2"]
+build-backend = "hatchling.build"
+
+[project]
+name = "rateloop-evaluator"
+version = "0.1.0"
+description = "Private, locally trainable ratings with GLiNER and explicit human feedback rights"
+readme = "README.md"
+license = "Apache-2.0"
+requires-python = ">=3.10,<3.14"
+dependencies = ["pydantic>=2.11,<3", "fastapi>=0.115,<1", "uvicorn>=0.34,<1", "cryptography>=44,<47", "httpx>=0.28,<1", "rfc8785>=0.1.4,<1"]
+
+[project.optional-dependencies]
+model = ["gliner2[local,train]==2.0.0"]
+compare = ["gliclass==0.1.20"]
+test = ["pytest>=8,<10", "jsonschema>=4.23,<5", "build>=1.2,<2"]
+
+[project.scripts]
+rateloop-evaluator = "rateloop_evaluator.cli:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/rateloop_evaluator"]

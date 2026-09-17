@@ -1,0 +1,162 @@
+{
+  "$defs": {
+    "Criterion": {
+      "additionalProperties": false,
+      "properties": {
+        "questionId": {
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$",
+          "title": "Questionid",
+          "type": "string"
+        },
+        "label": {
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$",
+          "title": "Label",
+          "type": "string"
+        },
+        "rawScores": {
+          "patternProperties": {
+            "^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$": {
+              "maximum": 1,
+              "minimum": 0,
+              "type": "number"
+            }
+          },
+          "title": "Rawscores",
+          "type": "object"
+        },
+        "probabilities": {
+          "anyOf": [
+            {
+              "patternProperties": {
+                "^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$": {
+                  "maximum": 1,
+                  "minimum": 0,
+                  "type": "number"
+                }
+              },
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Probabilities"
+        },
+        "calibrationId": {
+          "anyOf": [
+            {
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Calibrationid"
+        }
+      },
+      "required": [
+        "questionId",
+        "label",
+        "rawScores"
+      ],
+      "title": "Criterion",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "schemaVersion": {
+      "const": "rateloop.evaluator.result.v1",
+      "default": "rateloop.evaluator.result.v1",
+      "title": "Schemaversion",
+      "type": "string"
+    },
+    "workspaceId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$",
+      "title": "Workspaceid",
+      "type": "string"
+    },
+    "caseId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$",
+      "title": "Caseid",
+      "type": "string"
+    },
+    "modelBundleId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$",
+      "title": "Modelbundleid",
+      "type": "string"
+    },
+    "inputCommitment": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Inputcommitment",
+      "type": "string"
+    },
+    "templateCommitment": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Templatecommitment",
+      "type": "string"
+    },
+    "outcome": {
+      "enum": [
+        "pass",
+        "fail",
+        "uncertain"
+      ],
+      "title": "Outcome",
+      "type": "string"
+    },
+    "abstainReason": {
+      "anyOf": [
+        {
+          "maxLength": 160,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Abstainreason"
+    },
+    "criteria": {
+      "items": {
+        "$ref": "#/$defs/Criterion"
+      },
+      "maxItems": 20,
+      "title": "Criteria",
+      "type": "array"
+    },
+    "durationMs": {
+      "maximum": 2147483647,
+      "minimum": 0,
+      "title": "Durationms",
+      "type": "integer"
+    },
+    "observedAt": {
+      "title": "Observedat",
+      "type": "string"
+    },
+    "resultCommitment": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Resultcommitment",
+      "type": "string"
+    }
+  },
+  "required": [
+    "workspaceId",
+    "caseId",
+    "modelBundleId",
+    "inputCommitment",
+    "templateCommitment",
+    "outcome",
+    "criteria",
+    "durationMs",
+    "observedAt",
+    "resultCommitment"
+  ],
+  "title": "EvaluationResult",
+  "type": "object"
+}
