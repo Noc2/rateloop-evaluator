@@ -91,6 +91,11 @@ def make_trainer(model: Any, output_dir: Path, options: TrainOptions) -> Any:
     from gliner2.training.trainer import GLiNER2Trainer, TrainingConfig
 
     class LocalDeviceTrainer(GLiNER2Trainer):
+        def _optimizer_step(self) -> bool:
+            if getattr(self,"authorization_check",None):
+                self.authorization_check()
+            return super()._optimizer_step()
+
         def _setup_device(self) -> None:
             if options.device == "mps" and not torch.backends.mps.is_available():
                 raise RuntimeError("MPS is unavailable for training")
@@ -173,6 +178,7 @@ def train_snapshot(store: Any, snapshot_id: str, workspace_id: str,
     store.load_snapshot(snapshot_id, workspace_id)
     output_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
     trainer = make_trainer(model, output_dir / "checkpoints", options)
+    trainer.authorization_check = lambda: store.load_snapshot(snapshot_id,workspace_id)
     before_fingerprint = parameter_fingerprint(trainer.model)
     result = trainer.train(train_data=records)
     after_fingerprint = parameter_fingerprint(trainer.model)

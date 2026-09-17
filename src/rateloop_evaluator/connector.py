@@ -28,10 +28,20 @@ _HASH = re.compile(r"^sha256:[0-9a-f]{64}$")
 _GRANT_KEYS = {"grantId", "workspaceId", "apiKeyId", "purpose", "modelBundleId", "templateCommitment", "fields",
                "publicWeightsAllowed", "issuedAt", "expiresAt", "revokedAt", "revision"}
 _FIELD_MAP = {"input":"input.text", "context":"input.context", "evidence":"input.evidence", "human_labels":"human_labels"}
+_CONSENT_KEYS = {"consentId","revision","workspaceId","apiKeyId","purpose","processingLocation","modelFamilyId",
+                 "modelBundleIds","templateCommitments","fields","issuedAt","expiresAt","revokedAt"}
+_PURPOSE_RIGHTS = {"ai_use":"ai_use","private_learning":"private_training","shared_contribution":"shared_contribution",
+                   "public_weights":"public_weight_distribution"}
 
 
 class ConnectorUnavailable(RuntimeError):
     """No fresh server result; offline work must not claim an independent audit."""
+
+
+class ConnectorRejected(ValueError):
+    def __init__(self, status: int):
+        self.status = status
+        super().__init__(f"RateLoop rejected the connector request (HTTP {status})")
 
 
 def _timestamp(value: Any) -> float:
@@ -150,7 +160,7 @@ class RateLoopConnector:
                 if response.status_code >= 500 or response.status_code == 429:
                     raise ConnectorUnavailable("RateLoop temporarily unavailable; retry the persisted receipt")
                 if not 200 <= response.status_code < 300:
-                    raise ValueError(f"RateLoop rejected the connector request (HTTP {response.status_code})")
+                    raise ConnectorRejected(response.status_code)
                 declared=response.headers.get("content-length")
                 if declared is not None and (not declared.isdigit() or int(declared)>10_000_000):
                     raise ValueError("RateLoop response exceeds the bounded metadata limit")
@@ -171,7 +181,7 @@ class RateLoopConnector:
     def _revoke_mirrors(self, reason: str) -> None:
         with self.learning.transaction() as database:
             state=self._state(database)
-            ids=[r["local_id"] for r in state["grants"].values()]
+            ids=[r["local_id"] for r in [*state["grants"].values(),*state.get("consents",{}).values()]]
             state["last_failure"]=reason
         for grant_id in ids:
             self.learning.revoke_grant(grant_id,self.workspace_id)
@@ -200,6 +210,82 @@ class RateLoopConnector:
                 raise ValueError("Invalid remote revocation timestamp")
         return deepcopy(grant)
 
+    def _validate_consent(self, consent: dict, *, now: float, watermark: int) -> dict:
+        if not isinstance(consent,dict) or set(consent) != _CONSENT_KEYS:
+            raise ValueError("Incomplete or unexpected durable consent fields")
+        if consent["workspaceId"] != self.workspace_id or consent["apiKeyId"] != self.api_key_id:
+            raise PermissionError("Durable consent recipient mismatch")
+        for key in ("consentId","modelFamilyId","processingLocation"):
+            _opaque(consent[key])
+        if consent["purpose"] not in _PURPOSE_RIGHTS:
+            raise ValueError("Invalid durable consent purpose")
+        for key,validate in (("modelBundleIds",_opaque),("templateCommitments",_hash)):
+            if not isinstance(consent[key],list) or not 1 <= len(consent[key]) <= 100 or len(set(consent[key])) != len(consent[key]):
+                raise ValueError("Consent requires explicit bounded model and template scopes")
+            for value in consent[key]: validate(value)
+        if not isinstance(consent["fields"],list) or not consent["fields"] or not set(consent["fields"]) <= set(_FIELD_MAP):
+            raise ValueError("Invalid consent fields")
+        issued=_timestamp(consent["issuedAt"])
+        if not 0 < issued <= now or type(consent["revision"]) is not int or not 1 <= consent["revision"] <= watermark:
+            raise ValueError("Invalid consent version or issue time")
+        if consent["expiresAt"] is not None and _timestamp(consent["expiresAt"]) <= issued:
+            raise ValueError("Invalid durable consent expiration")
+        if consent["revokedAt"] is not None and not issued <= _timestamp(consent["revokedAt"]) <= now:
+            raise ValueError("Invalid durable consent revocation")
+        return deepcopy(consent)
+
+    def _sync_consents(self, response: dict, *, now: float, watermark: int) -> int:
+        consents=response.get("consents",[])
+        if not isinstance(consents,list) or len(consents)>1000:
+            raise ValueError("Invalid durable consent collection")
+        consents=[self._validate_consent(c,now=now,watermark=watermark) for c in consents]
+        if len({c["consentId"] for c in consents}) != len(consents):
+            raise ValueError("Duplicate consent identity")
+        lease=response.get("authorizationLease")
+        until=now
+        if consents:
+            expected={"leaseId","issuedAt","expiresAt","revocationWatermark","recipientApiKeyId","workspaceId"}
+            if not isinstance(lease,dict) or set(lease) != expected:
+                raise ValueError("Durable permissions require a scoped worker authorization lease")
+            _opaque(lease["leaseId"])
+            issued,until=_timestamp(lease["issuedAt"]),_timestamp(lease["expiresAt"])
+            if (lease["workspaceId"] != self.workspace_id or lease["recipientApiKeyId"] != self.api_key_id
+                    or lease["revocationWatermark"] != watermark or not 0 < issued <= now < until
+                    or until-issued>900):
+                raise PermissionError("Worker authorization lease is expired or outside this recipient and watermark")
+        with self.learning.transaction() as database:
+            previous=deepcopy(self._state(database).get("consents",{}))
+        received={c["consentId"]:c for c in consents}
+        for identity,old in previous.items():
+            current=received.get(identity)
+            if (not current or current["revokedAt"] is not None
+                    or (current["expiresAt"] is not None and _timestamp(current["expiresAt"])<=now)
+                    or current["revision"] != old["consent"]["revision"]):
+                self.learning.revoke_grant(old["local_id"],self.workspace_id,now=now)
+            elif commitment(current,"rateloop.durable-consent.v1") != old["digest"]:
+                raise PermissionError("Durable consent changed without a new explicit revision")
+        mirrored={}
+        for consent in consents:
+            expiration=_timestamp(consent["expiresAt"]) if consent["expiresAt"] else 253402300799.0
+            if consent["revokedAt"] is not None or expiration<=now:
+                continue
+            identity=consent["consentId"]
+            local_id="consent_"+hashlib.sha256((self.namespace+identity+":"+str(consent["revision"])).encode()).hexdigest()[:48]
+            old=previous.get(identity)
+            if old is not None and old["local_id"] == local_id:
+                self.learning.renew_authorization(local_id,self.workspace_id,min(until,expiration),now=now)
+            else:
+                self.learning.add_grant(workspace_id=self.workspace_id,rights=[_PURPOSE_RIGHTS[consent["purpose"]]],
+                    expires_at=expiration,authorization_until=min(until,expiration),fields=[_FIELD_MAP[f] for f in consent["fields"]],
+                    model_bundle_ids=consent["modelBundleIds"],template_commitments=consent["templateCommitments"],grant_id=local_id,
+                    evidence="RateLoop durable consent "+identity+" revision "+str(consent["revision"]),now=now)
+            mirrored[identity]={"local_id":local_id,"digest":commitment(consent,"rateloop.durable-consent.v1"),"consent":consent}
+            with self.learning.transaction() as database:
+                self._state(database).setdefault("consents",{})[identity]=mirrored[identity]
+        with self.learning.transaction() as database:
+            self._state(database).update(consents=mirrored,authorization_lease=lease)
+        return len(mirrored)
+
     def sync_grants(self, *, now: float | None = None) -> dict:
         current=time.time() if now is None else now
         response=self._request("GET","/grants")
@@ -220,6 +306,7 @@ class RateLoopConnector:
                 previous=deepcopy(self._state(database))
             if watermark < previous["watermark"]:
                 raise PermissionError("Remote revocation watermark moved backwards")
+            consent_count=self._sync_consents(response,now=current,watermark=watermark)
             received={g["grantId"]:g for g in grants}
             for remote_id,old in previous["grants"].items():
                 remote=received.get(remote_id)
@@ -249,7 +336,7 @@ class RateLoopConnector:
                 if state["watermark"] > watermark:
                     raise PermissionError("A newer grant synchronization already completed")
                 state.update({"watermark":watermark,"grants":mirrored,"synced_at":current,"mode":mode})
-            return {"revocationWatermark":watermark,"mirroredGrants":len(mirrored),"mode":mode,
+            return {"revocationWatermark":watermark,"mirroredGrants":len(mirrored),"mirroredConsents":consent_count,"mode":mode,
                     "offlineRevocation":"Original grant expiration bounds offline use; unseen revocations are not instant."}
         except (ValueError,PermissionError):
             for local_id in created_ids:
@@ -404,11 +491,23 @@ class RateLoopConnector:
             state=deepcopy(self._state(database))
         if response.get("revocationWatermark") != state["watermark"]:
             raise PermissionError("Label export requires a fresh matching revocation watermark; synchronize again")
-        remote=state["grants"].get(grant_id)
-        permission=self._validate_grant(response.get("grant"),now=current,watermark=state["watermark"])
-        if (not remote or permission != remote["grant"] or permission["templateCommitment"] != template_commitment
-            or "human_labels" not in permission["fields"] or permission["revokedAt"] is not None or _timestamp(permission["expiresAt"]) <= current):
-            raise PermissionError("Label export lacks an active exact scoped human-label grant")
+        if response.get("consent") is not None:
+            remote=state.get("consents",{}).get(grant_id)
+            permission=self._validate_consent(response["consent"],now=current,watermark=state["watermark"])
+            lease=state.get("authorization_lease") or {}
+            if (not remote or permission != remote["consent"] or permission["purpose"] != "private_learning"
+                    or template_commitment not in permission["templateCommitments"] or "human_labels" not in permission["fields"]
+                    or permission["revokedAt"] is not None or _timestamp(lease.get("expiresAt")) <= current
+                    or (permission["expiresAt"] is not None and _timestamp(permission["expiresAt"]) <= current)):
+                raise PermissionError("Label export lacks an active exact scoped human-label consent")
+            permitted_bundles=permission["modelBundleIds"]
+        else:
+            remote=state["grants"].get(grant_id)
+            permission=self._validate_grant(response.get("grant"),now=current,watermark=state["watermark"])
+            if (not remote or permission != remote["grant"] or permission["templateCommitment"] != template_commitment
+                or "human_labels" not in permission["fields"] or permission["revokedAt"] is not None or _timestamp(permission["expiresAt"]) <= current):
+                raise PermissionError("Label export lacks an active exact scoped human-label grant")
+            permitted_bundles=[permission["modelBundleId"]]
         if not isinstance(response.get("items"),list) or len(response["items"]) > 5000:
             raise ValueError("Unbounded label export")
         imported,rejected,duplicates=0,[],0
@@ -430,7 +529,7 @@ class RateLoopConnector:
                     raise ValueError("Human result does not bind the exact local case, model and template")
                 if item.get("resultCommitment") != local_result["resultCommitment"]:
                     raise ValueError("Human export references a different automated result")
-                if item.get("templateCommitment") != template_commitment or item.get("modelBundleId") != permission["modelBundleId"]:
+                if item.get("templateCommitment") != template_commitment or item.get("modelBundleId") not in permitted_bundles:
                     raise ValueError("Human result is outside the exported grant scope")
                 if item.get("labelScope") != "overall_human_verdict" or item.get("criterionTrainingRequiresAdjudication") is not True:
                     raise ValueError("Unknown human-label semantics")
@@ -438,12 +537,24 @@ class RateLoopConnector:
                 if len(questions)!=1 or questions[0]["id"] != question_id or not set(outcome_labels.values()) <= {x["id"] for x in questions[0]["labels"]}:
                     raise ValueError("Overall verdict mapping requires exactly one matching question")
                 remote_audit=item.get("audit",{})
-                if (not audit.get("selected_before_scoring") or audit.get("ai_exposed") is not False
+                causal=False
+                if remote_audit.get("blindingAssurance") == "server_enforced":
+                    frozen=_timestamp(remote_audit.get("reviewFrozenAt"))
+                    released=remote_audit.get("resultsReleasedAt")
+                    causal=(remote_audit.get("independent") is True and (released is None or frozen <= _timestamp(released))
+                            and audit["selected_at"]-300 <= frozen <= current+300)
+                    for name in ("sourceContentHash","suggestedContentHash","frozenQuestionHash"):
+                        if _hash(item.get(name)) != audit.get(name):
+                            raise ValueError("Human label changed the frozen review content")
+                    if item.get("questionId") != question_id:
+                        raise ValueError("Human label uses a different frozen question")
+                if (not audit.get("selected_before_scoring") or (audit.get("ai_exposed") is not False and not causal)
                     or audit.get("response",{}).get("selected") is not True
                     or remote_audit.get("auditId") != audit["response"]["auditId"]
-                    or remote_audit.get("aiExposed") is not False or remote_audit.get("kind") not in ("random","mandatory")
+                    or (remote_audit.get("aiExposed") is not False and not causal) or remote_audit.get("kind") not in ("random","mandatory")
                     or remote_audit.get("kind") != audit["response"]["kind"]
-                    or remote_audit.get("selectionProbabilityBps") != audit["response"]["selectionProbabilityBps"]):
+                    or remote_audit.get("selectionProbabilityBps") != audit["response"]["selectionProbabilityBps"]
+                    or (remote_audit.get("blindingAssurance") == "server_enforced" and not causal)):
                     raise ValueError("Human label lacks independently blind connector provenance")
                 if item.get("humanOutcome") not in outcome_labels or type(item.get("responseCount")) is not int or item["responseCount"] < 1:
                     raise ValueError("Inconclusive or missing human verdict")

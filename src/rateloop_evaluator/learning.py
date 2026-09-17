@@ -109,6 +109,7 @@ class LearningStore:
                   case_ids: list[str] | None = None, template_ids: list[str] | None = None,
                   fields: list[str] | None = None, grant_id: str | None = None,
                   model_bundle_ids: list[str] | None = None, template_commitments: list[str] | None = None,
+                  authorization_until: float | None = None,
                   evidence: str, now: float | None = None) -> dict[str, Any]:
         """Record an explicit grant; None scope means all, [] means no items.
 
@@ -121,6 +122,8 @@ class LearningStore:
             raise ValueError("An evidenced, workspace-bound grant with known rights is required")
         if not isinstance(expires_at, (float, int)) or not current < expires_at < float("inf"):
             raise ValueError("Grant expiration must be a finite future timestamp")
+        if authorization_until is not None and not current < authorization_until <= min(expires_at,current+900):
+            raise ValueError("Worker authorization must expire within 15 minutes")
         for scope in (case_ids, template_ids, fields, model_bundle_ids, template_commitments):
             if scope is not None and (not isinstance(scope, list) or any(not isinstance(x, str) or not x for x in scope)):
                 raise ValueError("Scope entries must be nonempty strings")
@@ -128,12 +131,24 @@ class LearningStore:
                  "rights": sorted(set(rights)), "expires_at": expires_at, "case_ids": case_ids,
                  "template_ids": template_ids, "fields": fields, "evidence": evidence,
                  "model_bundle_ids": model_bundle_ids, "template_commitments": template_commitments,
-                 "created_at": current, "revoked_at": None}
+                 "created_at": current, "revoked_at": None, "authorization_until": authorization_until}
         with self.transaction() as state:
             if grant["id"] in state["grants"]:
                 raise ValueError("Grant IDs are immutable")
             state["grants"][grant["id"]] = grant
         return deepcopy(grant)
+
+    def renew_authorization(self, grant_id: str, workspace_id: str, expires_at: float, *, now: float | None = None) -> None:
+        """Renew execution only; an expired or revoked durable consent never revives."""
+        current = time.time() if now is None else now
+        with self.transaction() as state:
+            grant = state["grants"].get(grant_id)
+            if (not grant or grant["workspace_id"] != workspace_id or grant["revoked_at"] is not None
+                    or grant["expires_at"] <= current or grant.get("authorization_until") is None):
+                raise PermissionError("Durable consent is unavailable for renewal")
+            if not current < expires_at <= min(grant["expires_at"],current+900):
+                raise ValueError("Worker authorization must expire within 15 minutes")
+            grant["authorization_until"] = expires_at
 
     @staticmethod
     def _matching_grants(state: dict, *, workspace_id: str, right: str, case_id: str,
@@ -146,6 +161,8 @@ class LearningStore:
         matches = []
         for grant_id, grant in state["grants"].items():
             if grant["workspace_id"] != workspace_id or right not in grant["rights"] or grant["revoked_at"] is not None or grant["expires_at"] <= now:
+                continue
+            if grant.get("authorization_until") is not None and grant["authorization_until"] <= now:
                 continue
             if grant["case_ids"] is not None and case_id not in grant["case_ids"]:
                 continue
@@ -388,6 +405,8 @@ class LearningStore:
             grant = state["grants"].get(grant_id)
             if not grant or grant["workspace_id"] != workspace_id or grant["revoked_at"] is not None or grant["expires_at"] <= now:
                 raise PermissionError("Snapshot source grant is expired or revoked")
+            if grant.get("authorization_until") is not None and grant["authorization_until"] <= now:
+                raise PermissionError("Snapshot worker authorization requires renewal")
         for part in ("train", "calibration", "test"):
             for row in snapshot[part]:
                 required_rights = {"private_training", snapshot["purpose"]}
