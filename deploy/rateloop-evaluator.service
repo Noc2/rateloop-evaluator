@@ -1,0 +1,22 @@
+[Unit]
+Description=RateLoop local evaluator
+After=network.target
+
+[Service]
+Type=simple
+User=rateloop-evaluator
+Group=rateloop-evaluator
+WorkingDirectory=/opt/rateloop-evaluator
+ExecStart=/opt/rateloop-evaluator/.venv/bin/rateloop-evaluator --state-dir /var/lib/rateloop-evaluator serve --bundle-id gliner25-multi-shadow-v1 --device cpu
+Restart=on-failure
+RestartSec=5
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/rateloop-evaluator
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+[Install]
+WantedBy=multi-user.target

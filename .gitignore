@@ -13,4 +13,8 @@ dist/
 *.pth
 data/
 artifacts/
+models/
+private/
+.local/
+build/
 .DS_Store

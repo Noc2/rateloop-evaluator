@@ -1,0 +1,16 @@
+.git
+.venv
+**/__pycache__
+.pytest_cache
+*.egg-info
+dist
+build
+private
+models
+data
+*.sqlite*
+*.safetensors
+*.key
+*credentials*.json
+client.json
+config.json

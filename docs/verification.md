@@ -72,6 +72,14 @@ No model-generated explanations were requested.
 
 ## Training and offline verification
 
+Periodic retraining starts from the original reviewed public GLiNER weights,
+SHA-256 `c1ff4ec0bc00031c15530b8f3c33d3677f27949e6a0cb52e1247a6224b6c5395`,
+using a new snapshot containing all currently authorized examples. The trainer
+rejects warm-starting from any private or adapted checkpoint, including a renamed
+checkpoint with its training metadata removed. This avoids inheriting private
+weights whose ancestor grants may later be revoked. Recursive adapter ancestry
+and warm-start training are not supported by this release.
+
 Both full training and rank-8 LoRA completed a real FP32 optimizer step on MPS,
 using in-memory authored synthetic fixtures from an encrypted learning store.
 The tests used explicit AI-use and private-training grants. Training consumed
@@ -133,3 +141,6 @@ model dependencies or downloads.
   reduction claim, long-running concurrency test, air-gapped installation audit,
   CUDA run or quantized model benchmark is established by this record.
   Production promotion still requires the independent held-out quality gates.
+## Local HTTP service
+
+The same M5 Max ran the native service with the pinned GLiNER model on MPS, the committed English reply example, one criterion, scoped authentication and encrypted persistence. Across 20 warm requests after two warm-ups, client-observed HTTP p50 was **17.25 ms** and p95 **19.75 ms**. Exact idempotent retry, cross-workspace rejection and metadata-only bundle registration export passed. All outputs correctly abstained as `uncalibrated`. This is a small synthetic, single-worker, small-store measurement; it does not establish customer accuracy, concurrent throughput or large-dataset latency.
