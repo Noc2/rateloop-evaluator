@@ -85,6 +85,13 @@ using in-memory authored synthetic fixtures from an encrypted learning store.
 The tests used explicit AI-use and private-training grants. Training consumed
 only the train partition; calibration and test examples remained excluded.
 
+A fresh installation using only the documented model/test extras also passed
+the complete LoRA command-line flow: train, reload, fit weight-bound calibration,
+register a signed shadow bundle, score the independent test partition, reject
+selective promotion of synthetic evidence, and retire the model after revocation.
+Outbound sockets were blocked throughout this 25.35-second check. It establishes
+the lifecycle mechanics, not a useful model trained from six synthetic examples.
+
 | Check | Full training | LoRA |
 | --- | --- | --- |
 | Trainable parameters | 287,355,159 | 1,357,832 (0.47% of adapter-augmented model) |
