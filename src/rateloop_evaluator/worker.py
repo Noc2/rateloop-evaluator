@@ -17,6 +17,7 @@ from fastapi import HTTPException
 from .connector import ConnectorRejected, ConnectorUnavailable, RateLoopConnector, _hash, _opaque, _timestamp
 from .protocol import EvaluationRequest, EvaluationResult
 from .templates import overall_approval
+from .execution import ExecutionBusy, model_execution
 
 
 class OutboundWorker:
@@ -58,7 +59,7 @@ class OutboundWorker:
         created_at=_timestamp(body.get("createdAt"))
         if not 0<created_at<=time.time()+300 or type(body.get("retainForTraining")) is not bool:
             raise ValueError("Website content must declare its original collection and training permission")
-        fields={"human_labels","input"}
+        fields={"input"}
         if request.input.context: fields.add("context")
         if request.input.evidence: fields.add("evidence")
         with self.connector.learning.transaction() as database:
@@ -190,6 +191,13 @@ class OutboundWorker:
         status=self.connector.sync_grants()
         if status["mode"] != "shadow":
             return {"state":"paused"}
+        try:
+            with model_execution(self.connector.learning):
+                return self._run_available()
+        except ExecutionBusy:
+            return {"state":"busy","reason":"local_model_operation"}
+
+    def _run_available(self) -> dict:
         job=self._saved()
         if job:
             try:

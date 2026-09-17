@@ -9,6 +9,7 @@ import json
 import math
 from pathlib import Path
 from typing import Any
+from .execution import serialized_training
 
 from .backends import (GLiNERBackend, MODEL_ID, MODEL_REVISION, offline_environment,
                        question_schema, render_input, validate_scores, write_model_manifest, model_token_limit, file_hash, MANIFEST_NAME, validate_local_model)
@@ -149,6 +150,7 @@ def sanitized_training_metrics(result: dict[str, Any]) -> dict[str, Any]:
     return summary
 
 
+@serialized_training
 def train_snapshot(store: Any, snapshot_id: str, workspace_id: str,
                    model_dir: str | Path, output_dir: str | Path, *, bundle_id: str,
                    options: TrainOptions | None = None) -> dict[str, Any]:

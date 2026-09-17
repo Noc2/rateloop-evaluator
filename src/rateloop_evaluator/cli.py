@@ -121,6 +121,10 @@ def run(args):
         write_private(args.output,report)
         return {"report":str(Path(args.output).resolve()),"qualityClaim":False}
     root,config,store,registry = state(args); workspace = config["workspaceId"]
+    if args.command in ("calibrate","score-test") and not getattr(args,"_model_execution_owned",False):
+        from .execution import model_execution
+        args._model_execution_owned=True
+        with model_execution(store): return run(args)
     if args.command == "install-launchd":
         from .worker import install_launchd
         return install_launchd(state_dir=root,config_path=args.config,worker_id=args.worker_id,bundle_ids=args.bundle_id,
@@ -332,7 +336,8 @@ def run(args):
             raise ValueError("Non-loopback serving requires TLS certificate and key")
         record = registry.get(args.bundle_id,workspace)
         backend = GLiNERBackend(record["artifact_root"],args.device)
-        backend.load()
+        from .execution import model_execution
+        with model_execution(store): backend.load()
         def validate(request):
             registry.get(args.bundle_id,workspace,verify_artifacts=False)
             active = registry.active(workspace,request.template_commitment(),request.template.language,verify_artifacts=False)

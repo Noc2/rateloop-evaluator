@@ -1,6 +1,7 @@
 """Authenticated single-worker local service; a real backend is injected at startup."""
 from __future__ import annotations
 from dataclasses import dataclass
+from contextlib import ExitStack
 import hashlib
 import hmac
 import threading
@@ -16,6 +17,7 @@ from .calibration import apply_temperature
 from .learning import LearningStore
 from .protocol import EvaluationRequest, EvaluationResult, WireModel, Identifier, Digest, commitment, make_result, utc_now
 from .storage import RuntimeStore
+from .execution import ExecutionBusy, model_execution
 
 
 class Backend(Protocol):
@@ -109,7 +111,9 @@ def create_app(*, backend: Backend, bundle: dict, learning: LearningStore, runti
         if request.modelBundleId != bundle["id"]: raise HTTPException(409,detail="Model bundle mismatch")
         template_digest = request.template_commitment(); input_digest = request.input_commitment()
         if not worker.acquire(blocking=False): raise HTTPException(429,detail="Worker busy; retry the same idempotency key")
+        execution=ExitStack()
         try:
+            execution.enter_context(model_execution(learning))
             deployment = validate_bundle(request) if validate_bundle else {"mode":"shadow"}
             mode = deployment["mode"]
             policy_digest = commitment(deployment,"rateloop.serving-policy.v1")
@@ -169,6 +173,8 @@ def create_app(*, backend: Backend, bundle: dict, learning: LearningStore, runti
                 input_payload=retained,fields=fields,group_id=request.sourceGroupId,model_bundle_id=request.modelBundleId)
             saved = runtime.put(request.workspaceId,request.idempotencyKey,input_digest,{"result":result.model_dump(),"policyCommitment":policy_digest})
             return saved["result"]
+        except ExecutionBusy:
+            raise HTTPException(429,detail="Local training or evaluation is running; retry later") from None
         except HTTPException:
             raise
         except PermissionError:
@@ -180,7 +186,9 @@ def create_app(*, backend: Backend, bundle: dict, learning: LearningStore, runti
             raise HTTPException(503,detail="Evaluator validation failed") from None
         except Exception:
             raise HTTPException(503,detail="Evaluation unavailable; human review required") from None
-        finally: worker.release()
+        finally:
+            execution.close()
+            worker.release()
 
     @app.post("/v1/feedback")
     def feedback(request: Feedback, identity: Principal = Depends(principal)):

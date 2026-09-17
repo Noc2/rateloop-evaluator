@@ -32,6 +32,7 @@ def test_training_rejects_incomplete_or_changed_human_labels(labels):
 
 def test_revocation_checked_before_any_model_load_or_output(tmp_path):
     class RevokedStore:
+        root=tmp_path
         def load_snapshot(self, snapshot_id, workspace_id):
             raise PermissionError("grant revoked")
     output = tmp_path / "output"
