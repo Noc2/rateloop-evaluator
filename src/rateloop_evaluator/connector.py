@@ -42,6 +42,17 @@ class ConnectorUnavailable(RuntimeError):
         super().__init__(message)
 
 
+class AuthorizationLeaseRejected(PermissionError):
+    """Fixed diagnostic category; no remote values, identifiers or content."""
+
+    def __init__(self, reason: str):
+        if reason not in {"workspace_mismatch","recipient_mismatch","watermark_mismatch",
+                          "invalid_issue_time","future_issue","expired","excessive_duration"}:
+            raise ValueError("Unknown authorization lease rejection reason")
+        self.reason = reason
+        super().__init__("Worker authorization lease rejected: "+reason)
+
+
 def _coordination_busy(response: httpx.Response) -> bool:
     """Classify one bounded, known retry response without exposing its body."""
     if response.status_code != 503:
@@ -290,10 +301,20 @@ class RateLoopConnector:
                 raise ValueError("Durable permissions require a scoped worker authorization lease")
             _opaque(lease["leaseId"])
             issued,until=_timestamp(lease["issuedAt"]),_timestamp(lease["expiresAt"])
-            if (lease["workspaceId"] != self.workspace_id or lease["recipientApiKeyId"] != self.api_key_id
-                    or lease["revocationWatermark"] != watermark or not 0 < issued <= now < until
-                    or until-issued>900):
-                raise PermissionError("Worker authorization lease is expired or outside this recipient and watermark")
+            if lease["workspaceId"] != self.workspace_id:
+                raise AuthorizationLeaseRejected("workspace_mismatch")
+            if lease["recipientApiKeyId"] != self.api_key_id:
+                raise AuthorizationLeaseRejected("recipient_mismatch")
+            if lease["revocationWatermark"] != watermark:
+                raise AuthorizationLeaseRejected("watermark_mismatch")
+            if issued <= 0:
+                raise AuthorizationLeaseRejected("invalid_issue_time")
+            if issued > now:
+                raise AuthorizationLeaseRejected("future_issue")
+            if until <= now:
+                raise AuthorizationLeaseRejected("expired")
+            if until-issued>900:
+                raise AuthorizationLeaseRejected("excessive_duration")
         with self.learning.transaction() as database:
             previous=deepcopy(self._state(database).get("consents",{}))
         received={c["consentId"]:c for c in consents}

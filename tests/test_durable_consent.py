@@ -6,6 +6,7 @@ import pytest
 from test_connector import setup, iso, evaluate, export_labels
 from rateloop_evaluator.protocol import commitment, utc_now
 from rateloop_evaluator.templates import overall_approval
+from rateloop_evaluator.connector import AuthorizationLeaseRejected
 
 
 def durable(remote, req, now):
@@ -45,6 +46,44 @@ def test_changed_scope_and_excessive_leases_fail_closed(setup):
     remote["consents"][0]["modelBundleIds"].pop()
     remote["authorizationLease"]["expiresAt"]=iso(now+901)
     with pytest.raises(PermissionError,match="lease"): connector.sync_grants(now=now)
+
+
+@pytest.mark.parametrize("reason,changes",[
+    ("workspace_mismatch",lambda now:{"workspaceId":"private-wrong-workspace"}),
+    ("recipient_mismatch",lambda now:{"recipientApiKeyId":"private-wrong-recipient"}),
+    ("watermark_mismatch",lambda now:{"revocationWatermark":987654321}),
+    ("invalid_issue_time",lambda now:{"issuedAt":iso(0)}),
+    ("future_issue",lambda now:{"issuedAt":iso(now+.001)}),
+    ("expired",lambda now:{"expiresAt":iso(now)}),
+    ("excessive_duration",lambda now:{"expiresAt":iso(now+900)}),
+])
+def test_authorization_lease_rejections_have_fixed_private_safe_reasons(setup,reason,changes):
+    connector,req,learning,_,remote,_,_,_=setup
+    now=float(int(time.time()));durable(remote,req,now)
+    with learning.transaction() as state:
+        original_grants=deepcopy(state["grants"])
+    remote["authorizationLease"].update(changes(now))
+    with pytest.raises(AuthorizationLeaseRejected) as rejected:
+        connector.sync_grants(now=now)
+    assert rejected.value.reason==reason
+    assert str(rejected.value)=="Worker authorization lease rejected: "+reason
+    with learning.transaction() as state:
+        assert state["grants"]==original_grants
+        assert connector._state(state)["last_failure"]=="invalid_remote_grant_state"
+
+
+def test_authorization_lease_exact_issue_and_duration_bounds_remain_unchanged(setup):
+    connector,req,learning,_,remote,_,_,_=setup
+    now=float(int(time.time()));durable(remote,req,now)
+    remote["authorizationLease"].update(issuedAt=iso(now),expiresAt=iso(now+900))
+    connector.sync_grants(now=now)
+    with learning.transaction() as state:
+        assert [g["authorization_until"] for g in state["grants"].values() if g["authorization_until"] is not None]==[now+900]
+
+
+def test_authorization_lease_diagnostics_reject_unrecognized_free_text():
+    with pytest.raises(ValueError,match="Unknown authorization lease rejection reason"):
+        AuthorizationLeaseRejected("untrusted server content")
 
 
 def test_source_snapshot_requires_current_lease_even_with_another_active_grant(setup):
