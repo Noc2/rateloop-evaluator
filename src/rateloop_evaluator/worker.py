@@ -18,6 +18,7 @@ from .connector import ConnectorRejected, ConnectorUnavailable, RateLoopConnecto
 from .protocol import EvaluationRequest, EvaluationResult
 from .templates import overall_approval
 from .execution import ExecutionBusy, model_execution
+from .presence import WorkerPresence
 
 
 class OutboundWorker:
@@ -34,6 +35,7 @@ class OutboundWorker:
             raise PermissionError("Worker requires explicit receipt upload permission")
         self.connector=connector; self.worker_id=worker_id; self.model_bundle_ids=model_bundle_ids
         self.evaluate=evaluate; self.poll_seconds=poll_seconds; self.heartbeat_seconds=heartbeat_seconds
+        self.presence=WorkerPresence(connector,worker_id,model_bundle_ids)
         self.stop=threading.Event()
         self.last_label_sync=0.0
 
@@ -143,6 +145,7 @@ class OutboundWorker:
                     status=self.connector.sync_grants()
                     if status["mode"] != "shadow": raise PermissionError("Workspace paused")
                     self._heartbeat(job)
+                    self.presence.report("busy")
                 except Exception as error:
                     failed.append(error); return
         thread=threading.Thread(target=renew,name="evaluator-lease",daemon=True); thread.start()
@@ -193,8 +196,14 @@ class OutboundWorker:
             return {"state":"paused"}
         try:
             with model_execution(self.connector.learning):
-                return self._run_available()
+                if self.presence.report("ready")["state"] == "training":
+                    return {"state":"busy","reason":"training"}
+                try: return self._run_available()
+                finally:
+                    try: self.presence.report("ready")
+                    except (ConnectorUnavailable,ConnectorRejected,PermissionError,ValueError): pass
         except ExecutionBusy:
+            self.presence.report("busy")
             return {"state":"busy","reason":"local_model_operation"}
 
     def _run_available(self) -> dict:
@@ -211,6 +220,7 @@ class OutboundWorker:
             if job is None: return {"state":"idle"}
             self._validate_claim(job); self._save(job)
         try:
+            self.presence.report("busy")
             return self._process(job)
         except ConnectorUnavailable:
             raise  # Keep the fencing token for recovery; never duplicate a review.

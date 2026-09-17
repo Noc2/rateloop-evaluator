@@ -35,6 +35,10 @@ def website(setup):
     old_transport=kwargs["transport"]
     def handle(request):
         path=request.url.path
+        if path.endswith("/workers/heartbeat"):
+            calls.append(request)
+            payload=json.loads(request.content)
+            return httpx.Response(200,json={"workerId":payload["workerId"],"state":payload["state"],"lastSeenAt":iso(time.time())})
         if "/jobs/" not in path: return old_transport.handle_request(request)
         calls.append(request)
         if path.endswith("/claim"):

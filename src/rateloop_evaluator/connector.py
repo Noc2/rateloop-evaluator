@@ -37,6 +37,27 @@ _PURPOSE_RIGHTS = {"ai_use":"ai_use","private_learning":"private_training","shar
 class ConnectorUnavailable(RuntimeError):
     """No fresh server result; offline work must not claim an independent audit."""
 
+    def __init__(self, message: str, *, coordination_busy: bool = False):
+        self.coordination_busy = coordination_busy
+        super().__init__(message)
+
+
+def _coordination_busy(response: httpx.Response) -> bool:
+    """Classify one bounded, known retry response without exposing its body."""
+    if response.status_code != 503:
+        return False
+    payload = bytearray()
+    for chunk in response.iter_bytes(chunk_size=4096):
+        if len(payload) + len(chunk) > 4096:
+            return False
+        payload.extend(chunk)
+    try:
+        value = json.loads(payload)
+    except (ValueError, UnicodeError):
+        return False
+    return (isinstance(value, dict) and value.get("code") == "database_coordination_busy"
+            and value.get("retryable") is True)
+
 
 class ConnectorRejected(ValueError):
     def __init__(self, status: int):
@@ -158,7 +179,8 @@ class RateLoopConnector:
                     self._revoke_mirrors("remote_credential_rejected")
                     raise PermissionError("RateLoop credential or scope is no longer authorized")
                 if response.status_code >= 500 or response.status_code == 429:
-                    raise ConnectorUnavailable("RateLoop temporarily unavailable; retry the persisted receipt")
+                    raise ConnectorUnavailable("RateLoop temporarily unavailable; retry the persisted receipt",
+                        coordination_busy=_coordination_busy(response))
                 if not 200 <= response.status_code < 300:
                     raise ConnectorRejected(response.status_code)
                 declared=response.headers.get("content-length")

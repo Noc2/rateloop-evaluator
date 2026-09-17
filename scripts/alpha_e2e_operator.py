@@ -11,7 +11,6 @@ import io
 import json
 from pathlib import Path
 import sys
-import threading
 import time
 
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/"src"))
@@ -22,6 +21,7 @@ from rateloop_evaluator.learning import LearningStore, read_secret, _digest
 from rateloop_evaluator.protocol import EvaluationRequest
 from rateloop_evaluator.storage import RuntimeStore
 from rateloop_evaluator.worker import OutboundWorker
+from rateloop_evaluator.presence import connected_training
 
 
 def call(state_dir: Path, *args) -> dict:
@@ -112,15 +112,9 @@ def run(args):
                         present=present or (result.get("workspaceId")==config["workspaceId"] and result.get("caseId")==args.case_id)
             return {"deleted":deleted and not present,"caseId":args.case_id}
         if args.command=="train-candidate":
-            # The harness drains/stops inference first. Keep permission refresh
-            # independent from the optimizer; expiry still stops every update.
-            stopped=threading.Event()
-            def renew():
-                while not stopped.wait(30):
-                    try: connector.sync_grants()
-                    except Exception: pass  # Existing short lease bounds offline work.
-            thread=threading.Thread(target=renew,daemon=True);thread.start()
-            try:
+            # call() invokes cli.main in this thread, so the shared model lock
+            # safely spans every stage and remains reentrant in each CLI command.
+            with connected_training(connector,worker_id="alpha-e2e-mac",model_bundle_ids=bundles) as check:
                 template_request=json.loads(read_secret(operator_dir/(args.language+"-request.json")))
                 template_request["modelBundleId"]=args.bundle_id[0]
                 request=EvaluationRequest.model_validate(template_request)
@@ -129,23 +123,25 @@ def run(args):
                 candidate_dir=operator_dir/("candidate-"+args.bundle_id[0])
                 trained=call(state_dir,"train","--snapshot-id",snapshot["snapshotId"],"--model-dir",config["modelDir"],
                     "--output",candidate_dir,"--bundle-id",args.bundle_id[0],"--device",config["device"],"--method","lora","--epochs","1","--max-steps","1")
+                check()
                 calibrations=operator_dir/(args.bundle_id[0]+"-calibrations.json")
                 call(state_dir,"calibrate","--snapshot-id",snapshot["snapshotId"],"--model-dir",trained["modelDir"],
                     "--bundle-id",args.bundle_id[0],"--output",calibrations,"--device",config["device"])
+                check()
                 request_file=operator_dir/(args.bundle_id[0]+"-request.json"); write_private(request_file,template_request)
                 policy=operator_dir/(args.bundle_id[0]+"-policy.json")
                 write_private(policy,{"threshold":0.9,"max_false_approval_rate":0.01,"confidence":0.95,"minimum_coverage":0.1})
                 call(state_dir,"register","--model-dir",trained["modelDir"],"--request",request_file,
                     "--snapshot-id",snapshot["snapshotId"],"--calibrations",calibrations,"--selective-policy",policy)
+                check()
                 evidence=operator_dir/(args.bundle_id[0]+"-evidence.json")
                 call(state_dir,"score-test","--bundle-id",args.bundle_id[0],"--output",evidence,"--device",config["device"])
+                check()
                 registration=operator_dir/(args.bundle_id[0]+"-registration.json")
                 call(state_dir,"export-registration","--bundle-id",args.bundle_id[0],"--request",request_file,"--output",registration)
                 return {"registration":json.loads(read_secret(registration)),"modelBundleId":args.bundle_id[0],
                     "snapshotId":snapshot["snapshotId"],"optimizerSteps":trained["optimizerSteps"],"synthetic":True,
                     "mode":"shadow","qualityClaim":False,"evidenceFile":str(evidence)}
-            finally:
-                stopped.set();thread.join(timeout=35)
         raise ValueError("Unknown operator command")
     finally: connector.close()
 
