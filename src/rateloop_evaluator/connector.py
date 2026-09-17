@@ -395,6 +395,11 @@ class RateLoopConnector:
         with self.learning.transaction() as database:
             self._case_live(database,receipt["result"]["caseId"])
         receipt_id="receipt_"+self.namespace[:16]+"_"+hashlib.sha256((self.namespace+receipt["result"]["resultCommitment"]).encode()).hexdigest()
+        acknowledged=self.runtime.acknowledgment(receipt_id)
+        if acknowledged is not None:
+            if acknowledged.get("receiptHash") != commitment(receipt,"rateloop.product-evaluator.v2"):
+                raise ValueError("Persisted receipt acknowledgment has a different commitment")
+            return receipt_id
         if job_context is not None:
             if not isinstance(job_context,dict) or set(job_context)!={"jobId","workerId","leaseToken"}:
                 raise ValueError("Job receipts require their exact execution fence")

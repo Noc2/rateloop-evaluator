@@ -170,6 +170,18 @@ def test_lost_completion_ack_does_not_resubmit_a_completed_case(website):
     assert worker._saved() is None and backend.calls==1
 
 
+def test_retry_after_receipt_ack_does_not_requeue_delivered_metadata(website):
+    worker,_,backend,_,behavior,calls=website
+    behavior["complete_status"]=503
+    with pytest.raises(ConnectorUnavailable): worker.run_once()
+    behavior["complete_status"]=200
+    assert worker.run_once()["state"]=="completed"
+    with worker.connector.runtime.connect() as db:
+        assert db.execute("SELECT COUNT(*) FROM outbox").fetchone()[0]==0
+    assert backend.calls==1
+    assert len([r for r in calls if r.url.path.endswith("/receipts")])==1
+
+
 @pytest.mark.parametrize("change",["source","question","agent"])
 def test_changed_content_or_review_identity_rejected_before_inference(website,change):
     worker,_,backend,_,behavior,_=website
