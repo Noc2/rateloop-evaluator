@@ -26,3 +26,19 @@ Service responsibilities: strict schema and token limits, tenant tokens, deadlin
 feedback and optional approved-metadata outbox. Learning/registry modules expose their own small documented functions;
 the service uses those functions rather than duplicating grant checks. Model/backend/training checks require real
 local hardware before claiming support. Synthetic predictors are tests only and never selectable by a runtime flag.
+
+The outbound website protocol uses `/api/assurance/v2/evaluations/jobs/claim`, followed by lease-scoped
+`/jobs/{jobId}/content`, `/heartbeat`, `/complete` and `/fail`. Claims contain metadata only. Content returns
+the exact portable request, original `createdAt`, `retainForTraining`, committed server-selected audit and agent identity.
+Job leases last 120 seconds and fencing headers bind receipts to the current worker: `X-Evaluator-Job`,
+`X-Evaluator-Worker`, `X-Evaluator-Lease`. Results remain hidden from review surfaces until the independent answer freezes.
+
+Grant synchronization can include immutable durable `consents` and a distinct recipient-bound `authorizationLease`
+of at most 900 seconds. Stable consent revisions, explicit fields, template commitments and model bundle IDs determine
+training lineage. Lease renewal cannot widen those scopes or revive revoked consent. Explicit `deletedCases` tombstones
+identify the case records to erase; credential rejection alone is not a deletion instruction. See the connector guide
+for legacy grant compatibility and the operations guide for workspace-erasure boundaries.
+
+Portable connector audit calls require the existing `frozen_question_hash` from the human-review schema, not just the
+question prompt. Source and suggestion hashes separately bind their exact UTF-8 content. Website workers also enforce
+the frozen `customer-reply-approval` EN/DE templates; template translations remain separate snapshot scopes.

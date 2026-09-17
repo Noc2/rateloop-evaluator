@@ -5,6 +5,7 @@ import pytest
 
 from test_connector import setup, iso, evaluate, export_labels
 from rateloop_evaluator.protocol import commitment, utc_now
+from rateloop_evaluator.templates import overall_approval
 
 
 def durable(remote, req, now):
@@ -92,3 +93,27 @@ def test_exposure_before_frozen_answer_is_rejected(setup):
     result=connector.fetch_and_import_labels("server-grant-1",question_id="tone",template_commitment=req.template_commitment(),
         outcome_labels={"positive":"suitable","negative":"unsuitable"})
     assert result["imported"]==0 and len(result["rejected"])==1
+
+
+def test_snapshot_cli_and_store_share_exact_multilingual_scope(setup,monkeypatch):
+    from argparse import Namespace
+    from rateloop_evaluator import cli
+    connector,req,learning,_,_,_,_,_=setup
+    learning.add_grant(workspace_id=req.workspaceId,rights=["private_training"],expires_at=time.time()+600,evidence="Synthetic translated templates")
+    for language in ("en","de"):
+        for index in range(3):
+            item=req.model_copy(deep=True);item.template=overall_approval(language)
+            item.caseId=f"case-{language}-{index}";item.sourceGroupId=item.caseId;item.input.text+=item.caseId
+            evaluate(learning,item)
+            learning.add_feedback(workspace_id=req.workspaceId,evaluation_id=item.input_commitment(),input_commitment=item.input_commitment(),
+                template_commitment=item.template_commitment(),annotator_id="independent-human",labels={"overall_approval":"approved"},
+                exposed_to_ai=False,independent_human=True)
+    with pytest.raises(ValueError,match="conflicting"):
+        learning.create_snapshot(req.workspaceId,"customer-reply-approval",1)
+    monkeypatch.setattr(cli,"state",lambda _: (learning.root,{"workspaceId":req.workspaceId},learning,None))
+    for language in ("en","de"):
+        digest=commitment(overall_approval(language).model_dump(),"rateloop.evaluator.template.v1")
+        result=cli.run(Namespace(command="snapshot",template="customer-reply-approval",version=1,purpose="private_training",template_commitment=digest))
+        snapshot=learning.load_snapshot(result["snapshotId"],req.workspaceId)
+        assert result["groups"]==3
+        assert {row["template"]["language"] for part in ("train","calibration","test") for row in snapshot[part]}=={language}
