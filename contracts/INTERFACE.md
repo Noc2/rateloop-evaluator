@@ -3,7 +3,7 @@
 Portable request/result models live in `rateloop_evaluator.protocol`; JSON Schemas and TypeScript validators are derived
 from their published schema. Wire fields use camelCase. No private product services are copied into this repository.
 
-`EvaluationRequest`: schemaVersion `rateloop.evaluator.request.v1`, workspaceId, caseId, idempotencyKey,
+`EvaluationRequest`: schemaVersion `rateloop.evaluator.request.v1`, workspaceId, caseId, sourceGroupId (nullable, conversation/document identity), idempotencyKey,
 template (id, version, language, questions[{id,text,labels[{id,description}],passLabels}], maxTokens),
 input {text,context,evidence}, modelBundleId, deadlineMs.
 
@@ -12,7 +12,7 @@ inputCommitment, templateCommitment, outcome pass/fail/uncertain, abstainReason,
 [{questionId,label,rawScores,probabilities,calibrationId}], durationMs, observedAt, resultCommitment.
 
 Scores are advisory without valid bundle/template/language calibration. Policy controls human review separately.
-Input commitment binds workspace, case, template, input and model bundle, excluding retry key and deadline.
+Input commitment binds workspace, case, source group, template, input and model bundle, excluding retry key and deadline.
 Commitments use SHA-256 of UTF-8 `domain + "\n"` followed by RFC8785 canonical JSON bytes. Domains are
 `rateloop.evaluator.input.v1`, `rateloop.evaluator.template.v1` and `rateloop.evaluator.result.v1` respectively.
 Result commitment covers every result field except resultCommitment. Non-finite and unsafe integers are rejected.

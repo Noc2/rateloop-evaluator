@@ -158,6 +158,19 @@
       "title": "Caseid",
       "type": "string"
     },
+    "sourceGroupId": {
+      "anyOf": [
+        {
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Sourcegroupid"
+    },
     "idempotencyKey": {
       "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{7,199}$",
       "title": "Idempotencykey",

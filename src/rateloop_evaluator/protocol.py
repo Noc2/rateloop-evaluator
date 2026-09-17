@@ -67,6 +67,7 @@ class EvaluationRequest(WireModel):
     schemaVersion: Literal["rateloop.evaluator.request.v1"] = "rateloop.evaluator.request.v1"
     workspaceId: Identifier
     caseId: Identifier
+    sourceGroupId: Identifier | None = None
     idempotencyKey: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,199}$")
     template: Template
     input: CaseInput

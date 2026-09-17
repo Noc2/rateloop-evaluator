@@ -50,3 +50,15 @@ def test_result_commitment_and_calibration_fail_closed():
     source = "import {parseEvaluationResult} from './contracts/evaluator.ts'; console.log(parseEvaluationResult(JSON.parse(process.argv[1])).resultCommitment);"
     out = subprocess.run(["node", "--experimental-strip-types", "--input-type=module", "-e", source, result.model_dump_json()], cwd=ROOT, check=True, capture_output=True, text=True)
     assert out.stdout.strip() == result.resultCommitment
+
+
+def test_typescript_rejects_inherited_label_names():
+    source = """
+import assert from 'node:assert/strict';
+import {parseEvaluationResult,commitment} from './contracts/evaluator.ts';
+const payload = {schemaVersion:'rateloop.evaluator.result.v1',workspaceId:'w',caseId:'c',modelBundleId:'b',
+ inputCommitment:'sha256:'+'a'.repeat(64),templateCommitment:'sha256:'+'b'.repeat(64),outcome:'uncertain',abstainReason:'uncalibrated',
+ criteria:[{questionId:'q',label:'constructor',rawScores:{yes:.5,no:.5},probabilities:null,calibrationId:null}],durationMs:1,observedAt:'2026-09-17T12:00:00.000Z'};
+assert.throws(()=>parseEvaluationResult({...payload,resultCommitment:commitment(payload,'rateloop.evaluator.result.v1')}),/predicted label/);
+"""
+    subprocess.run(["node","--experimental-strip-types","--input-type=module","-e",source],cwd=ROOT,check=True,capture_output=True,text=True)

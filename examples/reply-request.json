@@ -2,6 +2,7 @@
   "schemaVersion": "rateloop.evaluator.request.v1",
   "workspaceId": "example-workspace",
   "caseId": "synthetic-reply-001",
+  "sourceGroupId": "synthetic-conversation-001",
   "idempotencyKey": "synthetic-reply-001-v1",
   "template": {
     "id": "customer-reply-tone", "version": 1, "language": "en", "maxTokens": 512,

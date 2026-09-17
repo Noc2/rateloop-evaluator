@@ -1,0 +1,9 @@
+{
+  "name": "@rateloop/evaluator-client",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "engines": {"node": ">=24"},
+  "exports": "./index.ts"
+}

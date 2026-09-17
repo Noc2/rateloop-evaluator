@@ -6,7 +6,7 @@ export type Question = { id: string; text: string; labels: { id: string; descrip
 export type Template = { id: string; version: number; language: "en" | "de"; questions: Question[]; maxTokens: number };
 export type EvaluationRequest = {
   schemaVersion: "rateloop.evaluator.request.v1"; workspaceId: string; caseId: string; idempotencyKey: string;
-  template: Template; input: { text: string; context: string; evidence: string }; modelBundleId: string; deadlineMs: number;
+  sourceGroupId: string | null; template: Template; input: { text: string; context: string; evidence: string }; modelBundleId: string; deadlineMs: number;
 };
 export type Criterion = { questionId: string; label: string; rawScores: Record<string, number>;
   probabilities: Record<string, number> | null; calibrationId: string | null };
@@ -74,7 +74,7 @@ export function parseEvaluationResult(value: unknown): EvaluationResult {
     const c = object(item, ["questionId", "label", "rawScores", "probabilities", "calibrationId"]);
     const q = identifier(c.questionId); const label = identifier(c.label);
     if (questionIds.has(q)) fail("duplicate question"); questionIds.add(q);
-    const raw = scores(c.rawScores); if (!(label in raw)) fail("predicted label");
+    const raw = scores(c.rawScores); if (!Object.hasOwn(raw, label)) fail("predicted label");
     if ((c.probabilities === null) !== (c.calibrationId === null)) fail("calibration binding");
     if (c.probabilities !== null) {
       identifier(c.calibrationId); const p = scores(c.probabilities);
