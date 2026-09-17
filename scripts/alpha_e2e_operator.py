@@ -1,7 +1,7 @@
 """Privileged synthetic Alpha acceptance driver using the real public CLI/model.
 
 No predictor, label or hosted runtime is replaced. The browser harness supplies
-independent human responses. Keep its configuration, state and output private.
+synthetic reviewer responses. Keep its configuration, state and output private.
 """
 from __future__ import annotations
 
@@ -22,6 +22,7 @@ from rateloop_evaluator.protocol import EvaluationRequest
 from rateloop_evaluator.storage import RuntimeStore
 from rateloop_evaluator.worker import OutboundWorker
 from rateloop_evaluator.presence import connected_training
+from rateloop_evaluator.execution import model_execution
 
 
 def call(state_dir: Path, *args) -> dict:
@@ -76,6 +77,18 @@ def run(args):
         return call(state_dir,"worker","--config",connector_file,"--worker-id","alpha-e2e-mac","--device",config["device"],"--once",*flags)
     connector=connect(config,state_dir)
     try:
+        if args.command=="rollback":
+            if len(args.bundle_id)!=1: raise ValueError("Choose exactly one rollback bundle")
+            with model_execution(connector.learning):
+                if connector.sync_grants()["mode"]!="shadow":
+                    raise PermissionError("Connected rollback requires current shadow-mode authorization")
+                request=EvaluationRequest.model_validate(json.loads(read_secret(operator_dir/(args.language+"-request.json"))))
+                expected=args.bundle_id[0]
+                result=call(state_dir,"rollback","--template-commitment",request.template_commitment(),
+                    "--language",args.language,"--expected-bundle-id",expected)
+                if result["bundle_id"]!=expected: raise RuntimeError("Rollback did not restore the expected bundle")
+                return {"modelBundleId":expected,"activeModelBundleId":result["bundle_id"],
+                    "templateCommitment":result["template_commitment"],"language":result["language"],"mode":result["mode"]}
         connector.sync_grants()
         if args.command=="renewal-check":
             def snapshot():
@@ -155,8 +168,11 @@ if __name__=="__main__":
     worker=commands.add_parser("worker-once");worker.add_argument("--bundle-id",action="append")
     train=commands.add_parser("train-candidate");train.add_argument("--language",choices=["en","de"],default="en")
     train.add_argument("--bundle-id",action="append",required=True)
+    rollback=commands.add_parser("rollback");rollback.add_argument("--language",choices=["en","de"],default="en")
+    rollback.add_argument("--bundle-id",action="append",required=True)
     arguments=parser.parse_args()
     if arguments.command=="train-candidate" and len(arguments.bundle_id)!=1: parser.error("Choose exactly one candidate bundle")
+    if arguments.command=="rollback" and len(arguments.bundle_id)!=1: parser.error("Choose exactly one rollback bundle")
     try: print(json.dumps(run(arguments),allow_nan=False))
     except Exception as error:
         print("Alpha operator failed: "+str(error),file=sys.stderr);sys.exit(1)

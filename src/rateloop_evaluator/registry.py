@@ -22,6 +22,7 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey, Ed25519PublicKey
 
 from .calibration import apply_temperature, false_approval_upper_bound, validate_calibration
+from .execution import model_execution
 from .learning import LearningStore, _json, read_secret
 
 
@@ -283,14 +284,17 @@ class BundleRegistry:
                 raise PermissionError("Selective evidence expired; human review is required until revalidation")
             return deepcopy({k:v for k,v in deployment.items() if k != "previous"})
 
-    def rollback(self, workspace_id: str, template_commitment: str, language: str, *, now: float | None = None) -> dict:
+    def rollback(self, workspace_id: str, template_commitment: str, language: str, *, now: float | None = None,
+                 expected_bundle_id: str | None = None) -> dict:
         current = time.time() if now is None else now
         key = hashlib.sha256(_json([workspace_id, template_commitment, language])).hexdigest()
-        with self.store.transaction() as state:
+        with model_execution(self.store), self.store.transaction() as state:
             deployment = state["deployments"].get(key)
             if not deployment or not deployment.get("previous"):
                 raise ValueError("No previous deployment is available")
             previous = deployment["previous"]
+            if expected_bundle_id is not None and previous["bundle_id"] != expected_bundle_id:
+                raise ValueError("Previous deployment does not match the expected bundle")
             self._get(state, previous["bundle_id"], workspace_id, current)
             if previous["mode"] == "selective" and (not previous.get("gate") or previous["gate"].get("valid_until", 0) <= current):
                 raise PermissionError("Rollback cannot restore expired selective evidence")

@@ -61,6 +61,7 @@ def main(argv=None):
     score_test = commands.add_parser("score-test"); score_test.add_argument("--bundle-id",required=True); score_test.add_argument("--output",required=True); score_test.add_argument("--device",choices=["cpu","mps","cuda"],default="cpu"); score_test.add_argument("--valid-hours",type=float,default=24)
     promote = commands.add_parser("promote"); promote.add_argument("--bundle-id",required=True); promote.add_argument("--template-commitment",required=True); promote.add_argument("--language",choices=["en","de"],required=True); promote.add_argument("--mode",choices=["shadow","assisted","selective"],default="shadow"); promote.add_argument("--evidence")
     rollback = commands.add_parser("rollback"); rollback.add_argument("--template-commitment",required=True); rollback.add_argument("--language",choices=["en","de"],required=True)
+    rollback.add_argument("--expected-bundle-id",help="Refuse rollback unless the previous deployment is this exact bundle")
     benchmark = commands.add_parser("benchmark"); benchmark.add_argument("--model-dir",required=True); benchmark.add_argument("--request",required=True); benchmark.add_argument("--device",choices=["cpu","mps","cuda"],default="cpu"); benchmark.add_argument("--iterations",type=int,default=20); benchmark.add_argument("--output",required=True)
     benchmark.add_argument("--backend",choices=["gliner","gliclass"],default="gliner")
     for name in ("worker","install-launchd"):
@@ -326,7 +327,8 @@ def run(args):
         return {"registrationFile":str(Path(args.output).resolve()),"contentIncluded":False,"mode":active["mode"]}
     if args.command == "promote":
         return registry.promote(args.bundle_id,workspace,template_commitment=args.template_commitment,language=args.language,mode=args.mode,evidence=read_json(args.evidence) if args.evidence else None)
-    if args.command == "rollback": return registry.rollback(workspace,args.template_commitment,args.language)
+    if args.command == "rollback": return registry.rollback(workspace,args.template_commitment,args.language,
+        expected_bundle_id=args.expected_bundle_id)
     if args.command == "serve":
         import uvicorn
         from .backends import GLiNERBackend
