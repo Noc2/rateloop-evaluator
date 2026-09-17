@@ -141,6 +141,8 @@ class LearningStore:
                          template_commitment: str | None = None) -> list[str]:
         if right not in RIGHTS or not workspace_id or not case_id or not template_id or not fields:
             raise PermissionError("A known right and complete evaluation scope are required")
+        if _digest([workspace_id, case_id]) in state.get("deleted_cases", {}):
+            raise PermissionError("This case was deleted; submit new work under a new case ID")
         matches = []
         for grant_id, grant in state["grants"].items():
             if grant["workspace_id"] != workspace_id or right not in grant["rights"] or grant["revoked_at"] is not None or grant["expires_at"] <= now:
@@ -434,7 +436,18 @@ class LearningStore:
         """
         current = time.time() if now is None else now
         with self.transaction() as state:
+            state.setdefault("deleted_cases", {})[_digest([workspace_id, case_id])] = current
             ids = [k for k,v in state["evaluations"].items() if v["workspace_id"] == workspace_id and v["case_id"] == case_id]
+            commitments = {state["evaluations"][key]["input_commitment"] for key in ids}
+            feedback_ids = {k for k,v in state["feedback"].items() if v["evaluation_id"] in ids}
+            for connector in state.get("connectors", {}).values():
+                results = connector.get("results", {})
+                removed = {k for k,v in results.items() if v.get("workspaceId") == workspace_id and v.get("caseId") == case_id}
+                matching_keys = commitments | removed
+                connector["results"] = {k:v for k,v in results.items() if k not in matching_keys}
+                connector["audits"] = {k:v for k,v in connector.get("audits", {}).items()
+                    if k not in matching_keys and not (connector.get("workspace_id") == workspace_id and v.get("case_id") == case_id)}
+                connector["imports"] = {k:v for k,v in connector.get("imports", {}).items() if v.get("feedback_id") not in feedback_ids}
             for evaluation_id in ids:
                 self._invalidate_evaluation(state, evaluation_id, current, "source_deleted")
                 del state["evaluations"][evaluation_id]

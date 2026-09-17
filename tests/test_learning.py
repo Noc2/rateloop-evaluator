@@ -260,3 +260,34 @@ def test_feedback_and_snapshots_require_explicit_human_label_field_scope(store):
     # The still-active input-only grant cannot authorize a replacement snapshot.
     with pytest.raises(ValueError,match="Insufficient independent"):
         store.create_snapshot("workspace-a","reply","1")
+
+
+def test_deleted_case_tombstone_blocks_reingestion_across_future_grants(store):
+    grant(store)
+    row,_=example(store,1)
+    store.delete_case("workspace-a",row["case_id"])
+    grant(store)
+    with pytest.raises(PermissionError,match="was deleted"):
+        example(store,1)
+    with pytest.raises(PermissionError,match="was deleted"):
+        store.check_right(workspace_id="workspace-a",right="ai_use",case_id=row["case_id"],template_id="reply",fields=FIELDS)
+    assert example(store,2)
+    grant(store,workspace="workspace-b")
+    assert example(store,1,workspace="workspace-b")
+
+
+def test_deletion_purges_connector_metadata_and_import_references(store):
+    grant(store)
+    row,feedback=example(store,1)
+    with store.transaction() as database:
+        database["connectors"]={"connection-a":{"workspace_id":"workspace-a",
+            "results":{row["input_commitment"]:{"workspaceId":"workspace-a","caseId":row["case_id"]}},
+            "audits":{row["input_commitment"]:{"case_id":row["case_id"]},"pre-score-only":{"case_id":row["case_id"]}},
+            "imports":{"imported":{"feedback_id":feedback["id"]}}},
+            "other-workspace":{"workspace_id":"workspace-b","results":{},"audits":{"another":{"case_id":row["case_id"]}},"imports":{}}}
+    store.delete_case("workspace-a",row["case_id"])
+    with store.transaction() as database:
+        assert database["connectors"]["connection-a"]["results"]=={}
+        assert database["connectors"]["connection-a"]["audits"]=={}
+        assert database["connectors"]["connection-a"]["imports"]=={}
+        assert database["connectors"]["other-workspace"]["audits"]
