@@ -1,0 +1,39 @@
+{
+  "schemaVersion": "rateloop.evaluator.request.v1",
+  "workspaceId": "example-workspace",
+  "caseId": "synthetic-reply-001",
+  "sourceGroupId": "synthetic-conversation-001",
+  "idempotencyKey": "synthetic-reply-001-v1",
+  "template": {
+    "id": "customer-reply-approval",
+    "version": 1,
+    "language": "de",
+    "questions": [
+      {
+        "id": "overall_approval",
+        "text": "Würden Sie diese Antwort so an den Kunden senden?",
+        "labels": [
+          {
+            "id": "approved",
+            "description": "Die Antwort kann unverändert gesendet werden."
+          },
+          {
+            "id": "rejected",
+            "description": "Die Antwort muss vor dem Senden überarbeitet werden."
+          }
+        ],
+        "passLabels": [
+          "approved"
+        ]
+      }
+    ],
+    "maxTokens": 512
+  },
+  "input": {
+    "text": "Ihre Erstattung wurde genehmigt und trifft innerhalb von fünf Werktagen ein.",
+    "context": "Der Kunde fragt nach einer genehmigten Erstattung. Die Bearbeitungszeit beträgt fünf Werktage.",
+    "evidence": ""
+  },
+  "modelBundleId": "gliner25-multi-shadow-v1",
+  "deadlineMs": 5000
+}

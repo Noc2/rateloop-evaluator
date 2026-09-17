@@ -128,7 +128,8 @@ def test_case_erasure_clears_runtime_and_prevents_inflight_reinsertion(setup):
     client,body,store,runtime,_,_ = setup
     result = client.post("/v1/evaluate",json=body).json()
     runtime.enqueue("delete-receipt",{"result":result})
-    assert runtime.delete_case(body["workspaceId"],body["caseId"]) == {"results":1,"outbox":1}
+    runtime.acknowledge("acked-receipt",{"workspaceId":body["workspaceId"],"caseId":body["caseId"],"receiptId":"server-receipt"})
+    assert runtime.delete_case(body["workspaceId"],body["caseId"]) == {"results":1,"outbox":1,"acknowledgments":1}
     assert runtime.pending() == []
     with pytest.raises(PermissionError): runtime.enqueue("later-receipt",{"result":result})
     with pytest.raises(PermissionError): runtime.put(body["workspaceId"],body["idempotencyKey"],result["inputCommitment"],{"result":result})

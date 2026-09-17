@@ -1,0 +1,39 @@
+{
+  "schemaVersion": "rateloop.evaluator.request.v1",
+  "workspaceId": "example-workspace",
+  "caseId": "synthetic-reply-001",
+  "sourceGroupId": "synthetic-conversation-001",
+  "idempotencyKey": "synthetic-reply-001-v1",
+  "template": {
+    "id": "customer-reply-approval",
+    "version": 1,
+    "language": "en",
+    "questions": [
+      {
+        "id": "overall_approval",
+        "text": "Would you send this reply to the customer as it stands?",
+        "labels": [
+          {
+            "id": "approved",
+            "description": "The reply can be sent as written."
+          },
+          {
+            "id": "rejected",
+            "description": "The reply needs changes before sending."
+          }
+        ],
+        "passLabels": [
+          "approved"
+        ]
+      }
+    ],
+    "maxTokens": 512
+  },
+  "input": {
+    "text": "Thank you for contacting us. Your refund was approved and will arrive within five working days.",
+    "context": "The customer asks when an approved refund will arrive.",
+    "evidence": ""
+  },
+  "modelBundleId": "gliner25-multi-shadow-v1",
+  "deadlineMs": 5000
+}

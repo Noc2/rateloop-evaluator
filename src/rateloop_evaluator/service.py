@@ -194,4 +194,7 @@ def create_app(*, backend: Backend, bundle: dict, learning: LearningStore, runti
         except KeyError: raise HTTPException(404,detail="Evaluation not found") from None
         except ValueError: raise HTTPException(422,detail="Invalid feedback") from None
 
+    # The outbound worker calls the same authenticated evaluation core in-process;
+    # it does not expose a second listener or duplicate inference policy.
+    app.state.evaluate = evaluate
     return app

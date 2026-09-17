@@ -389,7 +389,8 @@ class RateLoopConnector:
                     or not re.fullmatch(r"aev_[0-9a-f]{40}",str(response.get("receiptId", "")))
                     or response.get("policy",{}).get("mayReduceHumanReview") is not False):
                     raise ValueError("Receipt acknowledgment does not match the submitted result")
-                self.runtime.delivered(receipt_id); delivered+=1
+                self.runtime.acknowledge(receipt_id,{"workspaceId":self.workspace_id,"caseId":receipt["result"]["caseId"],
+                    "receiptId":response["receiptId"],"receiptHash":response["receiptHash"]}); delivered+=1
             except ConnectorUnavailable:
                 self.runtime.retry(receipt_id); retried+=1
             except PermissionError:

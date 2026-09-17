@@ -62,6 +62,17 @@ def main(argv=None):
     rollback = commands.add_parser("rollback"); rollback.add_argument("--template-commitment",required=True); rollback.add_argument("--language",choices=["en","de"],required=True)
     benchmark = commands.add_parser("benchmark"); benchmark.add_argument("--model-dir",required=True); benchmark.add_argument("--request",required=True); benchmark.add_argument("--device",choices=["cpu","mps","cuda"],default="cpu"); benchmark.add_argument("--iterations",type=int,default=20); benchmark.add_argument("--output",required=True)
     benchmark.add_argument("--backend",choices=["gliner","gliclass"],default="gliner")
+    for name in ("worker","install-launchd"):
+        command=commands.add_parser(name)
+        command.add_argument("--config",required=True,help="Private outbound connector JSON, mode 0600")
+        command.add_argument("--worker-id",required=True)
+        command.add_argument("--bundle-id",action="append",required=True)
+        command.add_argument("--device",choices=["cpu","mps","cuda"],default="cpu")
+        command.add_argument("--poll-seconds",type=float,default=5)
+        if name=="worker": command.add_argument("--once",action="store_true")
+        else:
+            command.add_argument("--output",default="~/Library/LaunchAgents/ai.rateloop.evaluator.worker.plist")
+            command.add_argument("--load",action="store_true",help="Load the installed worker into this macOS login session")
     for name in ("connect-sync","connect-flush","connect-evaluate","connect-import-labels","connect-release"):
         command = commands.add_parser(name); command.add_argument("--config",required=True,help="Private connector JSON, mode 0600")
         if name == "connect-evaluate":
@@ -108,7 +119,11 @@ def run(args):
         write_private(args.output,report)
         return {"report":str(Path(args.output).resolve()),"qualityClaim":False}
     root,config,store,registry = state(args); workspace = config["workspaceId"]
-    if args.command.startswith("connect-"):
+    if args.command == "install-launchd":
+        from .worker import install_launchd
+        return install_launchd(state_dir=root,config_path=args.config,worker_id=args.worker_id,bundle_ids=args.bundle_id,
+            device=args.device,poll_seconds=args.poll_seconds,output=args.output,load=args.load)
+    if args.command.startswith("connect-") or args.command == "worker":
         import httpx
         from urllib.parse import urlsplit
         from .connector import RateLoopConnector, ConnectorUnavailable
@@ -122,6 +137,28 @@ def run(args):
             runtime=RuntimeStore(root / "runtime.sqlite",config["encryptionKey"]),metadata_upload_enabled=connection["metadataUploadEnabled"],
             allow_insecure_loopback=connection.get("allowInsecureLoopback",False))
         try:
+            if args.command == "worker":
+                from .backends import GLiNERBackend
+                from .service import Principal, create_app
+                from .worker import OutboundWorker, run_worker
+                apps={}
+                identity=Principal(workspace,frozenset({"evaluate"}))
+                def evaluate_job(request):
+                    bundle_id=request.modelBundleId
+                    if bundle_id not in apps:
+                        record=registry.get(bundle_id,workspace)
+                        backend=GLiNERBackend(record["artifact_root"],args.device)
+                        backend.load()
+                        def validate(value):
+                            registry.get(bundle_id,workspace,verify_artifacts=False)
+                            active=registry.active(workspace,value.template_commitment(),value.template.language,verify_artifacts=False)
+                            if active["bundle_id"] != bundle_id: raise PermissionError("Queued model is no longer active")
+                            return active
+                        apps[bundle_id]=create_app(backend=backend,bundle=record["manifest"],learning=store,runtime=connector.runtime,
+                            tokens={"0"*64:identity},validate_bundle=validate)
+                    return apps[bundle_id].state.evaluate(request,identity)
+                return run_worker(OutboundWorker(connector,worker_id=args.worker_id,model_bundle_ids=args.bundle_id,
+                    evaluate=evaluate_job,poll_seconds=args.poll_seconds),root,once=args.once)
             if args.command == "connect-sync": return connector.sync_grants()
             if args.command == "connect-flush": return connector.flush()
             if args.command == "connect-release": return connector.release_result(args.input_commitment)

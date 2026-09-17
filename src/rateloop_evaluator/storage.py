@@ -23,6 +23,7 @@ class RuntimeStore:
             db.execute("CREATE TABLE IF NOT EXISTS results (scope TEXT PRIMARY KEY, digest TEXT NOT NULL, payload BLOB NOT NULL, expires REAL NOT NULL)")
             db.execute("CREATE TABLE IF NOT EXISTS outbox (id TEXT PRIMARY KEY, payload BLOB NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, next_attempt REAL NOT NULL DEFAULT 0)")
             db.execute("CREATE TABLE IF NOT EXISTS deleted_cases (scope TEXT PRIMARY KEY)")
+            db.execute("CREATE TABLE IF NOT EXISTS acknowledgments (id TEXT PRIMARY KEY,payload BLOB NOT NULL)")
         os.chmod(self.path, 0o600)
 
     @contextmanager
@@ -80,6 +81,18 @@ class RuntimeStore:
     def delivered(self, receipt_id: str) -> None:
         with self.connect() as db: db.execute("DELETE FROM outbox WHERE id=?", (receipt_id,))
 
+    def acknowledge(self, receipt_id: str, value: dict) -> None:
+        with self.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            self._check_not_deleted(db,value)
+            db.execute("INSERT OR REPLACE INTO acknowledgments VALUES(?,?)",(receipt_id,self.encode(value)))
+            db.execute("DELETE FROM outbox WHERE id=?",(receipt_id,))
+
+    def acknowledgment(self, receipt_id: str) -> dict | None:
+        with self.connect() as db:
+            row=db.execute("SELECT payload FROM acknowledgments WHERE id=?",(receipt_id,)).fetchone()
+        return self.decode(row[0]) if row else None
+
     def retry(self, receipt_id: str) -> None:
         with self.connect() as db:
             row = db.execute("SELECT attempts FROM outbox WHERE id=?", (receipt_id,)).fetchone()
@@ -93,11 +106,11 @@ class RuntimeStore:
                 raise PermissionError("This case was deleted; it cannot be queued or cached again")
 
     def delete_case(self, workspace: str, case_id: str) -> dict:
-        removed = {"results":0,"outbox":0}
+        removed = {"results":0,"outbox":0,"acknowledgments":0}
         with self.connect() as db:
             db.execute("BEGIN IMMEDIATE")
             db.execute("INSERT OR IGNORE INTO deleted_cases(scope) VALUES(?)",(self.scope(workspace,case_id),))
-            for table, key in (("results","scope"),("outbox","id")):
+            for table, key in (("results","scope"),("outbox","id"),("acknowledgments","id")):
                 for row_id, encrypted in db.execute(f"SELECT {key},payload FROM {table}").fetchall():
                     payload = self.decode(encrypted); result = payload.get("result",payload)
                     if result.get("workspaceId") == workspace and result.get("caseId") == case_id:
