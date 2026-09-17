@@ -52,7 +52,11 @@ Export the registered bundle's metadata:
 .venv/bin/rateloop-evaluator export-registration --bundle-id gliner25-multi-shadow-v1 --request examples/reply-request.json --output /private/path/bundle-registration.json
 ```
 
-In the updated RateLoop workspace's **Evaluations** tab, import this file and enable the local evaluator. The connection sends commitments, labels, scores and model provenance; it does not send raw examples. Use a workspace API key with the necessary evaluation/telemetry scopes. Learning grants are separately issued to that exact credential, bundle and template, expire within 24 hours, and can be revoked.
+In the updated RateLoop workspace's **Evaluations** tab, import this file and enable the evaluator. Use a workspace API key with evaluation and telemetry scopes. For website jobs, use `examples/approval-request-en.json` or `examples/approval-request-de.json`, containing the same overall approval question as the human review; replace placeholder workspace and bundle IDs before registration.
+
+The outbound `worker` command pulls authorized website cases over HTTPS, runs the pinned local model, posts fenced advisory results and synchronizes independently frozen human judgments. No public Mac port is opened. Website cases already submitted to RateLoop are processed on the explicitly selected operator's hardware; this is not a fully offline website. Results and provenance return as metadata; private training examples and weights stay local. [Install and run the worker](docs/operations.md#outbound-website-worker).
+
+AI processing and private learning are separate durable owner permissions with exact credential, model and template scopes. Execution leases last at most 15 minutes and renew while connected. Enabling learning later does not retain previously queued inputs. Withdrawal retires affected models; case-erasure tombstones delete their retained examples. Legacy grants keep their original finite expiry.
 
 The [connector guide](docs/connector.md) explains configuration, durable receipt delivery, blind audit selection and importing human outcomes. The [TypeScript client](clients/typescript/index.ts) calls your local service directly from a trusted server or agent. The [versioned interface](contracts/INTERFACE.md) and JSON schemas define cross-language commitments. The RateLoop SDK carries the same result contract.
 

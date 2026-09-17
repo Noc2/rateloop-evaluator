@@ -29,3 +29,30 @@ Back up only with workers/training stopped. Test restoring a copy onto a separat
 One model worker serializes inference and returns 429 when busy; callers retry with the same idempotency key. Deadlines prevent late approval but do not interrupt a GPU kernel. The initial encrypted whole-state learning store targets a single-host pilot. Its per-operation cost grows with retained data; benchmark full HTTP latency with the intended dataset and concurrency before scaling. Keep administrative training out of the inference process and schedule it separately if both share one GPU.
 
 The signed model registry and evaluation gates do not replace authentication of reviewers, representative sampling, customer consent, host hardening or a customer acceptance exercise. Full offline human-review UI, federated aggregation, multimodal judgments and hosted shared training are subsequent products; no private data is transferred to implement them implicitly.
+
+## Outbound website worker
+
+Use a dedicated private state directory initialized with the actual workspace ID. Provision and register the overall-approval request for each intended language, then import the exported registration into the workspace. The connector's agent and version IDs must match the selected website integration. The workspace credential needs `evaluation:read` and `telemetry:write`; the website creates the authorized review before worker inference.
+
+```sh
+rateloop-evaluator --state-dir /private/evaluator init --workspace WORKSPACE_ID
+rateloop-evaluator --state-dir /private/evaluator register --model-dir /private/models/gliner25 --request /private/approval-request.json
+rateloop-evaluator --state-dir /private/evaluator export-registration --bundle-id BUNDLE_ID --request /private/approval-request.json --output /private/registration.json
+rateloop-evaluator --state-dir /private/evaluator worker --config /private/connector.json --worker-id pilot-mac --bundle-id BUNDLE_ID --device mps --once
+```
+
+The private connector file follows [the connector configuration](connector.md) and uses `https://www.rateloop.ai` for the Alpha. Enable AI processing for the selected operator's hardware before submitting a case. Enable private learning separately, before collecting training cases. Shared data and public-weight permissions remain independent.
+
+Remove `--once` for continuous processing. The worker polls every five seconds, uses a 120-second fenced job lease and renews it every 30 seconds during inference. It refreshes execution consent before scoring and before releasing a receipt. Explicit case tombstones purge local examples, pending metadata and dependent model eligibility when synchronized. A credential failure stops execution; it does not imply a blanket data-deletion instruction. An owner workspace-deletion notice processes the explicit case IDs returned by the server and retires execution permissions. Local-only cases not identified by that notice require the owner's `delete-case` command and backup-retention process.
+
+The worker imports authorized overall human labels about once a minute. Blind human responses frozen before result release remain eligible after reveal; later exposed judgments do not. There is no background training: an operator uses the commands in [the learning guide](learning.md), inspects the holdout results, registers a new immutable bundle and imports its registration in RateLoop. Authorize that new bundle explicitly, then restart the worker with its `--bundle-id`. Repeat the website case to verify the returned provenance names the candidate. Earlier bundles remain rollback choices only while their data lineage remains authorized.
+
+Progress, fencing tokens, results and receipt acknowledgments persist encrypted. A restart renews the saved lease or drops a superseded claim, and retries use the same input and receipt commitments. A Mac that sleeps appears offline; queued cases wait or return a recoverable failure after the server's bounded attempts. Human review is never satisfied by an absent worker. Use an awake, connected account for an unattended pilot; later move the same worker to an always-on machine if needed.
+
+For a native macOS login service, after installing the reviewed package into a persistent virtual environment:
+
+```sh
+rateloop-evaluator --state-dir /private/evaluator install-launchd --config /private/connector.json --worker-id pilot-mac --bundle-id BUNDLE_ID --device mps --load
+```
+
+This creates an owner-only LaunchAgent file and loads it into the current user's session. Its arguments contain a protected configuration path, not an API credential. It never overwrites an existing plist. The command returns its label and absolute path; stop it with `launchctl bootout gui/$(id -u) /absolute/path/to/the.plist` before an upgrade. Installations are per logged-in account, not system-wide daemons. Stop the old worker before changing paths or model bundles; the same worker identity cannot run twice against one state directory.

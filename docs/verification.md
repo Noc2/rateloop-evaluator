@@ -151,3 +151,14 @@ model dependencies or downloads.
 ## Local HTTP service
 
 The same M5 Max ran the native service with the pinned GLiNER model on MPS, the committed English reply example, one criterion, scoped authentication and encrypted persistence. Across 20 warm requests after two warm-ups, client-observed HTTP p50 was **17.25 ms** and p95 **19.75 ms**. Exact idempotent retry, cross-workspace rejection and metadata-only bundle registration export passed. All outputs correctly abstained as `uncalibrated`. This is a small synthetic, single-worker, small-store measurement; it does not establish customer accuracy, concurrent throughput or large-dataset latency.
+# Alpha outbound worker acceptance, 17 September 2026
+
+Worker implementation through `8303fa5` was exercised against the actual RateLoop Next.js job, grant, receipt and label-export route handlers backed by disposable PostgreSQL. The test adapter replaced only object storage and supplied authored public/synthetic cases; it did not replace GLiNER, authorization, job leasing, receipt validation, invited-review persistence or human-result projection. Native MPS ran the pinned multilingual checkpoint.
+
+The test created a website job, retained its input under earlier private-learning consent, recovered its fenced claim after a lost/blinded receipt acknowledgment, and completed on attempt two. Before independent review, the website job projection withheld the AI label and score. Actual invited-panel responses then completed the review and released the AI label (`approved`, uncalibrated raw score about 0.776) alongside the positive human outcome. The connector imported one independent human label after release with no quarantine or rejected items. This tests the software path, not model accuracy or a live www deployment.
+
+The English/German website template commitments matched the application SDK and job projections: `sha256:bb22546e25ff9d5587c60543653c111aeeac565d2e2ebff2f0228ee3a87bf20f` and `sha256:96b3f17aff30d79606537f0f08b556aad5f24966a90e40633a76c5c422bd6d18`.
+
+Seventeen opted-in hardware checks passed in 35.25 seconds, including real inference, full and LoRA optimizer updates, save/reload, calibration and revocation. A further full/LoRA run with renewable execution leases and per-update authorization passed in 29.95 seconds. These model tests denied network connections. GPU access required running outside the process sandbox; a sandboxed process correctly reported MPS unavailable.
+
+The hosted browser journey and candidate used by a subsequent www submission require their own application release evidence. Do not interpret the localhost route bridge or these tiny synthetic datasets as hosted acceptance, reviewer-population evidence, an accuracy gate or permission to reduce human reviews.

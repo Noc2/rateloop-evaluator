@@ -28,7 +28,7 @@ from rateloop_evaluator.connector import RateLoopConnector
 from rateloop_evaluator.learning import read_secret
 
 connector = RateLoopConnector(
-    base_url="https://rateloop-tokenless.vercel.app",
+    base_url="https://www.rateloop.ai",
     api_key=read_secret("/private/operator/rateloop-api-key").decode(),
     api_key_id="workspace-credential-id",
     workspace_id="workspace-id",
@@ -40,7 +40,7 @@ connector = RateLoopConnector(
 )
 ```
 
-The example origin is RateLoop's isolated testing environment. It is not a commercial production service. `learning_store` and `runtime_store` are existing customer-owned local stores; the connector never creates a cloud copy of their contents.
+The example origin is RateLoop's branded Alpha. `learning_store` and `runtime_store` are existing customer-owned local stores; the connector never creates a cloud copy of their contents.
 
 ## Synchronize learning permissions
 
@@ -50,7 +50,7 @@ The CLI reads a separate mode-0600 JSON configuration file. Use actual IDs from 
 
 ```json
 {
-  "baseUrl": "https://rateloop-tokenless.vercel.app",
+  "baseUrl": "https://www.rateloop.ai",
   "apiKey": "REPLACE_WITH_WORKSPACE_API_KEY",
   "apiKeyId": "workspace-credential-id",
   "agentId": "registered-agent-id",
@@ -62,7 +62,7 @@ The CLI reads a separate mode-0600 JSON configuration file. Use actual IDs from 
 ```sh
 chmod 600 /private/connector.json
 rateloop-evaluator connect-sync --config /private/connector.json
-rateloop-evaluator connect-evaluate --config /private/connector.json --request /private/request.json --review-context /private/review-context.json
+rateloop-evaluator connect-evaluate --config /private/connector.json --request /private/request.json --review-context /private/review-context.json --frozen-question-hash SHA256_QUESTION_COMMITMENT
 rateloop-evaluator connect-flush --config /private/connector.json
 rateloop-evaluator connect-import-labels --config /private/connector.json --grant-id GRANT --question-id reply_ready --template-commitment DIGEST --positive-label ready --negative-label needs_revision
 rateloop-evaluator connect-release --config /private/connector.json --input-commitment DIGEST
@@ -78,15 +78,16 @@ The connector checks the authenticated response's workspace and API-key recipien
 
 | RateLoop permission | Local right |
 | --- | --- |
+| `ai_use` durable consent | `ai_use` |
 | `private_learning` | `private_training` |
 | `shared_contribution` | `shared_contribution` |
-| An explicit `publicWeightsAllowed` flag | `public_weight_distribution` |
+| `public_weights` consent or legacy `publicWeightsAllowed` flag | `public_weight_distribution` |
 
-No permission in this table implies `ai_use`, and shared contribution does not imply private training. Local AI-use authorization must be granted separately. Field permissions preserve the distinction between input, context, evidence and human labels. Retaining input does not itself authorize storing or training on labels.
+Only explicit `ai_use` permission enables inference; learning and sharing permissions do not imply it. Shared contribution does not imply private training. Field permissions preserve the distinction between input, context, evidence and human labels. Retaining input does not itself authorize storing or training on labels.
 
-Each mirrored grant remains bound to its exact model bundle, template commitment, fields, workspace and API-key recipient. Its expiration is never extended beyond the server's original lease, which is at most 24 hours. Revocation watermarks cannot move backwards. Deleted/revoked grants and rejected credentials invalidate mirrored permissions and their managed model descendants.
+Legacy grants remain bound to their original scope and at-most-24-hour expiration. The website worker uses consents[] with immutable consentId/revision, explicit modelBundleIds, templateCommitments, fields, purpose, processingLocation, modelFamilyId and recipient. Separate authorizationLease values last at most 15 minutes. Renewals update execution authorization without changing consent lineage or widening scope; changed scope requires an explicit new revision. Revocation watermarks cannot move backwards. Revocation invalidates managed descendants; lease expiry pauses their use until a valid renewal. Consent and legacy grant namespaces remain separate.
 
-An offline machine cannot know about a remote revocation immediately. Existing grants expire at their original deadline; reconnecting checks the current watermark. Pausing ratings does not itself revoke an independently issued learning grant. Explicit local owner grants remain separate from mirrored server grants.
+An offline machine cannot know about remote revocation immediately. Worker authorization stops after at most 15 minutes; legacy grants retain their original deadline. Reconnecting checks the current watermark and explicit case-erasure tombstones. Pausing ratings does not itself revoke an independently issued learning grant. Explicit local owner grants remain separate from mirrored server grants.
 
 ## Select an audit before scoring
 
@@ -97,9 +98,12 @@ outcome = connector.run_with_audit(
     request,                  # Validated EvaluationRequest containing local text.
     evaluate=local_evaluate,   # Callback: EvaluationRequest -> EvaluationResult.
     review_context=metadata,  # Existing RateLoop policy/execution metadata only.
+    frozen_question_hash=existing_human_question_commitment,
     allow_offline=False,
 )
 ```
+
+Supply the existing frozen human-review question commitment, covering its prompt, labels and review semantics. Do not substitute a hash of the prompt alone. Source and suggestion hashes are computed from the exact request context/text bytes and checked by the human handoff.
 
 `review_context` accepts only the existing policy identifiers, policy version, workflow/risk identifiers, audience commitment and bounded execution metadata. It rejects raw summaries, rubrics, free-form context and arbitrary nested fields. The audit API can open an existing human-review opportunity; this connector does not upload the human-review task's content. Any separate content handoff uses the existing authorized RateLoop review workflow.
 
@@ -141,7 +145,7 @@ For selected cases, `outcome["result"]` is `None`, `awaitingIndependentHuman` is
 result = connector.release_result(request.input_commitment())
 ```
 
-Release records AI exposure. Subsequent labels for that exposed case cannot be imported as independently blind references. Previously imported independent judgments are preserved.
+Release records AI exposure. Legacy connector-attested labels must be imported before release. Website jobs instead use server-enforced causal records: a human answer frozen before release remains independent when imported afterward. The importer verifies the frozen question, source and suggestion hashes, the independent audit and the order of reviewFrozenAt/resultsReleasedAt. Answers created after exposure are rejected.
 
 Blinding is **connector-attested**, not a guarantee about what a reviewer viewed elsewhere. Do not show a reviewer the receipt dashboard, AI criteria or another copy of the result before collecting their judgment. A caller bypassing this orchestration cannot claim its audits were independently blind.
 

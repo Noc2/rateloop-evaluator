@@ -4,7 +4,9 @@ Start with the exact decision your users need. Keep question text, label descrip
 
 ## Feedback and consent
 
-Use `grant --right private_training --template TEMPLATE --hours 24 --evidence 'Owner-authorized local pilot'` before collecting raw examples. This is separate from `ai_use`. A connected workspace uses short-lived grants mirrored by the connector, with exact API credential, bundle and template bindings. Do not substitute a broad manual local grant for a revoked workspace grant.
+Use `grant --right private_training --template TEMPLATE --hours 24 --evidence 'Owner-authorized local pilot'` before collecting raw examples. This is separate from `ai_use`. A connected workspace uses durable, versioned owner consent with exact API credential, model-bundle, template and field bindings, plus execution leases of at most 15 minutes. Renewing a lease preserves the original consent lineage. A missing lease pauses training and serving; revocation or durable consent expiry prevents reuse. Do not substitute a broad manual local grant for a revoked workspace permission.
+
+Keep the outbound worker running during administrative training so it refreshes current permissions. Every optimizer update checks snapshot authorization; an expired or revoked lease stops further updates. Candidate registration and activation check lineage again. Changed model scope requires a new explicit owner permission; an old expired grant is never converted into indefinite consent. Website jobs retain training inputs only when permission already existed at the case's original submission time. Collect fresh cases after enabling learning.
 
 Issue a human-only credential:
 
