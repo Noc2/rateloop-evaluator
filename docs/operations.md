@@ -49,10 +49,17 @@ The worker imports authorized overall human labels about once a minute. Blind hu
 
 Progress, fencing tokens, results and receipt acknowledgments persist encrypted. A restart renews the saved lease or drops a superseded claim, and retries use the same input and receipt commitments. A Mac that sleeps appears offline; queued cases wait or return a recoverable failure after the server's bounded attempts. Human review is never satisfied by an absent worker. Use an awake, connected account for an unattended pilot; later move the same worker to an always-on machine if needed.
 
-For a native macOS login service, after installing the reviewed package into a persistent virtual environment:
+For a native macOS login service, install the reviewed package without editable mode into a persistent virtual environment outside Documents, Desktop, Downloads and cloud-synced folders. Keep the service's configuration, state and model files outside those folders too. A terminal's access does not establish access for a background service. Use the user's Application Support directory, for example:
 
 ```sh
-rateloop-evaluator --state-dir /private/evaluator install-launchd --config /private/connector.json --worker-id pilot-mac --bundle-id BUNDLE_ID --device mps --load
+EVALUATOR_RUNTIME="$HOME/Library/Application Support/RateLoop Evaluator/runtime"
+python3.12 -m venv "$EVALUATOR_RUNTIME"
+"$EVALUATOR_RUNTIME/bin/python" -m pip install "/absolute/path/to/reviewed/rateloop-evaluator[model]"
+"$EVALUATOR_RUNTIME/bin/rateloop-evaluator" --state-dir /private/evaluator install-launchd --config /private/connector.json --worker-id pilot-mac --bundle-id BUNDLE_ID --device mps --load
 ```
 
 This creates an owner-only LaunchAgent file and loads it into the current user's session. Its arguments contain a protected configuration path, not an API credential. It never overwrites an existing plist. The command returns its label and absolute path; stop it with `launchctl bootout gui/$(id -u) /absolute/path/to/the.plist` before an upgrade. Installations are per logged-in account, not system-wide daemons. Stop the old worker before changing paths or model bundles; the same worker identity cannot run twice against one state directory.
+
+Inspect the returned service label with `launchctl print gui/$(id -u)/LABEL`; restart it with `launchctl kickstart -k gui/$(id -u)/LABEL`. A registered service or assigned PID alone is not proof that the worker can process a case: submit a synthetic case and verify its completed result and expected model bundle after installation. A durable pilot needs its own retained workspace, scoped credential, registered model and explicit AI-use consent; do not reuse the disposable acceptance workspace after cleanup. Private learning requires its separate consent before new cases are collected.
+
+On 2026-09-17, commit `7ed241ad314f69da9a784f47f2a4d0642995db05` passed actual macOS launchd bootstrap, worker-lock acquisition, restart with a new PID, stop and lock release, private plist/configuration permissions, refusal to overwrite an existing plist, and complete service/state cleanup. This check used a temporary runtime outside Documents and a dummy credential directed only at a non-listening loopback port; it verifies service lifecycle, not hosted inference or an unattended deployment. The same runtime launched from the maintainer's Documents checkout blocked while Python read its environment, before worker startup, despite launchd reporting a running PID. No macOS privacy permissions were changed to complete the check.
