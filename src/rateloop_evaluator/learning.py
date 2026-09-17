@@ -255,7 +255,7 @@ class LearningStore:
             if not row or row["workspace_id"] != workspace_id:
                 raise KeyError("Evaluation not found")
             self._matching_grants(state, workspace_id=workspace_id, right="private_training", case_id=row["case_id"],
-                                  template_id=row["template"]["id"], fields=row["fields"], now=current,
+                                  template_id=row["template"]["id"], fields=[*row["fields"], "human_labels"], now=current,
                                   model_bundle_id=row.get("model_bundle_id"), template_commitment=row["template_commitment"])
             reasons = []
             if input_commitment != row["input_commitment"] or template_commitment != row["template_commitment"]:
@@ -319,12 +319,12 @@ class LearningStore:
                     continue
                 try:
                     source_grants = set(self._matching_grants(state, workspace_id=workspace_id, right="private_training",
-                                    case_id=row["case_id"], template_id=template_id, fields=row["fields"], now=current,
+                                    case_id=row["case_id"], template_id=template_id, fields=[*row["fields"], "human_labels"], now=current,
                                     model_bundle_id=row.get("model_bundle_id"), template_commitment=row["template_commitment"]))
                     extra_rights = set() if purpose == "private_training" else {purpose}
                     for right in extra_rights:
                         source_grants.update(self._matching_grants(state, workspace_id=workspace_id, right=right,
-                                      case_id=row["case_id"], template_id=template_id, fields=row["fields"], now=current,
+                                      case_id=row["case_id"], template_id=template_id, fields=[*row["fields"], "human_labels"], now=current,
                                     model_bundle_id=row.get("model_bundle_id"), template_commitment=row["template_commitment"]))
                 except PermissionError:
                     continue
@@ -391,7 +391,7 @@ class LearningStore:
                 required_rights = {"private_training", snapshot["purpose"]}
                 for right in required_rights:
                     LearningStore._matching_grants(state, workspace_id=workspace_id, right=right, case_id=row["case_id"],
-                                                   template_id=snapshot["template_id"], fields=row["fields"], now=now,
+                                                   template_id=snapshot["template_id"], fields=[*row["fields"], "human_labels"], now=now,
                                                    model_bundle_id=row.get("model_bundle_id"), template_commitment=row["template_commitment"])
 
     def load_snapshot(self, snapshot_id: str, workspace_id: str, *, now: float | None = None) -> dict:

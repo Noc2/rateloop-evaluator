@@ -237,3 +237,26 @@ def test_consent_changes_do_not_change_committed_evaluation_identity(store):
         store.record_evaluation(**args,input_payload=submitted)
     with pytest.raises(ValueError,match="different content"):
         store.record_evaluation(**{**args,"input_commitment":"changed"})
+
+
+def test_feedback_and_snapshots_require_explicit_human_label_field_scope(store):
+    grant(store,fields=FIELDS)
+    row=store.record_evaluation(evaluation_id="scoped-label",workspace_id="workspace-a",case_id="case-label",
+        input_commitment="input-label",template_commitment="template-sha",template=TEMPLATE,
+        input_payload={"text":"input","context":"","evidence":""})
+    kwargs=dict(workspace_id="workspace-a",evaluation_id=row["evaluation_id"],input_commitment=row["input_commitment"],
+                template_commitment=row["template_commitment"],annotator_id="reviewer",labels={"supported":"yes"},
+                exposed_to_ai=False,independent_human=True)
+    with pytest.raises(PermissionError,match="private_training"):
+        store.add_feedback(**kwargs)
+    permission=grant(store,rights=["private_training"],fields=[*FIELDS,"human_labels"])
+    assert not store.add_feedback(**kwargs)["quarantine_reasons"]
+    for n in range(3):
+        example(store,n)
+    snap=store.create_snapshot("workspace-a","reply","1")
+    store.revoke_grant(permission["id"],"workspace-a")
+    with pytest.raises(PermissionError):
+        store.load_snapshot(snap["id"],"workspace-a")
+    # The still-active input-only grant cannot authorize a replacement snapshot.
+    with pytest.raises(ValueError,match="Insufficient independent"):
+        store.create_snapshot("workspace-a","reply","1")
