@@ -1,0 +1,466 @@
+"""Explicit outbound RateLoop metadata connector; never a raw-content transport.
+
+HTTPS and an API-key recipient bind mirrored grants. Offline grants expire at the
+server's original lease deadline (at most 24 hours); unseen remote revocations are
+not instant offline. Audit blinding is connector-attested, not cryptographic proof.
+"""
+from __future__ import annotations
+
+from copy import deepcopy
+from datetime import datetime, timezone
+import hashlib
+import ipaddress
+import json
+import re
+import time
+from typing import Any, Callable
+from urllib.parse import urlsplit
+
+import httpx
+
+from .learning import LearningStore, _digest
+from .protocol import EvaluationRequest, EvaluationResult, commitment
+from .storage import RuntimeStore
+
+_API = "/api/assurance/v2/evaluations"
+_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$")
+_HASH = re.compile(r"^sha256:[0-9a-f]{64}$")
+_GRANT_KEYS = {"grantId", "workspaceId", "apiKeyId", "purpose", "modelBundleId", "templateCommitment", "fields",
+               "publicWeightsAllowed", "issuedAt", "expiresAt", "revokedAt", "revision"}
+_FIELD_MAP = {"input":"input.text", "context":"input.context", "evidence":"input.evidence", "human_labels":"human_labels"}
+
+
+class ConnectorUnavailable(RuntimeError):
+    """No fresh server result; offline work must not claim an independent audit."""
+
+
+def _timestamp(value: Any) -> float:
+    if not isinstance(value, str) or not value.endswith("Z"):
+        raise ValueError("Expected a UTC timestamp")
+    try:
+        return datetime.fromisoformat(value[:-1]+"+00:00").timestamp()
+    except (ValueError, OverflowError) as exc:
+        raise ValueError("Invalid timestamp") from exc
+
+
+def _opaque(value: Any) -> str:
+    if not isinstance(value, str) or not _ID.fullmatch(value):
+        raise ValueError("Expected an opaque metadata identifier")
+    return value
+
+
+def _hash(value: Any) -> str:
+    if not isinstance(value, str) or not _HASH.fullmatch(value):
+        raise ValueError("Expected a content commitment")
+    return value
+
+
+def _review_context(value: dict) -> dict:
+    """Allow only execution metadata; never accept review text or free-form maps."""
+    keys = {"policyId", "policyVersion", "workflowKey", "riskTier", "audiencePolicyHash", "declaredConfidenceBps", "metadataComplete", "execution"}
+    if not isinstance(value, dict) or set(value) - keys or not keys - {"declaredConfidenceBps"} <= set(value):
+        raise ValueError("Review context accepts only the documented metadata fields")
+    for key in ("policyId", "workflowKey", "riskTier"):
+        _opaque(value[key])
+    _hash(value["audiencePolicyHash"])
+    if type(value["metadataComplete"]) is not bool or type(value["policyVersion"]) is not int or value["policyVersion"] < 1:
+        raise ValueError("Invalid review-policy metadata")
+    bps=value.get("declaredConfidenceBps")
+    if bps is not None and (type(bps) is not int or not 0 <= bps <= 10000):
+        raise ValueError("Invalid declared confidence")
+    execution=value["execution"]
+    execution_keys={"externalExecutionId","status","startedAt","completedAt","toolCallCount","toolDurationMs","primarySpanId","generationSpans"}
+    if not isinstance(execution,dict) or set(execution)-execution_keys or not {"externalExecutionId","status","primarySpanId","generationSpans"} <= set(execution):
+        raise ValueError("Execution accepts only documented metadata fields")
+    _opaque(execution["externalExecutionId"]); _opaque(execution["primarySpanId"])
+    if execution["status"] not in ("completed","failed"):
+        raise ValueError("Invalid execution status")
+    spans=execution["generationSpans"]
+    if not isinstance(spans,list) or not 1 <= len(spans) <= 64:
+        raise ValueError("Execution requires 1-64 bounded generation spans")
+    span_keys={"spanId","parentSpanId","role","provider","requestedModel","resolvedModel","modelVersion","reasoningEffort","serviceTier",
+               "startedAt","completedAt","timeToFirstOutputMs","inputTokens","cachedInputTokens","outputTokens","reasoningOutputTokens","responseIdHash","finishReason"}
+    for item in [execution,*spans]:
+        if not isinstance(item,dict) or (item is not execution and (set(item)-span_keys or not {"spanId","role","provider","requestedModel"} <= set(item))):
+            raise ValueError("Generation span contains unsupported metadata")
+        for key,field in item.items():
+            if key == "generationSpans" or field is None:
+                continue
+            if key in ("startedAt","completedAt"):
+                _timestamp(field)
+            elif key.endswith("Tokens") or key.endswith("Ms") or key == "toolCallCount":
+                if type(field) is not int or not 0 <= field <= 2**31-1:
+                    raise ValueError("Invalid execution count")
+            elif key == "responseIdHash":
+                _hash(field)
+            elif not isinstance(field,str) or not re.fullmatch(r"[A-Za-z0-9._:/-]{1,200}",field):
+                raise ValueError("Execution metadata must contain identifiers, never free-form content")
+    return deepcopy(value)
+
+
+class RateLoopConnector:
+    def __init__(self, *, base_url: str, api_key: str, api_key_id: str, workspace_id: str,
+                 agent_id: str, agent_version_id: str, learning: LearningStore, runtime: RuntimeStore,
+                 metadata_upload_enabled: bool = False, allow_insecure_loopback: bool = False,
+                 transport: httpx.BaseTransport | None = None):
+        url=urlsplit(base_url)
+        if not url.hostname or url.username or url.password or url.query or url.fragment or url.path not in ("","/"):
+            raise ValueError("Connector destination must be an explicit origin without credentials or paths")
+        loopback=url.hostname == "localhost"
+        try:
+            loopback=loopback or ipaddress.ip_address(url.hostname).is_loopback
+        except ValueError:
+            pass
+        if url.scheme != "https" and not (url.scheme == "http" and loopback and allow_insecure_loopback):
+            raise ValueError("HTTPS is required; HTTP needs explicit loopback-only development permission")
+        if not api_key or any(c in api_key for c in "\r\n"):
+            raise ValueError("A valid API credential is required")
+        for value in (api_key_id,workspace_id,agent_id,agent_version_id):
+            _opaque(value)
+        if type(metadata_upload_enabled) is not bool:
+            raise ValueError("Metadata upload permission must be explicit")
+        self.base_url=base_url.rstrip("/")
+        self.workspace_id,self.api_key_id=workspace_id,api_key_id
+        self.agent_id,self.agent_version_id=agent_id,agent_version_id
+        self.learning,self.runtime=learning,runtime
+        self.metadata_upload_enabled=metadata_upload_enabled
+        self.namespace=hashlib.sha256(json.dumps([self.base_url,workspace_id,api_key_id]).encode()).hexdigest()
+        self.client=httpx.Client(base_url=self.base_url,headers={"Authorization":"Bearer "+api_key},
+                                 timeout=15,trust_env=False,follow_redirects=False,transport=transport)
+
+    def close(self) -> None:
+        self.client.close()
+
+    def _state(self, database: dict) -> dict:
+        state=database.setdefault("connectors",{}).setdefault(self.namespace,
+            {"watermark":-1,"grants":{},"audits":{},"results":{},"imports":{},"dead_letters":{},"mode":"off"})
+        state["workspace_id"]=self.workspace_id
+        return state
+
+    def _case_live(self, database: dict, case_id: str) -> None:
+        if _digest([self.workspace_id,case_id]) in database.get("deleted_cases",{}):
+            raise PermissionError("This case was deleted; connector reingestion is not allowed")
+
+    def _request(self, method: str, endpoint: str, **kwargs) -> dict:
+        try:
+            with self.client.stream(method,_API+endpoint,**kwargs) as response:
+                if response.status_code in (401,403):
+                    self._revoke_mirrors("remote_credential_rejected")
+                    raise PermissionError("RateLoop credential or scope is no longer authorized")
+                if response.status_code >= 500 or response.status_code == 429:
+                    raise ConnectorUnavailable("RateLoop temporarily unavailable; retry the persisted receipt")
+                if not 200 <= response.status_code < 300:
+                    raise ValueError(f"RateLoop rejected the connector request (HTTP {response.status_code})")
+                declared=response.headers.get("content-length")
+                if declared is not None and (not declared.isdigit() or int(declared)>10_000_000):
+                    raise ValueError("RateLoop response exceeds the bounded metadata limit")
+                payload=bytearray()
+                # iter_bytes counts decompressed data too, bounding compressed
+                # responses before they can become an unbounded JSON document.
+                for chunk in response.iter_bytes(chunk_size=65536):
+                    if len(payload)+len(chunk)>10_000_000:
+                        raise ValueError("RateLoop response exceeds the bounded metadata limit")
+                    payload.extend(chunk)
+                value=json.loads(payload)
+        except httpx.TransportError as exc:
+            raise ConnectorUnavailable("RateLoop is unavailable; no fresh audit or revocation claim is available") from exc
+        if not isinstance(value,dict):
+            raise ValueError("RateLoop response must be an object")
+        return value
+
+    def _revoke_mirrors(self, reason: str) -> None:
+        with self.learning.transaction() as database:
+            state=self._state(database)
+            ids=[r["local_id"] for r in state["grants"].values()]
+            state["last_failure"]=reason
+        for grant_id in ids:
+            self.learning.revoke_grant(grant_id,self.workspace_id)
+
+    def _validate_grant(self, grant: dict, *, now: float, watermark: int) -> dict:
+        if not isinstance(grant,dict) or set(grant) != _GRANT_KEYS:
+            raise ValueError("Incomplete or unexpected remote grant fields")
+        if grant["workspaceId"] != self.workspace_id or grant["apiKeyId"] != self.api_key_id:
+            raise PermissionError("Remote grant recipient does not match this connector")
+        for key in ("grantId","modelBundleId"):
+            _opaque(grant[key])
+        _hash(grant["templateCommitment"])
+        if grant["purpose"] not in ("private_learning","shared_contribution") or type(grant["publicWeightsAllowed"]) is not bool:
+            raise ValueError("Invalid learning purpose")
+        fields=grant["fields"]
+        if not isinstance(fields,list) or not fields or len(fields)!=len(set(fields)) or not set(fields) <= set(_FIELD_MAP):
+            raise ValueError("Invalid remote field scope")
+        issued,expires=_timestamp(grant["issuedAt"]),_timestamp(grant["expiresAt"])
+        if not 0 < issued <= now or not 0 < expires-issued <= 86400:
+            raise ValueError("Remote grant has an invalid issue time or lease duration")
+        if type(grant["revision"]) is not int or not 0 <= grant["revision"] <= watermark:
+            raise ValueError("Remote grant is newer than its revocation watermark")
+        if grant["revokedAt"] is not None:
+            revoked=_timestamp(grant["revokedAt"])
+            if not issued <= revoked <= now:
+                raise ValueError("Invalid remote revocation timestamp")
+        return deepcopy(grant)
+
+    def sync_grants(self, *, now: float | None = None) -> dict:
+        current=time.time() if now is None else now
+        response=self._request("GET","/grants")
+        created_ids=[]
+        try:
+            if response.get("workspaceId") != self.workspace_id or response.get("recipientApiKeyId") != self.api_key_id:
+                raise PermissionError("Grant response is not bound to the configured workspace and API-key recipient")
+            watermark=response.get("revocationWatermark")
+            if type(watermark) is not int or watermark < 0 or not isinstance(response.get("grants"),list):
+                raise ValueError("Invalid remote revocation watermark")
+            mode=response.get("settings",{}).get("mode")
+            if mode not in ("off","shadow","paused"):
+                raise ValueError("Unsupported hosted evaluator mode")
+            grants=[self._validate_grant(g,now=current,watermark=watermark) for g in response["grants"]]
+            if len({g["grantId"] for g in grants}) != len(grants):
+                raise ValueError("Duplicate remote grant identity")
+            with self.learning.transaction() as database:
+                previous=deepcopy(self._state(database))
+            if watermark < previous["watermark"]:
+                raise PermissionError("Remote revocation watermark moved backwards")
+            received={g["grantId"]:g for g in grants}
+            for remote_id,old in previous["grants"].items():
+                remote=received.get(remote_id)
+                if remote is None or remote["revokedAt"] is not None or _timestamp(remote["expiresAt"]) <= current:
+                    self.learning.revoke_grant(old["local_id"],self.workspace_id,now=current)
+                elif commitment(remote,"rateloop.remote-grant.v1") != old["digest"]:
+                    raise PermissionError("An immutable grant changed; renewed permission needs a new grant identity")
+            mirrored={}
+            for grant in grants:
+                if grant["revokedAt"] is not None or _timestamp(grant["expiresAt"]) <= current:
+                    continue
+                local_id="saas_"+hashlib.sha256((self.namespace+grant["grantId"]).encode()).hexdigest()[:48]
+                digest=commitment(grant,"rateloop.remote-grant.v1")
+                old=previous["grants"].get(grant["grantId"])
+                if old is None:
+                    rights=["private_training" if grant["purpose"]=="private_learning" else "shared_contribution"]
+                    if grant["publicWeightsAllowed"]:
+                        rights.append("public_weight_distribution")
+                    self.learning.add_grant(workspace_id=self.workspace_id,rights=rights,expires_at=_timestamp(grant["expiresAt"]),
+                        fields=[_FIELD_MAP[f] for f in grant["fields"]],model_bundle_ids=[grant["modelBundleId"]],
+                        template_commitments=[grant["templateCommitment"]],grant_id=local_id,
+                        evidence="RateLoop scoped grant "+grant["grantId"]+" at revision "+str(watermark),now=current)
+                    created_ids.append(local_id)
+                mirrored[grant["grantId"]]={"local_id":local_id,"digest":digest,"grant":grant}
+            with self.learning.transaction() as database:
+                state=self._state(database)
+                if state["watermark"] > watermark:
+                    raise PermissionError("A newer grant synchronization already completed")
+                state.update({"watermark":watermark,"grants":mirrored,"synced_at":current,"mode":mode})
+            return {"revocationWatermark":watermark,"mirroredGrants":len(mirrored),"mode":mode,
+                    "offlineRevocation":"Original grant expiration bounds offline use; unseen revocations are not instant."}
+        except (ValueError,PermissionError):
+            for local_id in created_ids:
+                self.learning.revoke_grant(local_id,self.workspace_id,now=current)
+            self._revoke_mirrors("invalid_remote_grant_state")
+            raise
+
+    def _receipt(self, result: EvaluationResult | dict) -> dict:
+        result=EvaluationResult.model_validate(result.model_dump() if isinstance(result,EvaluationResult) else result)
+        if result.abstainReason is not None:
+            _opaque(result.abstainReason)
+        if result.workspaceId != self.workspace_id:
+            raise PermissionError("Result belongs to another workspace")
+        # This exact wire schema has no input, context, evidence or review text.
+        return {"schemaVersion":"rateloop.automated-eval-receipt.v2","agentId":self.agent_id,
+                "agentVersionId":self.agent_version_id,"result":result.model_dump()}
+
+    def queue_result(self, result: EvaluationResult | dict) -> str:
+        if not self.metadata_upload_enabled:
+            raise PermissionError("Receipt metadata upload has not been explicitly enabled")
+        receipt=self._receipt(result)
+        with self.learning.transaction() as database:
+            self._case_live(database,receipt["result"]["caseId"])
+        receipt_id="receipt_"+self.namespace[:16]+"_"+hashlib.sha256((self.namespace+receipt["result"]["resultCommitment"]).encode()).hexdigest()
+        self.runtime.enqueue(receipt_id,receipt)
+        return receipt_id
+
+    def flush(self, limit: int = 20, *, now: float | None = None) -> dict:
+        if not self.metadata_upload_enabled:
+            raise PermissionError("Receipt metadata upload has not been explicitly enabled")
+        if type(limit) is not int or not 1 <= limit <= 100:
+            raise ValueError("Flush limit must be between 1 and 100")
+        current=time.time() if now is None else now
+        delivered,retried,rejected=0,0,0
+        for receipt_id,receipt in self.runtime.pending(limit):
+            if not receipt_id.startswith("receipt_"+self.namespace[:16]+"_"):
+                continue
+            try:
+                if set(receipt) != {"schemaVersion","agentId","agentVersionId","result"} or receipt != self._receipt(receipt["result"]):
+                    raise ValueError("Outbox payload is not this connector's exact metadata receipt")
+                expected="receipt_"+self.namespace[:16]+"_"+hashlib.sha256((self.namespace+receipt["result"]["resultCommitment"]).encode()).hexdigest()
+                if expected != receipt_id:
+                    continue  # Another explicitly configured connector owns this row.
+                observed=_timestamp(receipt["result"]["observedAt"])
+                if not current-86400 <= observed <= current+300:
+                    raise ValueError("Receipt expired outside the server's 24-hour ingest window")
+                response=self._request("POST","/receipts",json=receipt,headers={"Idempotency-Key":receipt_id})
+                if (response.get("schemaVersion") != "rateloop.automated-eval-ingest-result.v2" or response.get("outcome") != receipt["result"]["outcome"]
+                    or response.get("receiptHash") != commitment(receipt,"rateloop.product-evaluator.v2")
+                    or not re.fullmatch(r"aev_[0-9a-f]{40}",str(response.get("receiptId", "")))
+                    or response.get("policy",{}).get("mayReduceHumanReview") is not False):
+                    raise ValueError("Receipt acknowledgment does not match the submitted result")
+                self.runtime.delivered(receipt_id); delivered+=1
+            except ConnectorUnavailable:
+                self.runtime.retry(receipt_id); retried+=1
+            except PermissionError:
+                self.runtime.retry(receipt_id)
+                raise
+            except (ValueError,KeyError,TypeError) as error:
+                with self.learning.transaction() as database:
+                    self._state(database)["dead_letters"][receipt_id]={"reason":str(error),"at":current}
+                self.runtime.delivered(receipt_id); rejected+=1
+        return {"delivered":delivered,"retrying":retried,"rejected":rejected}
+
+    def select_audit_before_scoring(self, request: EvaluationRequest, review_context: dict, *, kind: str = "random") -> dict:
+        if not self.metadata_upload_enabled:
+            raise PermissionError("Audit metadata upload has not been explicitly enabled")
+        if request.workspaceId != self.workspace_id or kind not in ("random","mandatory"):
+            raise ValueError("Pre-scoring audits require this workspace and random/mandatory selection")
+        context=_review_context(review_context)
+        key=request.input_commitment()
+        with self.learning.transaction() as database:
+            self._case_live(database,request.caseId)
+            state=self._state(database)
+            if key in state["results"] or key in database["evaluations"]:
+                raise PermissionError("This case has already been scored; independent pre-scoring audit is unavailable")
+        response=self._request("POST","/audits",json={"caseId":request.caseId,"modelBundleId":request.modelBundleId,
+            "templateCommitment":request.template_commitment(),"inputCommitment":key,"agentId":self.agent_id,
+            "agentVersionId":self.agent_version_id,"kind":kind,"aiExposed":False,"reviewContext":context})
+        if (response.get("kind") != kind or response.get("aiExposed") is not False or type(response.get("selected")) is not bool
+            or response.get("blindingAssurance") != "connector_attested"):
+            raise ValueError("Audit response does not establish the requested pre-scoring selection")
+        _opaque(response.get("auditId"))
+        probability=response.get("selectionProbabilityBps")
+        if type(probability) is not int or not 1 <= probability <= 10000:
+            raise ValueError("Audit selection probability is invalid")
+        with self.learning.transaction() as database:
+            self._case_live(database,request.caseId)
+            self._state(database)["audits"][key]={"response":response,"case_id":request.caseId,
+                "model_bundle_id":request.modelBundleId,"template_commitment":request.template_commitment(),
+                "selected_before_scoring":True,"ai_exposed":False,"selected_at":time.time()}
+        return response
+
+    def run_with_audit(self, request: EvaluationRequest, evaluate: Callable[[EvaluationRequest],EvaluationResult | dict],
+                       review_context: dict, *, allow_offline: bool = False) -> dict:
+        audit=None
+        try:
+            audit=self.select_audit_before_scoring(request,review_context)
+        except ConnectorUnavailable:
+            if not allow_offline:
+                raise
+            with self.learning.transaction() as database:
+                known = self._state(database)
+                if known["mode"] != "shadow" or time.time()-known.get("synced_at",0) > 86400:
+                    raise PermissionError("Offline connected evaluation requires a recent enabled workspace state") from None
+        result=EvaluationResult.model_validate(evaluate(request))
+        if (result.workspaceId,result.caseId,result.modelBundleId,result.inputCommitment,result.templateCommitment) != (
+            request.workspaceId,request.caseId,request.modelBundleId,request.input_commitment(),request.template_commitment()):
+            raise ValueError("Local evaluator returned a result for a different committed request")
+        selected=bool(audit and audit["selected"])
+        with self.learning.transaction() as database:
+            self._case_live(database,request.caseId)
+            state=self._state(database)
+            state["results"][result.inputCommitment]=result.model_dump()
+            if not audit:
+                state["audits"][result.inputCommitment]={"selected_before_scoring":False,"ai_exposed":True,"offline":True}
+            elif not selected:
+                state["audits"][result.inputCommitment]["ai_exposed"]=True
+        self.queue_result(result)
+        return {"result":None if selected else result.model_dump(),"audit":audit,
+                "awaitingIndependentHuman":selected,"blindingAssurance":"connector_attested" if selected else "none",
+                "hostedHumanReviewReduction":False}
+
+    def release_result(self, input_commitment: str) -> dict:
+        """Explicit release marks exposure; import human labels before releasing."""
+        with self.learning.transaction() as database:
+            state=self._state(database)
+            if input_commitment not in state["results"]:
+                raise KeyError("Connector result not found")
+            state["audits"].setdefault(input_commitment,{})["ai_exposed"]=True
+            return deepcopy(state["results"][input_commitment])
+
+    def fetch_and_import_labels(self, grant_id: str, *, question_id: str, template_commitment: str,
+                                outcome_labels: dict[str,str]) -> dict:
+        """Import overall human verdicts only through an explicit single-question mapping.
+
+        This does not manufacture criterion labels from an overall verdict. A
+        multi-question rubric requires separate authenticated human adjudication.
+        """
+        _opaque(grant_id); _opaque(question_id); _hash(template_commitment)
+        if set(outcome_labels) != {"positive","negative"} or len(set(outcome_labels.values())) != 2:
+            raise ValueError("Provide distinct explicit labels for positive and negative overall verdicts")
+        self.sync_grants()
+        response=self._request("GET","/labeled-data",params={"grantId":grant_id})
+        body={k:v for k,v in response.items() if k != "exportDigest"}
+        if response.get("exportDigest") != commitment(body,"rateloop.product-evaluator.v2"):
+            raise ValueError("Human-label export commitment mismatch")
+        if response.get("schemaVersion") != "rateloop.evaluator-labeled-data.v2" or response.get("workspaceId") != self.workspace_id or response.get("contentMode") != "commitments_only":
+            raise ValueError("Unsupported human-label export")
+        current=time.time()
+        with self.learning.transaction() as database:
+            state=deepcopy(self._state(database))
+        if response.get("revocationWatermark") != state["watermark"]:
+            raise PermissionError("Label export requires a fresh matching revocation watermark; synchronize again")
+        remote=state["grants"].get(grant_id)
+        permission=self._validate_grant(response.get("grant"),now=current,watermark=state["watermark"])
+        if (not remote or permission != remote["grant"] or permission["templateCommitment"] != template_commitment
+            or "human_labels" not in permission["fields"] or permission["revokedAt"] is not None or _timestamp(permission["expiresAt"]) <= current):
+            raise PermissionError("Label export lacks an active exact scoped human-label grant")
+        if not isinstance(response.get("items"),list) or len(response["items"]) > 5000:
+            raise ValueError("Unbounded label export")
+        imported,rejected,duplicates=0,[],0
+        for item in response["items"]:
+            item_key=commitment(item,"rateloop.imported-human-label.v1")
+            try:
+                with self.learning.transaction() as database:
+                    latest=self._state(database)
+                    if item_key in latest["imports"]:
+                        duplicates+=1
+                        continue
+                    row=deepcopy(database["evaluations"].get(item.get("inputCommitment")))
+                    audit=deepcopy(latest["audits"].get(item.get("inputCommitment")))
+                    local_result=deepcopy(latest["results"].get(item.get("inputCommitment")))
+                if not row or row["workspace_id"] != self.workspace_id or not audit or not local_result:
+                    raise ValueError("No matching local evaluation and pre-scoring audit")
+                if (item.get("caseId"),item.get("modelBundleId"),item.get("templateCommitment")) != (
+                    row["case_id"],row.get("model_bundle_id"),row["template_commitment"]):
+                    raise ValueError("Human result does not bind the exact local case, model and template")
+                if item.get("resultCommitment") != local_result["resultCommitment"]:
+                    raise ValueError("Human export references a different automated result")
+                if item.get("templateCommitment") != template_commitment or item.get("modelBundleId") != permission["modelBundleId"]:
+                    raise ValueError("Human result is outside the exported grant scope")
+                if item.get("labelScope") != "overall_human_verdict" or item.get("criterionTrainingRequiresAdjudication") is not True:
+                    raise ValueError("Unknown human-label semantics")
+                questions=row["template"]["questions"]
+                if len(questions)!=1 or questions[0]["id"] != question_id or not set(outcome_labels.values()) <= {x["id"] for x in questions[0]["labels"]}:
+                    raise ValueError("Overall verdict mapping requires exactly one matching question")
+                remote_audit=item.get("audit",{})
+                if (not audit.get("selected_before_scoring") or audit.get("ai_exposed") is not False
+                    or audit.get("response",{}).get("selected") is not True
+                    or remote_audit.get("auditId") != audit["response"]["auditId"]
+                    or remote_audit.get("aiExposed") is not False or remote_audit.get("kind") not in ("random","mandatory")
+                    or remote_audit.get("kind") != audit["response"]["kind"]
+                    or remote_audit.get("selectionProbabilityBps") != audit["response"]["selectionProbabilityBps"]):
+                    raise ValueError("Human label lacks independently blind connector provenance")
+                if item.get("humanOutcome") not in outcome_labels or type(item.get("responseCount")) is not int or item["responseCount"] < 1:
+                    raise ValueError("Inconclusive or missing human verdict")
+                _hash(item.get("humanResultCommitment"))
+                if not audit["selected_at"]-300 <= _timestamp(item.get("observedAt")) <= current+300:
+                    raise ValueError("Human verdict time is outside the audit observation window")
+                label=outcome_labels[item["humanOutcome"]]
+                feedback=self.learning.add_feedback(workspace_id=self.workspace_id,evaluation_id=row["evaluation_id"],
+                    input_commitment=row["input_commitment"],template_commitment=row["template_commitment"],
+                    annotator_id="rateloop-consensus:"+item["humanResultCommitment"][7:47],labels={question_id:label},
+                    exposed_to_ai=False,independent_human=True,feedback_id="import_"+item_key[7:])
+                if feedback["quarantine_reasons"]:
+                    raise ValueError("Imported verdict was quarantined: "+",".join(feedback["quarantine_reasons"]))
+                with self.learning.transaction() as database:
+                    self._state(database)["imports"][item_key]={"feedback_id":feedback["id"],"at":current}
+                imported+=1
+            except (ValueError,PermissionError,KeyError,TypeError) as error:
+                rejected.append({"itemCommitment":item_key,"reason":str(error)})
+        return {"imported":imported,"duplicates":duplicates,"rejected":rejected,"truncated":response.get("truncated") is True,
+                "labelProvenance":"Authenticated RateLoop overall human consensus, mapped explicitly to one question."}
