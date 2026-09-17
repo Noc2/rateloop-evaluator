@@ -160,3 +160,40 @@ def test_registry_rejects_floating_model_revision(setup_registry):
     manifest["model_revision"]="current-main-branch"
     with pytest.raises(ValueError,match="full lowercase commit"):
         registry.register(manifest,"workspace",model_dir)
+
+
+@pytest.mark.parametrize("digest", [None, "b" * 64])
+def test_registry_rejects_calibration_for_unbound_or_different_checkpoint(setup_registry, digest):
+    _, registry, model_dir, manifest = setup_registry
+    weight_hash = manifest["files"]["weights.bin"]
+    (model_dir / "weights.bin").rename(model_dir / "model.safetensors")
+    manifest["files"] = {"model.safetensors": weight_hash}
+    manifest["calibrations"] = [fit_temperature([{"yes":.9,"no":.1}], ["yes"],
+        model_bundle_id=manifest["id"], template_commitment="template", question_id="q", language="en",
+        example_ids=["calibration-group"], model_weights_sha256=digest)]
+    with pytest.raises(ValueError, match="checkpoint digest"):
+        registry.register(manifest, "workspace", model_dir)
+
+
+def test_registry_accepts_calibration_only_with_exact_weights_and_live_lineage(setup_registry):
+    store, registry, model_dir, manifest = setup_registry
+    store.add_grant(workspace_id="workspace", rights=["ai_use", "private_training"],
+                    expires_at=time.time()+3600, evidence="synthetic fixture")
+    template = {"id":"rubric", "version":1, "language":"en", "questions":[{"id":"q",
+        "labels":[{"id":"yes"}, {"id":"no"}]}]}
+    for i in range(3):
+        store.record_evaluation(evaluation_id=f"eval{i}",workspace_id="workspace",case_id=f"case{i}",
+            input_commitment=f"input{i}",template_commitment="template",template=template,input_payload={"text":f"Example {i}"})
+        store.add_feedback(workspace_id="workspace",evaluation_id=f"eval{i}",input_commitment=f"input{i}",
+            template_commitment="template",annotator_id="synthetic",labels={"q":"yes"},exposed_to_ai=False,independent_human=True)
+    snapshot=store.create_snapshot("workspace","rubric",1)
+    store.register_model_lineage(manifest["id"],snapshot["id"],"workspace")
+    weight_hash=manifest["files"]["weights.bin"]
+    (model_dir / "weights.bin").rename(model_dir / "model.safetensors")
+    manifest["files"]={"model.safetensors":weight_hash}
+    manifest["snapshot_id"]=snapshot["id"]
+    manifest["calibrations"]=[fit_temperature([{"yes":.9,"no":.1}], ["yes"],
+        model_bundle_id=manifest["id"],template_commitment="template",question_id="q",language="en",
+        example_ids=[snapshot["calibration"][0]["group_id"]],model_weights_sha256=weight_hash)]
+    envelope=registry.register(manifest,"workspace",model_dir)
+    assert envelope["manifest"]["calibrations"][0]["model_weights_sha256"] == weight_hash

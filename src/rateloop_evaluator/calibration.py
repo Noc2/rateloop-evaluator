@@ -8,6 +8,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import re
 from typing import Any
 
 
@@ -40,7 +41,7 @@ def _softmax(logits: dict[str, float], temperature: float) -> dict[str, float]:
 def fit_temperature(
     scores: list[dict[str, float]], labels: list[str], *, model_bundle_id: str,
     template_commitment: str, question_id: str, language: str,
-    example_ids: list[str], score_type: str = "probabilities",
+    example_ids: list[str], score_type: str = "probabilities", model_weights_sha256: str | None = None,
 ) -> dict[str, Any]:
     """Fit a scalar temperature on calibration-only human labels.
 
@@ -53,6 +54,9 @@ def fit_temperature(
         raise ValueError("Calibration example IDs must be unique")
     if any(not value for value in (model_bundle_id, template_commitment, question_id, language)):
         raise ValueError("Calibration must bind a bundle, template, question and language")
+    if model_weights_sha256 is not None and (not isinstance(model_weights_sha256, str) or
+                                               not re.fullmatch(r"[0-9a-f]{64}", model_weights_sha256)):
+        raise ValueError("Calibration model weight digest must be SHA-256")
     logits = [_logits(row, score_type) for row in scores]
     keys = set(logits[0])
     if any(set(row) != keys or label not in keys for row, label in zip(logits, labels)):
@@ -77,6 +81,8 @@ def fit_temperature(
         "score_type": score_type, "example_ids": list(example_ids), "sample_count": len(labels),
         "nll_before": loss(0), "nll_after": loss(math.log(temperature)),
     }
+    if model_weights_sha256 is not None:
+        artifact["model_weights_sha256"] = model_weights_sha256
     artifact["id"] = "cal_" + hashlib.sha256(json.dumps(artifact, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()).hexdigest()
     return artifact
 
@@ -87,6 +93,9 @@ def validate_calibration(artifact: dict[str, Any]) -> None:
     expected = "cal_" + hashlib.sha256(json.dumps(candidate, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()).hexdigest()
     if artifact_id != expected or candidate.get("schema_version") != "rateloop.calibration.v1":
         raise ValueError("Calibration digest or schema is invalid")
+    weights = candidate.get("model_weights_sha256")
+    if weights is not None and (not isinstance(weights, str) or not re.fullmatch(r"[0-9a-f]{64}", weights)):
+        raise ValueError("Calibration model weight digest must be SHA-256")
     t = _number(candidate.get("temperature"))
     if not .05 <= t <= 20 or len(set(candidate.get("label_ids", []))) < 2:
         raise ValueError("Calibration parameters are invalid")

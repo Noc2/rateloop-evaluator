@@ -48,3 +48,16 @@ def test_exact_one_sided_bound_has_correct_zero_error_and_nonzero_cases():
     for errors,total in ((0,0),(-1,10),(11,10),(True,10)):
         with pytest.raises(ValueError):
             false_approval_upper_bound(errors,total)
+
+
+def test_calibration_digest_binds_actual_model_weights():
+    artifact = fit(model_weights_sha256="a" * 64)
+    assert artifact["model_weights_sha256"] == "a" * 64
+    assert artifact["id"] != fit(model_weights_sha256="b" * 64)["id"]
+    changed = deepcopy(artifact)
+    changed["model_weights_sha256"] = "b" * 64
+    with pytest.raises(ValueError, match="digest"):
+        validate_calibration(changed)
+    for digest in ("main", "a" * 63, 123):
+        with pytest.raises(ValueError, match="SHA-256"):
+            fit(model_weights_sha256=digest)

@@ -52,3 +52,20 @@ def test_training_reports_drop_content_and_encode_unevaluated_metric_as_null():
     result = sanitized_training_metrics({"best_metric": float("inf"), "raw_input": "private content",
         "train_metrics_history": [{"loss": .5, "example": "private content"}]})
     assert result == {"best_metric": None, "train_metrics_history": [{"loss": .5}], "eval_metrics_history": []}
+
+
+def test_retraining_requires_original_public_weights_not_private_ancestry():
+    from copy import deepcopy
+    from rateloop_evaluator.backends import MODEL_ID, MODEL_REVISION
+    from rateloop_evaluator.training import assert_public_training_base, REVIEWED_BASE_WEIGHTS_SHA256
+    public = {"source": {"repository": MODEL_ID, "revision": MODEL_REVISION},
+              "files": {"model.safetensors": REVIEWED_BASE_WEIGHTS_SHA256}}
+    assert_public_training_base(public)
+    for change in ("adapted", "stripped-metadata", "different-source", "floating-revision"):
+        candidate = deepcopy(public)
+        if change == "adapted": candidate["training"] = {"workspaceId": "other-workspace"}
+        if change == "stripped-metadata": candidate["files"]["model.safetensors"] = "b" * 64
+        if change == "different-source": candidate["source"]["repository"] = "other/model"
+        if change == "floating-revision": candidate["source"]["revision"] = "main"
+        with pytest.raises(PermissionError, match="reviewed public"):
+            assert_public_training_base(candidate)

@@ -111,6 +111,9 @@ class BundleRegistry:
         bindings = set()
         for artifact in manifest["calibrations"]:
             validate_calibration(artifact)
+            weight_hash = manifest["files"].get("model.safetensors")
+            if not weight_hash or artifact.get("model_weights_sha256") != weight_hash:
+                raise ValueError("Calibration checkpoint digest does not match bundle weights")
             if artifact["model_bundle_id"] != manifest["id"] or artifact["template_commitment"] not in manifest["template_commitments"] or artifact["language"] not in manifest["languages"]:
                 raise ValueError("Calibration is bound to another model or scope")
             binding = (artifact["template_commitment"], artifact["language"], artifact["question_id"])

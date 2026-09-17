@@ -11,7 +11,24 @@ from pathlib import Path
 from typing import Any
 
 from .backends import (GLiNERBackend, MODEL_ID, MODEL_REVISION, offline_environment,
-                       question_schema, render_input, validate_scores, write_model_manifest, model_token_limit, file_hash, MANIFEST_NAME)
+                       question_schema, render_input, validate_scores, write_model_manifest, model_token_limit, file_hash, MANIFEST_NAME, validate_local_model)
+
+
+REVIEWED_BASE_WEIGHTS_SHA256 = "c1ff4ec0bc00031c15530b8f3c33d3677f27949e6a0cb52e1247a6224b6c5395"
+
+
+def assert_public_training_base(manifest: dict[str, Any]) -> None:
+    """Retrain from the reviewed public base, never chain private adaptations.
+
+    This keeps each model's lineage complete in its own authorized snapshot.
+    Warm-starting from private/adapted weights would also require recursively
+    tracking and retiring every ancestor; that workflow is not supported yet.
+    """
+    source = manifest.get("source", {})
+    if (manifest.get("training") is not None or source.get("repository") != MODEL_ID
+            or source.get("revision") != MODEL_REVISION
+            or manifest.get("files", {}).get("model.safetensors") != REVIEWED_BASE_WEIGHTS_SHA256):
+        raise PermissionError("Training must start from the reviewed public GLiNER base; include all currently authorized examples in a new snapshot")
 
 
 @dataclass(frozen=True)
@@ -145,6 +162,7 @@ def train_snapshot(store: Any, snapshot_id: str, workspace_id: str,
     if output_dir.exists() and any(output_dir.iterdir()):
         raise ValueError("Training output directory must be empty")
     offline_environment()
+    assert_public_training_base(validate_local_model(model_dir))
     backend = GLiNERBackend(model_dir, options.device)
     model = backend.load()
     for example, record in zip(examples, records):
