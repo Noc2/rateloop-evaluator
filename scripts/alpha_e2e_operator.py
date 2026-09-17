@@ -12,6 +12,7 @@ import json
 from pathlib import Path
 import sys
 import threading
+import time
 
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/"src"))
 
@@ -76,6 +77,18 @@ def run(args):
     connector=connect(config,state_dir)
     try:
         connector.sync_grants()
+        if args.command=="renewal-check":
+            def snapshot():
+                with connector.learning.transaction() as database:
+                    state=connector._state(database)
+                    lease=state.get("authorization_lease")
+                    if not lease: raise ValueError("A durable consent execution lease is required")
+                    lineage=[{"consentId":identity,"revision":row["consent"]["revision"],"localGrantId":row["local_id"],
+                        "authorizationUntil":database["grants"][row["local_id"]]["authorization_until"]}
+                        for identity,row in sorted(state.get("consents",{}).items())]
+                    return {"leaseId":lease["leaseId"],"issuedAt":lease["issuedAt"],"expiresAt":lease["expiresAt"],"lineage":lineage}
+            before=snapshot();time.sleep(.025);connector.sync_grants();after=snapshot()
+            return {"before":before,"after":after,"observedFrom":"encrypted_local_permission_mirrors"}
         if args.command=="import-labels":
             return OutboundWorker(connector,worker_id="alpha-e2e-mac",model_bundle_ids=bundles,
                 evaluate=lambda _:None).sync_labels()
@@ -141,7 +154,7 @@ if __name__=="__main__":
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config",required=True)
     commands=parser.add_subparsers(dest="command",required=True)
-    commands.add_parser("bootstrap");commands.add_parser("import-labels")
+    commands.add_parser("bootstrap");commands.add_parser("import-labels");commands.add_parser("renewal-check")
     erase=commands.add_parser("verify-erasure");erase.add_argument("--case-id",required=True)
     worker=commands.add_parser("worker-once");worker.add_argument("--bundle-id",action="append")
     train=commands.add_parser("train-candidate");train.add_argument("--language",choices=["en","de"],default="en")
