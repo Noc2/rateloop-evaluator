@@ -19,6 +19,7 @@ from .protocol import EvaluationRequest, EvaluationResult
 from .templates import overall_approval
 from .execution import ExecutionBusy, model_execution
 from .presence import WorkerPresence
+from .authorization import CLOCK_SKEW_SECONDS
 
 
 class OutboundWorker:
@@ -95,7 +96,8 @@ class OutboundWorker:
     def _heartbeat(self, job: dict) -> None:
         response=self._post(job,"heartbeat")
         until=_timestamp(response.get("leaseExpiresAt"))
-        if not time.time() < until <= time.time()+125:
+        now=time.time()
+        if not now < until <= now+120+CLOCK_SKEW_SECONDS:
             raise ValueError("Invalid renewed job lease")
         job["leaseExpiresAt"]=response["leaseExpiresAt"]
         self._save(job)
@@ -108,7 +110,8 @@ class OutboundWorker:
         token=job.get("leaseToken")
         if not isinstance(token,str) or not 16 <= len(token) <= 512 or any(c in token for c in "\r\n"):
             raise ValueError("Invalid job fencing token")
-        if not time.time() < _timestamp(job.get("leaseExpiresAt")) <= time.time()+125:
+        now=time.time()
+        if not now < _timestamp(job.get("leaseExpiresAt")) <= now+120+CLOCK_SKEW_SECONDS:
             raise ValueError("Job lease is expired or exceeds 120 seconds")
 
     def _remember_audit(self, request: EvaluationRequest, body: dict) -> None:

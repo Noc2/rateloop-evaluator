@@ -21,6 +21,7 @@ import httpx
 from .learning import LearningStore, _digest
 from .protocol import EvaluationRequest, EvaluationResult, commitment
 from .storage import RuntimeStore
+from .authorization import AUTHORIZATION_SECONDS, CLOCK_SKEW_SECONDS, local_authorization_deadline, remote_time_observable
 
 _API = "/api/assurance/v2/evaluations"
 _ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$")
@@ -47,7 +48,7 @@ class AuthorizationLeaseRejected(PermissionError):
 
     def __init__(self, reason: str):
         if reason not in {"workspace_mismatch","recipient_mismatch","watermark_mismatch",
-                          "invalid_issue_time","future_issue","expired","excessive_duration"}:
+                          "invalid_issue_time","future_issue","expired","invalid_duration","excessive_duration"}:
             raise ValueError("Unknown authorization lease rejection reason")
         self.reason = reason
         super().__init__("Worker authorization lease rejected: "+reason)
@@ -278,11 +279,12 @@ class RateLoopConnector:
         if not isinstance(consent["fields"],list) or not consent["fields"] or not set(consent["fields"]) <= set(_FIELD_MAP):
             raise ValueError("Invalid consent fields")
         issued=_timestamp(consent["issuedAt"])
-        if not 0 < issued <= now or type(consent["revision"]) is not int or not 1 <= consent["revision"] <= watermark:
+        if not remote_time_observable(issued,now) or type(consent["revision"]) is not int or not 1 <= consent["revision"] <= watermark:
             raise ValueError("Invalid consent version or issue time")
         if consent["expiresAt"] is not None and _timestamp(consent["expiresAt"]) <= issued:
             raise ValueError("Invalid durable consent expiration")
-        if consent["revokedAt"] is not None and not issued <= _timestamp(consent["revokedAt"]) <= now:
+        if consent["revokedAt"] is not None and not (issued <= _timestamp(consent["revokedAt"])
+                and remote_time_observable(_timestamp(consent["revokedAt"]),now)):
             raise ValueError("Invalid durable consent revocation")
         return deepcopy(consent)
 
@@ -294,13 +296,13 @@ class RateLoopConnector:
         if len({c["consentId"] for c in consents}) != len(consents):
             raise ValueError("Duplicate consent identity")
         lease=response.get("authorizationLease")
-        until=now
+        lease_expiry=now
         if consents:
             expected={"leaseId","issuedAt","expiresAt","revocationWatermark","recipientApiKeyId","workspaceId"}
             if not isinstance(lease,dict) or set(lease) != expected:
                 raise ValueError("Durable permissions require a scoped worker authorization lease")
             _opaque(lease["leaseId"])
-            issued,until=_timestamp(lease["issuedAt"]),_timestamp(lease["expiresAt"])
+            issued,lease_expiry=_timestamp(lease["issuedAt"]),_timestamp(lease["expiresAt"])
             if lease["workspaceId"] != self.workspace_id:
                 raise AuthorizationLeaseRejected("workspace_mismatch")
             if lease["recipientApiKeyId"] != self.api_key_id:
@@ -309,19 +311,23 @@ class RateLoopConnector:
                 raise AuthorizationLeaseRejected("watermark_mismatch")
             if issued <= 0:
                 raise AuthorizationLeaseRejected("invalid_issue_time")
-            if issued > now:
+            if not remote_time_observable(issued,now):
                 raise AuthorizationLeaseRejected("future_issue")
-            if until <= now:
+            if lease_expiry-issued <= 0:
+                raise AuthorizationLeaseRejected("invalid_duration")
+            if lease_expiry <= now:
                 raise AuthorizationLeaseRejected("expired")
-            if until-issued>900:
+            if lease_expiry-issued>AUTHORIZATION_SECONDS:
                 raise AuthorizationLeaseRejected("excessive_duration")
+            if local_authorization_deadline(lease_expiry,now) <= now:
+                raise AuthorizationLeaseRejected("expired")
         with self.learning.transaction() as database:
             previous=deepcopy(self._state(database).get("consents",{}))
         received={c["consentId"]:c for c in consents}
         for identity,old in previous.items():
             current=received.get(identity)
             if (not current or current["revokedAt"] is not None
-                    or (current["expiresAt"] is not None and _timestamp(current["expiresAt"])<=now)
+                    or (current["expiresAt"] is not None and _timestamp(current["expiresAt"])-CLOCK_SKEW_SECONDS<=now)
                     or current["revision"] != old["consent"]["revision"]):
                 self.learning.revoke_grant(old["local_id"],self.workspace_id,now=now)
             elif commitment(current,"rateloop.durable-consent.v1") != old["digest"]:
@@ -329,16 +335,17 @@ class RateLoopConnector:
         mirrored={}
         for consent in consents:
             expiration=_timestamp(consent["expiresAt"]) if consent["expiresAt"] else 253402300799.0
-            if consent["revokedAt"] is not None or expiration<=now:
+            authorization_until=local_authorization_deadline(lease_expiry,now,expiration)
+            if consent["revokedAt"] is not None or authorization_until<=now:
                 continue
             identity=consent["consentId"]
             local_id="consent_"+hashlib.sha256((self.namespace+identity+":"+str(consent["revision"])).encode()).hexdigest()[:48]
             old=previous.get(identity)
             if old is not None and old["local_id"] == local_id:
-                self.learning.renew_authorization(local_id,self.workspace_id,min(until,expiration),now=now)
+                self.learning.renew_authorization(local_id,self.workspace_id,authorization_until,now=now)
             else:
                 self.learning.add_grant(workspace_id=self.workspace_id,rights=[_PURPOSE_RIGHTS[consent["purpose"]]],
-                    expires_at=expiration,authorization_until=min(until,expiration),fields=[_FIELD_MAP[f] for f in consent["fields"]],
+                    expires_at=expiration,authorization_until=authorization_until,fields=[_FIELD_MAP[f] for f in consent["fields"]],
                     model_bundle_ids=consent["modelBundleIds"],template_commitments=consent["templateCommitments"],grant_id=local_id,
                     evidence="RateLoop durable consent "+identity+" revision "+str(consent["revision"]),now=now)
             mirrored[identity]={"local_id":local_id,"digest":commitment(consent,"rateloop.durable-consent.v1"),"consent":consent}

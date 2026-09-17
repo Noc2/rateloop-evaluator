@@ -53,7 +53,8 @@ def test_changed_scope_and_excessive_leases_fail_closed(setup):
     ("recipient_mismatch",lambda now:{"recipientApiKeyId":"private-wrong-recipient"}),
     ("watermark_mismatch",lambda now:{"revocationWatermark":987654321}),
     ("invalid_issue_time",lambda now:{"issuedAt":iso(0)}),
-    ("future_issue",lambda now:{"issuedAt":iso(now+.001)}),
+    ("future_issue",lambda now:{"issuedAt":iso(now+5.001)}),
+    ("invalid_duration",lambda now:{"expiresAt":iso(now-1)}),
     ("expired",lambda now:{"expiresAt":iso(now)}),
     ("excessive_duration",lambda now:{"expiresAt":iso(now+900)}),
 ])
@@ -72,13 +73,13 @@ def test_authorization_lease_rejections_have_fixed_private_safe_reasons(setup,re
         assert connector._state(state)["last_failure"]=="invalid_remote_grant_state"
 
 
-def test_authorization_lease_exact_issue_and_duration_bounds_remain_unchanged(setup):
+def test_authorization_lease_exact_issue_and_duration_use_conservative_local_expiry(setup):
     connector,req,learning,_,remote,_,_,_=setup
     now=float(int(time.time()));durable(remote,req,now)
     remote["authorizationLease"].update(issuedAt=iso(now),expiresAt=iso(now+900))
     connector.sync_grants(now=now)
     with learning.transaction() as state:
-        assert [g["authorization_until"] for g in state["grants"].values() if g["authorization_until"] is not None]==[now+900]
+        assert [g["authorization_until"] for g in state["grants"].values() if g["authorization_until"] is not None]==[now+895]
 
 
 def test_authorization_lease_diagnostics_reject_unrecognized_free_text():

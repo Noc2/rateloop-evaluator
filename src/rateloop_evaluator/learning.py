@@ -21,6 +21,7 @@ from typing import Any, Iterator
 import uuid
 
 from cryptography.fernet import Fernet
+from .authorization import AUTHORIZATION_SECONDS
 
 RIGHTS = frozenset({"ai_use", "private_training", "shared_contribution", "public_weight_distribution"})
 COLLECTIONS = ("grants", "evaluations", "feedback", "snapshots", "lineage", "bundles", "deployments")
@@ -122,7 +123,7 @@ class LearningStore:
             raise ValueError("An evidenced, workspace-bound grant with known rights is required")
         if not isinstance(expires_at, (float, int)) or not current < expires_at < float("inf"):
             raise ValueError("Grant expiration must be a finite future timestamp")
-        if authorization_until is not None and not current < authorization_until <= min(expires_at,current+900):
+        if authorization_until is not None and not current < authorization_until <= min(expires_at,current+AUTHORIZATION_SECONDS):
             raise ValueError("Worker authorization must expire within 15 minutes")
         for scope in (case_ids, template_ids, fields, model_bundle_ids, template_commitments):
             if scope is not None and (not isinstance(scope, list) or any(not isinstance(x, str) or not x for x in scope)):
@@ -146,7 +147,7 @@ class LearningStore:
             if (not grant or grant["workspace_id"] != workspace_id or grant["revoked_at"] is not None
                     or grant["expires_at"] <= current or grant.get("authorization_until") is None):
                 raise PermissionError("Durable consent is unavailable for renewal")
-            if not current < expires_at <= min(grant["expires_at"],current+900):
+            if not current < expires_at <= min(grant["expires_at"],current+AUTHORIZATION_SECONDS):
                 raise ValueError("Worker authorization must expire within 15 minutes")
             grant["authorization_until"] = expires_at
 
