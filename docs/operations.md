@@ -32,7 +32,9 @@ The signed model registry and evaluation gates do not replace authentication of 
 
 ## Outbound website worker
 
-Use a dedicated private state directory initialized with the actual workspace ID. Provision and register the overall-approval request for each intended language, then import the exported registration into the workspace. The connector's agent and version IDs must match the selected website integration. The workspace credential needs `evaluation:read` and `telemetry:write`; the website creates the authorized review before worker inference.
+The current Alpha website accepts its configured RateLoop-operated Mac. Standalone customer-local operation is supported; connecting customer hardware to the hosted website queue is not enabled.
+
+Use a dedicated private state directory initialized with the actual workspace ID. Provision and register the overall-approval request for each intended language, then import the exported registration into the workspace. The connector's agent and version IDs must match the selected website integration. The workspace credential needs `evaluation:read` and `telemetry:write`. For AI + human, the website creates the authorized human review before worker inference; AI-only cases create no human review.
 
 ```sh
 rateloop-evaluator --state-dir /private/evaluator init --workspace WORKSPACE_ID
@@ -42,6 +44,10 @@ rateloop-evaluator --state-dir /private/evaluator worker --config /private/conne
 ```
 
 The private connector file follows [the connector configuration](connector.md) and uses `https://www.rateloop.ai` for the Alpha. Enable AI processing for the selected operator's hardware before submitting a case. Enable private learning separately, before collecting training cases. Shared data and public-weight permissions remain independent.
+
+Choose Human, AI or AI + human before submitting the website case. Human-only creates no evaluator job. AI-only returns its advisory rating when the worker completes, without requiring reviewers; low-confidence or uncalibrated results remain uncertain. AI + human preserves independent review by withholding the AI result until the human answer freezes. The model's local shadow/selective qualification is separate from this case-level choice. Selecting AI never grants training permission or changes a required human review already in progress.
+
+The worker binds `reviewMode` from the authenticated claim to the content response. An omitted field means the earlier AI + human behavior. AI-only requires an explicit `ai` choice, `audit: null` and `retainForTraining: false`; its raw inputs are not retained for training and its results cannot be imported or submitted as human training labels. Upgrade the worker before selecting AI-only: an older worker correctly refuses a job with no mandatory blinded audit.
 
 Remove `--once` for continuous processing. The worker polls every five seconds, uses a 120-second fenced job lease and renews it every 30 seconds during inference. It refreshes execution consent before scoring and before releasing a receipt. Explicit case tombstones purge local examples, pending metadata and dependent model eligibility when synchronized. A credential failure stops execution; it does not imply a blanket data-deletion instruction. An owner workspace-deletion notice processes the explicit case IDs returned by the server and retires execution permissions. Local-only cases not identified by that notice require the owner's `delete-case` command and backup-retention process.
 
@@ -59,7 +65,7 @@ The idempotent presence update retries at most three times, after 100 ms and 300
 
 The acceptance operator uses `rateloop_evaluator.presence.connected_training(connector, worker_id=..., model_bundle_ids=[...])` around its complete in-process train/calibrate/register/score sequence. Production operator scripts can use the same context with their explicitly configured `RateLoopConnector`, the installed worker's identity, and already registered source bundles. The context acquires the shared execution lock before reporting training, yields a `check()` function to call between stages, renews consent during the operation, and attempts a matching ready report in `finally`. Invoke Python training and CLI functions within that process; do not hold the parent lock while starting separate training subprocesses. The ordinary local `train` command has no connector or unsolicited network traffic; while it holds execution, a separately running connected worker reports busy rather than training.
 
-Progress, fencing tokens, results and receipt acknowledgments persist encrypted. A restart renews the saved lease or drops a superseded claim, and retries use the same input and receipt commitments. A Mac that sleeps appears offline; queued cases wait or return a recoverable failure after the server's bounded attempts. Human review is never satisfied by an absent worker. Use an awake, connected account for an unattended pilot; later move the same worker to an always-on machine if needed.
+Progress, fencing tokens, results and receipt acknowledgments persist encrypted. A restart renews the saved lease or drops a superseded claim, and retries use the same input and receipt commitments. A Mac that sleeps appears offline; queued cases wait or return a recoverable failure after the server's bounded attempts. An absent worker cannot approve a case or silently switch it to human review. Use an awake, connected account for an unattended pilot; later move the same worker to an always-on machine if needed.
 
 For a native macOS login service, install the reviewed package without editable mode into a persistent virtual environment outside Documents, Desktop, Downloads and cloud-synced folders. Keep the service's configuration, state and model files outside those folders too. A terminal's access does not establish access for a background service. Use the user's Application Support directory, for example:
 

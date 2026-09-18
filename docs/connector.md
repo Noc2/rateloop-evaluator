@@ -2,7 +2,7 @@
 
 The evaluator works without a RateLoop account. The connector adds outbound metadata receipts, server-selected human audits and explicitly authorized human-label imports. It does not upload the evaluated text, context or evidence.
 
-RateLoop's initial integration supports **off, shadow and paused**. Hosted receipts remain advisory and cannot reduce required human review, regardless of the evaluator's local deployment mode.
+RateLoop's evaluator connection supports **off, shadow and paused**. Separately, each website case selects **Human**, **AI** or **AI + human**. AI-only returns an advisory result without creating human review; AI + human withholds that result until the independent human answer freezes. Hosted receipts cannot automatically satisfy required human review, regardless of the evaluator's local deployment mode.
 
 ## Configuration
 
@@ -41,6 +41,8 @@ connector = RateLoopConnector(
 ```
 
 The example origin is RateLoop's branded Alpha. `learning_store` and `runtime_store` are existing customer-owned local stores; the connector never creates a cloud copy of their contents.
+
+Website jobs carry their frozen `reviewMode` in both the authenticated claim and content. Only `ai` explicitly omits human review; `ai_and_human` and legacy omissions require the mandatory server-blinded audit. Human-only does not create an evaluator job. AI-only content must contain `audit: null` and `retainForTraining: false`. The worker checks the same committed request, consent, model, agent identity and execution lease for either AI choice, and refuses a mode change on retry. No audit or human training reference is manufactured for AI-only cases.
 
 ## Synchronize learning permissions
 
@@ -179,7 +181,7 @@ report = connector.fetch_and_import_labels(
 
 Choose this mapping only when the overall human review actually answers that question. A narrow tone criterion is not interchangeable with an overall approval unless the review itself was defined that way. Multi-question evaluations require separately authenticated criterion-level adjudication; this connector does not invent those labels.
 
-Import checks the export digest and current grant watermark, exact local case/input/template/model/result bindings, a conclusive human verdict, the stored pre-scoring audit, and lack of AI exposure. It retains the provenance as an authenticated overall human consensus, not an invented individual reviewer vote. Mismatches, inconclusive verdicts, exposed judgments and multi-question mappings are rejected with reasons. Repeated imports are idempotent. The subsequent snapshot builder keeps correlated cases in the same partition.
+Import checks the export digest and current grant watermark, exact local case/input/template/model/result bindings, a conclusive human verdict, the stored pre-scoring audit, and lack of AI exposure. It retains the provenance as an authenticated overall human consensus, not an invented individual reviewer vote. AI-only cases cannot contribute human labels, including through the local feedback API. Mismatches, inconclusive verdicts, exposed judgments and multi-question mappings are rejected with reasons. Repeated imports are idempotent. The subsequent snapshot builder keeps correlated cases in the same partition.
 
 `truncated: true` means the server's bounded export did not contain every result. Do not treat it as a complete training dataset. Use narrower server export windows through a future explicitly bounded import extension rather than silently accepting missing records.
 

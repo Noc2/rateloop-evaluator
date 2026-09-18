@@ -28,10 +28,19 @@ the service uses those functions rather than duplicating grant checks. Model/bac
 local hardware before claiming support. Synthetic predictors are tests only and never selectable by a runtime flag.
 
 The outbound website protocol uses `/api/assurance/v2/evaluations/jobs/claim`, followed by lease-scoped
-`/jobs/{jobId}/content`, `/heartbeat`, `/complete` and `/fail`. Claims contain metadata only. Content returns
-the exact portable request, original `createdAt`, `retainForTraining`, committed server-selected audit and agent identity.
+`/jobs/{jobId}/content`, `/heartbeat`, `/complete` and `/fail`. Claims contain metadata only, including frozen
+`reviewMode: "ai" | "ai_and_human"`. Content repeats that exact mode and returns the portable request, original
+`createdAt`, `retainForTraining`, audit and agent identity. An omitted mode in either response means `ai_and_human`;
+explicit null, unknown values, or a claim/content mismatch are rejected. Human-only cases create no evaluator job.
 Job leases last 120 seconds and fencing headers bind receipts to the current worker: `X-Evaluator-Job`,
-`X-Evaluator-Worker`, `X-Evaluator-Lease`. Results remain hidden from review surfaces until the independent answer freezes.
+`X-Evaluator-Worker`, `X-Evaluator-Lease`.
+
+For `ai_and_human`, the audit remains mandatory, selected with probability 10000 basis points, unexposed and
+`server_enforced`; results stay hidden until the independent answer freezes. For `ai`, content requires explicit
+`audit: null` and `retainForTraining: false`. Its result can be shown immediately, remains advisory, and never
+creates an independent human training reference. The worker's completed result has `humanReviewRequired: false`
+only for an explicit AI-only job. Review selection does not change the portable result schema, calibration,
+uncertainty, consent, model qualification or immutable input commitment.
 
 Grant synchronization can include immutable durable `consents` and a distinct recipient-bound `authorizationLease`
 of at most 900 seconds. Stable consent revisions, explicit fields, template commitments and model bundle IDs determine

@@ -5,7 +5,7 @@ It runs independently of a RateLoop account. Customer examples and private adapt
 
 It provides authenticated local inference, full and LoRA fine-tuning, encrypted human-feedback storage, separate training permissions, grouped datasets, calibration, signed model bundles, rollback and a RateLoop connector. English and German templates are supported. GLiClass v3 is available as a benchmark challenger in a separate environment.
 
-**The initial RateLoop integration is advisory.** AI results do not satisfy or reduce required human review. A local selective mode exists behind independent held-out quality gates; the included synthetic examples cannot qualify it. Pretrained classification scores are not calibrated ratings.
+**Choose human review, AI ratings, or both in RateLoop.** AI-only cases return an advisory rating without opening a human review. When both are selected, the AI answer stays hidden until the human answer is frozen. Choosing AI does not qualify the model for automatic approval: uncertain results remain uncertain, and pretrained scores are not calibrated probabilities. A local selective mode exists behind independent held-out quality gates; the included synthetic examples cannot qualify it.
 
 ## Run locally
 
@@ -52,9 +52,19 @@ Export the registered bundle's metadata:
 .venv/bin/rateloop-evaluator export-registration --bundle-id gliner25-multi-shadow-v1 --request examples/reply-request.json --output /private/path/bundle-registration.json
 ```
 
-In the updated RateLoop workspace's **Evaluations** tab, import this file and enable the evaluator. Use a workspace API key with evaluation and telemetry scopes. For website jobs, use `examples/approval-request-en.json` or `examples/approval-request-de.json`, containing the same overall approval question as the human review; replace placeholder workspace and bundle IDs before registration.
+In the updated RateLoop workspace's **Agents → Results** tab, open **Set up AI** (or **AI settings**), import this file and enable the evaluator. Use a workspace API key with evaluation and telemetry scopes. For website jobs, use `examples/approval-request-en.json` or `examples/approval-request-de.json`, containing the same overall approval question as the human review; replace placeholder workspace and bundle IDs before registration.
 
-The outbound `worker` command pulls authorized website cases over HTTPS, runs the pinned local model, posts fenced advisory results and synchronizes independently frozen human judgments. No public Mac port is opened. Website cases already submitted to RateLoop are processed on the explicitly selected operator's hardware; this is not a fully offline website. Results and provenance return as metadata; private training examples and weights stay local. [Install and run the worker](docs/operations.md#outbound-website-worker).
+Select the review option before submitting a case:
+
+| Choice | Result |
+| --- | --- |
+| Human review | Human review; no AI job or AI-processing permission required. |
+| Rating AI | AI rating as soon as the configured worker completes; no human review or human training label. |
+| AI + human | Both ratings, with the AI answer withheld until the independent human answer freezes. |
+
+AI choices require an authorized, registered model and a running worker. AI-only cases do not retain inputs for training, even when workspace learning is enabled. Use AI + human with separate learning consent to collect independent labels for improvement. Existing required human reviews remain in force.
+
+The outbound `worker` command pulls authorized website cases over HTTPS, runs the pinned local model, posts fenced advisory results and synchronizes independently frozen human judgments. No public Mac port is opened. The current Alpha website sends submitted cases to its configured RateLoop-operated Mac; this is not a fully offline website. Results and provenance return as metadata; private training examples and weights stay local. [Install and run the worker](docs/operations.md#outbound-website-worker).
 
 AI processing and private learning are separate durable owner permissions with exact credential, model and template scopes. Execution leases last at most 15 minutes and renew while connected. Enabling learning later does not retain previously queued inputs. Withdrawal retires affected models; case-erasure tombstones delete their retained examples. Legacy grants keep their original finite expiry.
 
