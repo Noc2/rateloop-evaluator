@@ -49,6 +49,21 @@ def connect(config: dict, state_dir: Path) -> RateLoopConnector:
         allow_insecure_loopback=remote.get("allowInsecureLoopback",False))
 
 
+def verify_ai_only_case(connector: RateLoopConnector, case_id: str) -> dict:
+    """Read private evidence without returning customer content or labels."""
+    with connector.learning.transaction() as database:
+        state=connector._state(database)
+        rows=[row for row in database["evaluations"].values()
+              if row["workspace_id"]==connector.workspace_id and row["case_id"]==case_id]
+        if len(rows)!=1: raise ValueError("AI-only verification requires one exact local evaluation")
+        row=rows[0]
+        collection=state.get("collections",{}).get(row["input_commitment"],{})
+        if collection.get("reviewMode")!="ai": raise ValueError("The selected case is not AI-only")
+        return {"caseId":case_id,"aiOnly":True,"retainedTrainingInputs":int(row["input"] is not None),
+            "humanAudits":sum(key==row["input_commitment"] or audit.get("case_id")==case_id for key,audit in state["audits"].items()),
+            "humanLabels":sum(item["evaluation_id"]==row["evaluation_id"] for item in database["feedback"].values())}
+
+
 def run(args):
     config=json.loads(read_secret(args.config))
     required={"stateDir","workspaceId","modelDir","device","baseBundlePrefix","connector"}
@@ -105,6 +120,8 @@ def run(args):
         if args.command=="import-labels":
             return OutboundWorker(connector,worker_id="alpha-e2e-mac",model_bundle_ids=bundles,
                 evaluate=lambda _:None).sync_labels()
+        if args.command=="verify-ai-only":
+            return verify_ai_only_case(connector,args.case_id)
         if args.command=="verify-erasure":
             present=False
             with connector.learning.transaction() as database:
@@ -165,6 +182,7 @@ if __name__=="__main__":
     commands=parser.add_subparsers(dest="command",required=True)
     commands.add_parser("bootstrap");commands.add_parser("import-labels");commands.add_parser("renewal-check")
     erase=commands.add_parser("verify-erasure");erase.add_argument("--case-id",required=True)
+    ai_only=commands.add_parser("verify-ai-only");ai_only.add_argument("--case-id",required=True)
     worker=commands.add_parser("worker-once");worker.add_argument("--bundle-id",action="append")
     train=commands.add_parser("train-candidate");train.add_argument("--language",choices=["en","de"],default="en")
     train.add_argument("--bundle-id",action="append",required=True)
