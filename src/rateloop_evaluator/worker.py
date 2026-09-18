@@ -22,6 +22,14 @@ from .presence import WorkerPresence
 from .authorization import CLOCK_SKEW_SECONDS
 
 
+def _review_mode(value: dict) -> str:
+    """Only an explicit, server-bound choice can omit the human review."""
+    mode=value.get("reviewMode","ai_and_human")
+    if mode not in ("ai","ai_and_human"):
+        raise ValueError("Invalid website evaluator review mode")
+    return mode
+
+
 class OutboundWorker:
     def __init__(self, connector: RateLoopConnector, *, worker_id: str, model_bundle_ids: list[str],
                  evaluate: Callable[[EvaluationRequest],dict], poll_seconds: float = 5,
@@ -58,7 +66,7 @@ class OutboundWorker:
         self.last_label_sync=time.monotonic()
         return {"imported":imported,"rejected":rejected,"truncated":truncated}
 
-    def _remember_collection(self, request: EvaluationRequest, body: dict) -> None:
+    def _remember_collection(self, request: EvaluationRequest, body: dict, review_mode: str) -> None:
         created_at=_timestamp(body.get("createdAt"))
         if not 0<created_at<=time.time()+300 or type(body.get("retainForTraining")) is not bool:
             raise ValueError("Website content must declare its original collection and training permission")
@@ -66,16 +74,22 @@ class OutboundWorker:
         if request.input.context: fields.add("context")
         if request.input.evidence: fields.add("evidence")
         with self.connector.learning.transaction() as database:
+            self.connector._case_live(database,request.caseId)
             state=self.connector._state(database)
             permitted=any(c["consent"]["purpose"]=="private_learning" and _timestamp(c["consent"]["issuedAt"])<=created_at
                 and request.modelBundleId in c["consent"]["modelBundleIds"]
                 and request.template_commitment() in c["consent"]["templateCommitments"]
                 and fields<=set(c["consent"]["fields"]) for c in state.get("consents",{}).values())
-            value={"caseId":request.caseId,"createdAt":body["createdAt"],"trainingAllowed":body["retainForTraining"] and permitted}
+            value={"caseId":request.caseId,"createdAt":body["createdAt"],"reviewMode":review_mode,
+                "trainingAllowed":review_mode=="ai_and_human" and body["retainForTraining"] and permitted}
             collections=state.setdefault("collections",{})
             old=collections.get(request.input_commitment())
             if old and (old["createdAt"]!=value["createdAt"] or old["caseId"]!=request.caseId):
                 raise ValueError("Website collection identity changed")
+            if old and _review_mode(old)!=review_mode:
+                raise ValueError("Website collection review mode changed")
+            if review_mode=="ai" and request.input_commitment() in state["audits"]:
+                raise ValueError("AI-only case already has human review provenance")
             if old: value["trainingAllowed"]=old["trainingAllowed"] and value["trainingAllowed"]
             collections[request.input_commitment()]=value
 
@@ -103,6 +117,7 @@ class OutboundWorker:
         self._save(job)
 
     def _validate_claim(self, job: dict) -> None:
+        _review_mode(job)
         for key in ("jobId","modelBundleId"): _opaque(job.get(key))
         for key in ("inputCommitment","templateCommitment"): _hash(job.get(key))
         if job["modelBundleId"] not in self.model_bundle_ids:
@@ -116,7 +131,7 @@ class OutboundWorker:
 
     def _remember_audit(self, request: EvaluationRequest, body: dict) -> None:
         audit=body.get("audit",{})
-        if (audit.get("selected") is not True or audit.get("kind") != "mandatory" or audit.get("aiExposed") is not False
+        if (not isinstance(audit,dict) or audit.get("selected") is not True or audit.get("kind") != "mandatory" or audit.get("aiExposed") is not False
                 or audit.get("selectionProbabilityBps") != 10000 or audit.get("blindingAssurance") != "server_enforced"):
             raise PermissionError("Website jobs require a mandatory server-blinded human review")
         _opaque(audit.get("auditId"))
@@ -127,12 +142,12 @@ class OutboundWorker:
         if (bindings["sourceContentHash"] != "sha256:"+hashlib.sha256(request.input.context.encode()).hexdigest()
                 or bindings["suggestedContentHash"] != "sha256:"+hashlib.sha256(request.input.text.encode()).hexdigest()):
             raise ValueError("Human review and evaluator content bytes differ")
-        if request.template != overall_approval(request.template.language):
-            raise ValueError("Website jobs require the exact frozen overall approval template")
         with self.connector.learning.transaction() as database:
             self.connector._case_live(database,request.caseId)
             state=self.connector._state(database)
             previous=state["audits"].get(request.input_commitment())
+            if previous is None and (request.input_commitment() in state["results"] or request.input_commitment() in database["evaluations"]):
+                raise PermissionError("Already scored content cannot acquire a pre-scoring human audit")
             if previous and previous.get("response",{}).get("auditId") != audit["auditId"]:
                 raise ValueError("Resumed job changed the independent review")
             state["audits"][request.input_commitment()]={"response":deepcopy(audit),"case_id":request.caseId,
@@ -167,8 +182,15 @@ class OutboundWorker:
         if (request.workspaceId != self.connector.workspace_id or request.modelBundleId != job["modelBundleId"]
                 or request.input_commitment()!=job["inputCommitment"] or request.template_commitment()!=job["templateCommitment"]):
             raise ValueError("Job content does not match its committed workspace, template and model")
-        self._remember_audit(request,body)
-        self._remember_collection(request,body)
+        review_mode=_review_mode(job)
+        if _review_mode(body)!=review_mode:
+            raise ValueError("Job content changed the claimed review mode")
+        if request.template != overall_approval(request.template.language):
+            raise ValueError("Website jobs require the exact frozen overall approval template")
+        if review_mode=="ai" and ("audit" not in body or body["audit"] is not None or body.get("retainForTraining") is not False):
+            raise PermissionError("AI-only website jobs cannot claim human audit or training provenance")
+        self._remember_collection(request,body,review_mode)
+        if review_mode=="ai_and_human": self._remember_audit(request,body)
         job["caseId"]=request.caseId; self._save(job)
         with self._renew_while_working(job) as failed:
             result=EvaluationResult.model_validate(self.evaluate(request))
@@ -191,7 +213,8 @@ class OutboundWorker:
             raise ConnectorUnavailable("Result remains in the encrypted outbox")
         self._post(job,"complete",receiptId=acknowledgment["receiptId"])
         self._save(None)
-        return {"state":"completed","jobId":job["jobId"],"modelBundleId":job["modelBundleId"],"humanReviewRequired":True}
+        return {"state":"completed","jobId":job["jobId"],"modelBundleId":job["modelBundleId"],
+            "humanReviewRequired":review_mode=="ai_and_human"}
 
     def run_once(self) -> dict:
         status=self.connector.sync_grants()

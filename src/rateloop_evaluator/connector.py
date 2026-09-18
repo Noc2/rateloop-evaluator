@@ -628,6 +628,9 @@ class RateLoopConnector:
                         duplicates+=1
                         continue
                     row=deepcopy(database["evaluations"].get(item.get("inputCommitment")))
+                    collection=latest.get("collections",{}).get(item.get("inputCommitment"),{})
+                    if collection.get("reviewMode")=="ai":
+                        raise ValueError("AI-only cases have no independent human training reference")
                     audit=deepcopy(latest["audits"].get(item.get("inputCommitment")))
                     local_result=deepcopy(latest["results"].get(item.get("inputCommitment")))
                 if not row or row["workspace_id"] != self.workspace_id or not audit or not local_result:

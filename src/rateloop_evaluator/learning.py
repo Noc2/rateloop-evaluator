@@ -274,6 +274,10 @@ class LearningStore:
             row = state["evaluations"].get(evaluation_id)
             if not row or row["workspace_id"] != workspace_id:
                 raise KeyError("Evaluation not found")
+            if any(connector.get("workspace_id")==workspace_id
+                   and connector.get("collections",{}).get(row["input_commitment"],{}).get("reviewMode")=="ai"
+                   for connector in state.get("connectors",{}).values()):
+                raise PermissionError("AI-only cases cannot accept human training labels")
             self._matching_grants(state, workspace_id=workspace_id, right="private_training", case_id=row["case_id"],
                                   template_id=row["template"]["id"], fields=[*row["fields"], "human_labels"], now=current,
                                   model_bundle_id=row.get("model_bundle_id"), template_commitment=row["template_commitment"])

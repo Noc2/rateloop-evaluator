@@ -1,5 +1,6 @@
 from copy import deepcopy
 import hashlib
+from importlib.util import module_from_spec, spec_from_file_location
 import json
 import plistlib
 from pathlib import Path
@@ -11,7 +12,7 @@ import pytest
 from test_connector import setup, iso, review_context
 from test_durable_consent import durable
 from rateloop_evaluator.connector import RateLoopConnector, ConnectorUnavailable
-from rateloop_evaluator.protocol import EvaluationRequest
+from rateloop_evaluator.protocol import EvaluationRequest, commitment, utc_now
 from rateloop_evaluator.service import Principal, create_app
 from rateloop_evaluator.templates import overall_approval
 from rateloop_evaluator.worker import OutboundWorker, install_launchd, single_worker
@@ -31,7 +32,7 @@ def website(setup):
         "suggestedContentHash":"sha256:"+hashlib.sha256(req.input.text.encode()).hexdigest(),"frozenQuestionHash":"sha256:"+"d"*64}
     body={"request":req.model_dump(),"reviewContext":review_context(),"audit":audit,"agentId":"agent-1","agentVersionId":"version-1",
           "createdAt":iso(time.time()),"retainForTraining":True}
-    behavior.update(claimed=False,completed=False,heartbeat_status=200,complete_status=200,content=body)
+    behavior.update(claimed=False,completed=False,heartbeat_status=200,complete_status=200,content=body,job=job)
     old_transport=kwargs["transport"]
     def handle(request):
         path=request.url.path
@@ -56,7 +57,7 @@ def website(setup):
         if path.endswith("/complete"):
             assert payload["receiptId"]=="aev_"+"1"*40
             behavior["completed"]=True
-            return httpx.Response(behavior["complete_status"],json={"state":"awaiting_human_review"})
+            return httpx.Response(behavior["complete_status"],json={"state":"completed" if job.get("reviewMode")=="ai" else "awaiting_human_review"})
         if path.endswith("/fail"):
             behavior["failed"]=payload
             return httpx.Response(200,json={"state":"failed"})
@@ -107,6 +108,152 @@ def test_inference_only_permission_does_not_retain_training_inputs(website):
         assert db["evaluations"][req.input_commitment()]["input"] is None
 
 
+def choose_ai_only(behavior):
+    behavior["job"]["reviewMode"]="ai"
+    behavior["content"].update(reviewMode="ai",audit=None,retainForTraining=False)
+
+
+def test_explicit_ai_only_returns_advisory_prediction_without_human_or_training_reference(website):
+    worker,req,backend,_,behavior,calls=website
+    choose_ai_only(behavior)
+    assert worker.run_once()=={"state":"completed","jobId":"job-1","modelBundleId":req.modelBundleId,"humanReviewRequired":False}
+    assert backend.calls==1 and behavior["completed"]
+    assert not any(r.url.path.endswith("/audits") for r in calls)
+    receipt=next(json.loads(r.content) for r in calls if r.url.path.endswith("/receipts"))
+    assert receipt["result"]["outcome"]=="uncertain"
+    assert receipt["result"]["abstainReason"]=="uncalibrated"
+    assert receipt["result"]["criteria"][0]["label"]=="approved"
+    with worker.connector.learning.transaction() as db:
+        state=worker.connector._state(db)
+        assert req.input_commitment() not in state["audits"]
+        assert state["collections"][req.input_commitment()]["reviewMode"]=="ai"
+        assert state["collections"][req.input_commitment()]["trainingAllowed"] is False
+        assert db["evaluations"][req.input_commitment()]["input"] is None
+        assert not db["feedback"]
+    with pytest.raises(PermissionError,match="AI-only cases"):
+        worker.connector.learning.add_feedback(workspace_id=req.workspaceId,evaluation_id=req.input_commitment(),
+            input_commitment=req.input_commitment(),template_commitment=req.template_commitment(),
+            annotator_id="human-1",labels={"overall_approval":"approved"},exposed_to_ai=False,independent_human=True)
+
+
+@pytest.mark.parametrize("mode",["missing","ai_and_human"])
+def test_legacy_and_explicit_both_require_blinded_human_review(website,mode):
+    worker,req,_,_,behavior,_=website
+    if mode!="missing":
+        behavior["job"]["reviewMode"]=mode
+        behavior["content"]["reviewMode"]=mode
+    assert worker.run_once()["humanReviewRequired"] is True
+    with worker.connector.learning.transaction() as db:
+        assert worker.connector._state(db)["audits"][req.input_commitment()]["response"]["selected"] is True
+
+
+@pytest.mark.parametrize("claim_mode,content_mode",[
+    ("ai","ai_and_human"),("ai_and_human","ai"),("missing","ai"),("ai","missing"),
+    ("ai",None),("ai","human"),("ai","auto_approve"),
+])
+def test_content_cannot_change_claimed_review_selection(website,claim_mode,content_mode):
+    worker,_,backend,_,behavior,_=website
+    if claim_mode!="missing": behavior["job"]["reviewMode"]=claim_mode
+    if content_mode!="missing": behavior["content"]["reviewMode"]=content_mode
+    assert worker.run_once()["state"]=="failed"
+    assert backend.calls==0
+
+
+@pytest.mark.parametrize("mode",[None,"human","auto_approve",True])
+def test_claim_rejects_unknown_or_human_only_modes(website,mode):
+    worker,_,backend,_,behavior,calls=website
+    behavior["job"]["reviewMode"]=mode
+    with pytest.raises(ValueError,match="review mode"): worker.run_once()
+    assert backend.calls==0 and not any(r.url.path.endswith("/content") for r in calls)
+
+
+@pytest.mark.parametrize("change",["audit","missing_audit","retention","missing_retention"])
+def test_ai_only_rejects_human_or_training_provenance(website,change):
+    worker,_,backend,_,behavior,_=website
+    audit=deepcopy(behavior["content"]["audit"])
+    choose_ai_only(behavior)
+    if change=="audit": behavior["content"]["audit"]=audit
+    if change=="missing_audit": del behavior["content"]["audit"]
+    if change=="retention": behavior["content"]["retainForTraining"]=True
+    if change=="missing_retention": del behavior["content"]["retainForTraining"]
+    assert worker.run_once()["state"]=="failed" and backend.calls==0
+
+
+@pytest.mark.parametrize("change",["absent","null","selected","kind","exposed","probability","blinding"])
+def test_both_modes_keep_every_human_blinding_requirement(website,change):
+    worker,_,backend,_,behavior,_=website
+    behavior["job"]["reviewMode"]="ai_and_human"
+    behavior["content"]["reviewMode"]="ai_and_human"
+    if change=="absent": del behavior["content"]["audit"]
+    elif change=="null": behavior["content"]["audit"]=None
+    else:
+        key,value={"selected":("selected",False),"kind":("kind","random"),"exposed":("aiExposed",True),
+            "probability":("selectionProbabilityBps",5000),"blinding":("blindingAssurance","connector_attested")}[change]
+        behavior["content"]["audit"][key]=value
+    assert worker.run_once()["state"]=="failed" and backend.calls==0
+
+
+@pytest.mark.parametrize("first_mode",["ai","ai_and_human"])
+def test_retry_cannot_reclassify_a_scored_case_as_a_different_review_mode(website,first_mode):
+    worker,_,backend,_,behavior,_=website
+    original_audit=deepcopy(behavior["content"]["audit"])
+    if first_mode=="ai": choose_ai_only(behavior)
+    behavior["complete_status"]=503
+    with pytest.raises(ConnectorUnavailable): worker.run_once()
+    saved=worker._saved()
+    saved["reviewMode"]="ai_and_human" if first_mode=="ai" else "ai"
+    worker._save(saved)
+    behavior["content"]["reviewMode"]=saved["reviewMode"]
+    behavior["content"]["audit"]=original_audit if saved["reviewMode"]=="ai_and_human" else None
+    behavior["content"]["retainForTraining"]=saved["reviewMode"]=="ai_and_human"
+    assert worker.run_once()["state"]=="failed"
+    assert backend.calls==1
+
+
+def test_ai_only_receipt_retry_keeps_choice_and_does_not_score_twice(website):
+    worker,req,backend,_,behavior,_=website
+    choose_ai_only(behavior); behavior["receipt_status"]=503
+    with pytest.raises(ConnectorUnavailable): worker.run_once()
+    assert worker._saved()["reviewMode"]=="ai"
+    behavior["receipt_status"]=200
+    with worker.connector.runtime.connect() as db: db.execute("UPDATE outbox SET next_attempt=0")
+    restarted=OutboundWorker(worker.connector,worker_id="mac-1",model_bundle_ids=[req.modelBundleId],evaluate=worker.evaluate)
+    assert restarted.run_once()["humanReviewRequired"] is False
+    assert backend.calls==1
+
+
+def test_ai_only_label_export_is_rejected_even_with_forged_human_provenance(website):
+    worker,req,_,remote,behavior,_=website
+    choose_ai_only(behavior); worker.run_once()
+    body={"schemaVersion":"rateloop.evaluator-labeled-data.v2","workspaceId":req.workspaceId,
+        "consent":deepcopy(remote["consents"][0]),"revocationWatermark":remote["revocationWatermark"],
+        "contentMode":"commitments_only","window":{"from":iso(time.time()-3600),"to":utc_now()},
+        "items":[{"inputCommitment":req.input_commitment(),"audit":{"independent":True}}],"truncated":False}
+    behavior["labels"]={**body,"exportDigest":commitment(body,"rateloop.product-evaluator.v2")}
+    imported=worker.connector.fetch_and_import_labels("permission-1",question_id="overall_approval",
+        template_commitment=req.template_commitment(),outcome_labels={"positive":"approved","negative":"rejected"})
+    assert imported["imported"]==0
+    assert imported["rejected"][0]["reason"]=="AI-only cases have no independent human training reference"
+    with worker.connector.learning.transaction() as db: assert not db["feedback"]
+
+
+def test_acceptance_operator_inspects_ai_only_privacy_without_exporting_inputs(website):
+    worker,req,_,_,behavior,_=website
+    choose_ai_only(behavior); worker.run_once()
+    spec=spec_from_file_location("alpha_operator_review_test",Path(__file__).parents[1]/"scripts/alpha_e2e_operator.py")
+    operator=module_from_spec(spec);spec.loader.exec_module(operator)
+    assert operator.verify_ai_only_case(worker.connector,req.caseId)=={
+        "caseId":req.caseId,"aiOnly":True,"retainedTrainingInputs":0,"humanAudits":0,"humanLabels":0}
+    with pytest.raises(ValueError,match="one exact local"): operator.verify_ai_only_case(worker.connector,"missing")
+    with worker.connector.learning.transaction() as db:
+        db["evaluations"][req.input_commitment()]["input"]={"text":"private wrong retention"}
+    leaked=operator.verify_ai_only_case(worker.connector,req.caseId)
+    assert leaked["retainedTrainingInputs"]==1 and "private wrong retention" not in json.dumps(leaked)
+    with worker.connector.learning.transaction() as db:
+        worker.connector._state(db)["collections"][req.input_commitment()]["reviewMode"]="ai_and_human"
+    with pytest.raises(ValueError,match="not AI-only"): operator.verify_ai_only_case(worker.connector,req.caseId)
+
+
 def test_later_opt_in_cannot_retain_an_earlier_queued_case(website):
     worker,req,_,_,behavior,_=website
     behavior["content"]["createdAt"]=iso(time.time()-100)
@@ -115,19 +262,33 @@ def test_later_opt_in_cannot_retain_an_earlier_queued_case(website):
         assert db["evaluations"][req.input_commitment()]["input"] is None
 
 
-def test_explicit_case_tombstone_purges_retained_case_and_acknowledgment(website):
-    worker,req,_,remote,_,_=website
+@pytest.mark.parametrize("mode",["ai","ai_and_human"])
+def test_explicit_case_tombstone_purges_retained_case_and_acknowledgment(website,mode):
+    worker,req,_,remote,behavior,_=website
+    if mode=="ai": choose_ai_only(behavior)
     worker.run_once()
     remote.update(deletedCases=[{"caseId":req.caseId,"deletedAt":iso(time.time())}],deletionWatermark=1)
     worker.connector.sync_grants()
     with worker.connector.learning.transaction() as db:
         assert req.input_commitment() not in db["evaluations"]
         assert not worker.connector._state(db)["results"]
+        assert not worker.connector._state(db)["collections"]
     with worker.connector.runtime.connect() as db:
         assert db.execute("SELECT COUNT(*) FROM acknowledgments").fetchone()[0]==0
     remote["deletionWatermark"]=0
     with pytest.raises(PermissionError,match="Deletion watermark"):
         worker.connector.sync_grants()
+
+
+@pytest.mark.parametrize("mode",["ai","ai_and_human"])
+def test_deleted_case_cannot_recreate_collection_metadata_or_score(website,mode):
+    worker,req,backend,remote,behavior,_=website
+    if mode=="ai": choose_ai_only(behavior)
+    remote.update(deletedCases=[{"caseId":req.caseId,"deletedAt":iso(time.time())}],deletionWatermark=1)
+    assert worker.run_once()["state"]=="failed" and backend.calls==0
+    with worker.connector.learning.transaction() as db:
+        assert not worker.connector._state(db).get("collections")
+        assert not worker.connector._state(db)["audits"]
 
 
 def test_workspace_notice_erases_only_explicit_case_ids(website):
