@@ -98,6 +98,17 @@ def _hash(value: Any) -> str:
     return value
 
 
+def _audit_selection(value: dict) -> tuple[str, int]:
+    """Preserve the server's sampled audit provenance in every intake path."""
+    kind=value.get("kind")
+    probability=value.get("selectionProbabilityBps")
+    if kind not in ("random","mandatory"):
+        raise ValueError("Audit selection kind is invalid")
+    if type(probability) is not int or not 1 <= probability <= 10000:
+        raise ValueError("Audit selection probability is invalid")
+    return kind,probability
+
+
 def _review_context(value: dict) -> dict:
     """Allow only execution metadata; never accept review text or free-form maps."""
     keys = {"policyId", "policyVersion", "workflowKey", "riskTier", "audiencePolicyHash", "declaredConfidenceBps", "metadataComplete", "execution"}
@@ -528,9 +539,7 @@ class RateLoopConnector:
             or response.get("blindingAssurance") != "connector_attested"):
             raise ValueError("Audit response does not establish the requested pre-scoring selection")
         _opaque(response.get("auditId"))
-        probability=response.get("selectionProbabilityBps")
-        if type(probability) is not int or not 1 <= probability <= 10000:
-            raise ValueError("Audit selection probability is invalid")
+        _audit_selection(response)
         with self.learning.transaction() as database:
             self._case_live(database,request.caseId)
             self._state(database)["audits"][key]={"response":response,"case_id":request.caseId,
@@ -648,6 +657,9 @@ class RateLoopConnector:
                 if len(questions)!=1 or questions[0]["id"] != question_id or not set(outcome_labels.values()) <= {x["id"] for x in questions[0]["labels"]}:
                     raise ValueError("Overall verdict mapping requires exactly one matching question")
                 remote_audit=item.get("audit",{})
+                if not isinstance(remote_audit,dict):
+                    raise ValueError("Human label audit is invalid")
+                _audit_selection(remote_audit)
                 causal=False
                 if remote_audit.get("blindingAssurance") == "server_enforced":
                     frozen=_timestamp(remote_audit.get("reviewFrozenAt"))

@@ -14,7 +14,7 @@ from typing import Callable
 
 from fastapi import HTTPException
 
-from .connector import ConnectorRejected, ConnectorUnavailable, RateLoopConnector, _hash, _opaque, _timestamp
+from .connector import ConnectorRejected, ConnectorUnavailable, RateLoopConnector, _audit_selection, _hash, _opaque, _timestamp
 from .protocol import EvaluationRequest, EvaluationResult
 from .templates import overall_approval
 from .execution import ExecutionBusy, model_execution
@@ -131,9 +131,10 @@ class OutboundWorker:
 
     def _remember_audit(self, request: EvaluationRequest, body: dict) -> None:
         audit=body.get("audit",{})
-        if (not isinstance(audit,dict) or audit.get("selected") is not True or audit.get("kind") != "mandatory" or audit.get("aiExposed") is not False
-                or audit.get("selectionProbabilityBps") != 10000 or audit.get("blindingAssurance") != "server_enforced"):
-            raise PermissionError("Website jobs require a mandatory server-blinded human review")
+        if (not isinstance(audit,dict) or audit.get("selected") is not True or audit.get("aiExposed") is not False
+                or audit.get("blindingAssurance") != "server_enforced"):
+            raise PermissionError("Website jobs require a selected server-blinded human review")
+        _audit_selection(audit)
         _opaque(audit.get("auditId"))
         selected_at=_timestamp(audit.get("selectedAt"))
         if not 0 < selected_at <= time.time()+300:
@@ -148,8 +149,11 @@ class OutboundWorker:
             previous=state["audits"].get(request.input_commitment())
             if previous is None and (request.input_commitment() in state["results"] or request.input_commitment() in database["evaluations"]):
                 raise PermissionError("Already scored content cannot acquire a pre-scoring human audit")
-            if previous and previous.get("response",{}).get("auditId") != audit["auditId"]:
-                raise ValueError("Resumed job changed the independent review")
+            if previous:
+                frozen_fields=("auditId","kind","selectionProbabilityBps","selectedAt",
+                    "sourceContentHash","suggestedContentHash","frozenQuestionHash")
+                if any(previous.get("response",{}).get(key) != audit.get(key) for key in frozen_fields):
+                    raise ValueError("Resumed job changed the independent review")
             state["audits"][request.input_commitment()]={"response":deepcopy(audit),"case_id":request.caseId,
                 "model_bundle_id":request.modelBundleId,"template_commitment":request.template_commitment(),
                 "selected_before_scoring":True,"selected_at":selected_at,"ai_exposed":False,**bindings}

@@ -42,7 +42,7 @@ connector = RateLoopConnector(
 
 The example origin is RateLoop's branded Alpha. `learning_store` and `runtime_store` are existing customer-owned local stores; the connector never creates a cloud copy of their contents.
 
-Website jobs carry their frozen `reviewMode` in both the authenticated claim and content. Only `ai` explicitly omits human review; `ai_and_human` and legacy omissions require the mandatory server-blinded audit. Human-only does not create an evaluator job. AI-only content must contain `audit: null` and `retainForTraining: false`. The worker checks the same committed request, consent, model, agent identity and execution lease for either AI choice, and refuses a mode change on retry. No audit or human training reference is manufactured for AI-only cases.
+Website jobs carry their frozen `reviewMode` in both the authenticated claim and content. Only `ai` explicitly omits human review; `ai_and_human` and legacy omissions require a selected, server-blinded audit. This includes sampled comparisons in a saved AI/human balance. The worker preserves the server's `random` or `mandatory` selection kind and exact integer probability (1–10,000 basis points) through retries and human-label import. Human-only does not create an evaluator job. AI-only content must contain `audit: null` and `retainForTraining: false`. The worker checks the same committed request, consent, model, agent identity and execution lease for either AI choice, and refuses a mode change on retry. No audit or human training reference is manufactured for AI-only cases; a sampled comparison still needs separate learning permission to retain training inputs.
 
 ## Synchronize learning permissions
 

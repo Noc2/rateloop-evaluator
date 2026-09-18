@@ -100,8 +100,10 @@ def test_website_job_uses_shared_inference_core_and_encrypts_progress(website):
         assert db["evaluations"][req.input_commitment()]["input"]["text"]==req.input.text
 
 
-def test_inference_only_permission_does_not_retain_training_inputs(website):
-    worker,req,_,remote,_,_=website
+@pytest.mark.parametrize("kind,probability",[("mandatory",10000),("mandatory",500),("random",250)])
+def test_inference_only_permission_does_not_retain_training_inputs(website,kind,probability):
+    worker,req,_,remote,behavior,_=website
+    behavior["content"]["audit"].update(kind=kind,selectionProbabilityBps=probability)
     remote["consents"]=[c for c in remote["consents"] if c["purpose"]=="ai_use"]
     assert worker.run_once()["state"]=="completed"
     with worker.connector.learning.transaction() as db:
@@ -187,10 +189,103 @@ def test_both_modes_keep_every_human_blinding_requirement(website,change):
     if change=="absent": del behavior["content"]["audit"]
     elif change=="null": behavior["content"]["audit"]=None
     else:
-        key,value={"selected":("selected",False),"kind":("kind","random"),"exposed":("aiExposed",True),
-            "probability":("selectionProbabilityBps",5000),"blinding":("blindingAssurance","connector_attested")}[change]
+        key,value={"selected":("selected",False),"kind":("kind","failure_only"),"exposed":("aiExposed",True),
+            "probability":("selectionProbabilityBps",0),"blinding":("blindingAssurance","connector_attested")}[change]
         behavior["content"]["audit"][key]=value
     assert worker.run_once()["state"]=="failed" and backend.calls==0
+
+
+@pytest.mark.parametrize("kind,probability,valid",[
+    ("random",1,True),("random",250,True),("random",10000,True),
+    ("mandatory",500,True),("mandatory",10000,True),
+    ("random",0,False),("random",10001,False),("random",-1,False),
+    ("mandatory",True,False),("mandatory",500.0,False),("mandatory","500",False),
+    ("mandatory",None,False),("failure_only",500,False),
+])
+def test_worker_and_connector_share_audit_selection_validation(website,monkeypatch,kind,probability,valid):
+    worker,req,_,_,behavior,_=website
+    behavior["content"]["audit"].update(kind=kind,selectionProbabilityBps=probability)
+    connector_audit={**behavior["content"]["audit"],"blindingAssurance":"connector_attested"}
+    monkeypatch.setattr(worker.connector,"_request",lambda *_args,**_kwargs:deepcopy(connector_audit))
+    def connector_intake():
+        return worker.connector.select_audit_before_scoring(req,review_context(),kind=kind,
+            frozen_question_hash=connector_audit["frozenQuestionHash"])
+    if valid:
+        worker._remember_audit(req,behavior["content"])
+        with worker.connector.learning.transaction() as db:
+            remembered=worker.connector._state(db)["audits"][req.input_commitment()]["response"]
+            assert (remembered["kind"],remembered["selectionProbabilityBps"])==(kind,probability)
+        assert connector_intake()==connector_audit
+    else:
+        with pytest.raises(ValueError): worker._remember_audit(req,behavior["content"])
+        with pytest.raises(ValueError): connector_intake()
+
+
+def blinded_website_label_export(worker,req,remote,server_audit):
+    with worker.connector.learning.transaction() as db:
+        result=deepcopy(worker.connector._state(db)["results"][req.input_commitment()])
+    now=utc_now()
+    body={"schemaVersion":"rateloop.evaluator-labeled-data.v2","workspaceId":req.workspaceId,
+        "consent":deepcopy(remote["consents"][0]),"revocationWatermark":remote["revocationWatermark"],
+        "contentMode":"commitments_only","window":{"from":iso(time.time()-3600),"to":now},
+        "items":[{"receiptId":"aev_"+"1"*40,"resultCommitment":result["resultCommitment"],"caseId":req.caseId,
+            "inputCommitment":req.input_commitment(),"modelBundleId":req.modelBundleId,"templateCommitment":req.template_commitment(),
+            "automatedOutcome":result["outcome"],"humanOutcome":"positive","labelScope":"overall_human_verdict",
+            "criterionTrainingRequiresAdjudication":True,"humanResultCommitment":"sha256:"+"b"*64,
+            "responseCount":3,"observedAt":now,"questionId":"overall_approval",
+            **{name:server_audit[name] for name in ("sourceContentHash","suggestedContentHash","frozenQuestionHash")},
+            "audit":{"auditId":server_audit["auditId"],"kind":server_audit["kind"],
+                "selectionProbabilityBps":server_audit["selectionProbabilityBps"],"aiExposed":False,
+                "blindingAssurance":"server_enforced","reviewFrozenAt":now,"resultsReleasedAt":now,"independent":True},
+            "disagreement":None}],"truncated":False}
+    return {**body,"exportDigest":commitment(body,"rateloop.product-evaluator.v2")}
+
+
+@pytest.mark.parametrize("kind,probability",[("random",1),("random",250),("random",10000),("mandatory",500),("mandatory",10000)])
+def test_sampled_website_audit_survives_inference_and_blinded_label_import(website,kind,probability):
+    worker,req,backend,remote,behavior,_=website
+    behavior["job"]["reviewMode"]="ai_and_human"
+    behavior["content"]["reviewMode"]="ai_and_human"
+    behavior["content"]["audit"].update(kind=kind,selectionProbabilityBps=probability)
+    behavior["blind_receipt"]=True
+    server_audit=deepcopy(behavior["content"]["audit"])
+    assert worker.run_once()["humanReviewRequired"] is True
+    assert backend.calls==1
+    behavior["labels"]=blinded_website_label_export(worker,req,remote,server_audit)
+    imported=worker.connector.fetch_and_import_labels("permission-1",question_id="overall_approval",
+        template_commitment=req.template_commitment(),outcome_labels={"positive":"approved","negative":"rejected"})
+    assert imported["imported"]==1 and not imported["rejected"]
+    with worker.connector.learning.transaction() as db:
+        audit=worker.connector._state(db)["audits"][req.input_commitment()]["response"]
+        assert (audit["kind"],audit["selectionProbabilityBps"])==(kind,probability)
+        assert len(db["feedback"])==1
+
+
+@pytest.mark.parametrize("field,value",[("kind","mandatory"),("selectionProbabilityBps",10000),("selectionProbabilityBps",True)])
+def test_human_label_export_cannot_change_sampled_provenance(website,field,value):
+    worker,req,_,remote,behavior,_=website
+    behavior["content"]["audit"].update(kind="random",selectionProbabilityBps=1)
+    server_audit=deepcopy(behavior["content"]["audit"])
+    assert worker.run_once()["state"]=="completed"
+    server_audit[field]=value
+    behavior["labels"]=blinded_website_label_export(worker,req,remote,server_audit)
+    result=worker.connector.fetch_and_import_labels("permission-1",question_id="overall_approval",
+        template_commitment=req.template_commitment(),outcome_labels={"positive":"approved","negative":"rejected"})
+    assert result["imported"]==0 and len(result["rejected"])==1
+    with worker.connector.learning.transaction() as db: assert not db["feedback"]
+
+
+@pytest.mark.parametrize("field,value",[("kind","random"),("selectionProbabilityBps",500),("frozenQuestionHash","sha256:"+"e"*64)])
+def test_website_retry_cannot_rewrite_frozen_audit_provenance(website,field,value):
+    worker,req,backend,_,behavior,_=website
+    behavior["complete_status"]=503
+    with pytest.raises(ConnectorUnavailable): worker.run_once()
+    original=deepcopy(behavior["content"]["audit"])
+    behavior["content"]["audit"][field]=value
+    assert worker.run_once()["state"]=="failed"
+    assert backend.calls==1
+    with worker.connector.learning.transaction() as db:
+        assert worker.connector._state(db)["audits"][req.input_commitment()]["response"]==original
 
 
 @pytest.mark.parametrize("first_mode",["ai","ai_and_human"])
