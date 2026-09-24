@@ -292,7 +292,7 @@ def run(args):
         registry.promote(req.modelBundleId,workspace,template_commitment=req.template_commitment(),language=req.template.language,mode="shadow")
         return {"modelBundleId":req.modelBundleId,"templateCommitment":req.template_commitment(),"mode":"shadow","publicKey":registry.public_key}
     if args.command == "export-registration":
-        from .backends import MANIFEST_NAME
+        from .backends import MANIFEST_NAME, GLINER_SCORE_CAPABILITY
         record = registry.get(args.bundle_id,workspace); manifest = record["manifest"]
         req = EvaluationRequest.model_validate(read_json(args.request))
         if req.workspaceId != workspace or req.modelBundleId != args.bundle_id or req.template_commitment() not in manifest["template_commitments"]:
@@ -322,7 +322,7 @@ def run(args):
             "tokenizerCommitment":commitment({k:v for k,v in model["files"].items() if "tokenizer" in k},"rateloop.tokenizer.v1"),"quantization":"fp32",
             "trainingSnapshotCommitment":snapshot_digest,"evaluationReportCommitment":commitment(active,"rateloop.deployment-evidence.v1"),
             "licenseManifestCommitment":commitment({"software":"Apache-2.0","weights":model["source"].get("license","Apache-2.0"),"model":manifest["model_id"],"revision":manifest["model_revision"]},"rateloop.licenses.v1"),
-            "maxTokens":manifest["max_tokens"],"criteria":criteria}
+            "maxTokens":manifest["max_tokens"],"criteria":criteria,"scoreCapability":dict(GLINER_SCORE_CAPABILITY)}
         write_private(args.output,registration)
         return {"registrationFile":str(Path(args.output).resolve()),"contentIncluded":False,"mode":active["mode"]}
     if args.command == "promote":

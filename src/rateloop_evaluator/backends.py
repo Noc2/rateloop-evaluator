@@ -17,6 +17,14 @@ MODEL_FILES = (
 )
 MANIFEST_NAME = "rateloop-model.json"
 
+# Version this declaration whenever the adapter score semantics change.
+GLINER_SCORE_CAPABILITY = {
+    "schemaVersion": "rateloop.evaluator-score-capability.v1",
+    "adapter": "rateloop-evaluator/gliner2",
+    "adapterVersion": 1,
+    "scoreType": "mutually_exclusive_softmax",
+}
+
 
 def offline_environment() -> None:
     """Set library offline/telemetry controls before importing the ML libraries.
