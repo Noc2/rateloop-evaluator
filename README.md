@@ -54,6 +54,20 @@ Export the registered bundle's metadata:
 
 In the updated RateLoop workspace's **Agents → Results** tab, open **Set up AI** (or **AI settings**), import this file and enable the evaluator. Use a workspace API key with evaluation and telemetry scopes. For website jobs, use `examples/approval-request-en.json` or `examples/approval-request-de.json`, containing the same overall approval question as the human review; replace placeholder workspace and bundle IDs before registration.
 
+The registration export now includes `scoreCapability` version `rateloop.evaluator-score-capability.v1` for
+`rateloop-evaluator/gliner2`, adapter version 1, with `mutually_exclusive_softmax` semantics. This identifies the
+adapter's complete raw class-score vector; it does not certify calibration or correctness. A compatible RateLoop
+application can display its normalized entropy as experimental score spread without another inference call. Signed
+receipts and result commitments are unchanged.
+
+Upgrade the application before importing this metadata. Existing server bundle registrations are immutable and keep
+their original capabilities: exporting new metadata does not upgrade an already registered bundle. For an unchanged
+public base model, register and select a new bundle identity with the same intended question and weights, then export
+and import that registration. Keep old bundles available for already queued jobs. For privately trained bundles,
+preserve the training lineage and consent scope through the normal managed bundle workflow; do not rename or edit
+a trained manifest to bypass identity checks. Historical results without the capability remain unmeasured. The
+website rollout is controlled separately by its server-side workspace pilot flag.
+
 Select the review option before submitting a case:
 
 | Choice | Result |
