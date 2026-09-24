@@ -161,5 +161,7 @@ def test_cli_export_rejects_inactive_bundle(initialized, tmp_path, capsys):
            "--output", output)
     registration = json.loads(output.read_text())
     assert registration["modelBundleId"] == "model-b"
+    fixture = Path(__file__).parent / "fixtures" / "score-capability.json"
+    assert registration["scoreCapability"] == json.loads(fixture.read_text())
     assert all(criterion["calibrationId"] is None for criterion in registration["criteria"])
     assert body_a["input"]["text"] not in output.read_text()
