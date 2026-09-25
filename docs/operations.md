@@ -12,7 +12,7 @@ The service binds loopback by default and rejects browser origins. Remote servin
 
 Provision public checkpoints before disconnecting networking. Package versions and full model SHAs are recorded in verification evidence. Maintain a tested environment lock for each OS and device instead of assuming one GPU dependency lock is portable. Install GLiClass `.[compare]` in a separate virtual environment: its Transformers 5 dependency conflicts with GLiNER's Transformers 4 requirement.
 
-`requirements-macos-py312.lock` records the exact Python package versions from the verified native Mac environment. On that platform, install with `pip install -c requirements-macos-py312.lock -e '.[model,test]'` to reproduce those versions. It is a version snapshot, not a hash-verified universal lock; select and verify wheels separately for an offline enterprise installation.
+`requirements-macos-py312.lock` records the native Mac package versions, including subsequent verified security dependency updates. On that platform, install with `pip install -c requirements-macos-py312.lock -e '.[model,test]'` to reproduce those versions. It is a version snapshot, not a hash-verified universal lock; select and verify wheels separately for an offline enterprise installation.
 
 ## Upgrades and recovery
 

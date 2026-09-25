@@ -9,7 +9,7 @@ description = "Private, locally trainable ratings with GLiNER and explicit human
 readme = "README.md"
 license = "Apache-2.0"
 requires-python = ">=3.10,<3.14"
-dependencies = ["pydantic>=2.11,<3", "fastapi>=0.115,<1", "uvicorn>=0.34,<1", "cryptography>=44,<47", "httpx>=0.28,<1", "rfc8785>=0.1.4,<1"]
+dependencies = ["pydantic>=2.11,<3", "fastapi>=0.115,<1", "uvicorn>=0.34,<1", "cryptography>=49,<50", "httpx>=0.28,<1", "rfc8785>=0.1.4,<1"]
 
 [project.optional-dependencies]
 model = ["gliner2[local,train]==2.0.0", "protobuf>=5,<7", "psutil>=7,<8"]
