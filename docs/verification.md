@@ -203,3 +203,14 @@ The retained English desktop screenshot at 1440 px and German mobile screenshot 
 The exact application deployment was promoted at 16:29:36.807 UTC. Vercel Current, the tested hostname and enabled cron configuration matched it; actual scheduled maintenance returned HTTP 200 at 16:30:12.287 UTC and scheduled deliveries at 16:31:35.184 UTC.
 
 All cases and reviewer responses were synthetic and scripted through the real application. All six AI outcomes remained `uncertain` in shadow mode. Raw predicted labels agreed with the scripted responses, but that agreement is not accuracy evidence. Passing this flow establishes integration and control mechanics, not independent human evidence or permission to reduce human review.
+
+
+## Hosted CPU packaging acceptance — 2026-09-25
+
+Runtime commits `27f1bc2` and `7f7e47f` added shared warm model startup, presence before owner enablement, private restart-preserving bootstrap, and metadata-only health. Python 3.12 local checks passed **262 tests**, with four opt-in real-model tests skipped; the interface contract checker and source/wheel build also passed.
+
+The separate container acceptance used the actual pinned `fastino/gliner2.5-multi-v1` checkpoint at revision `235cf92d6d4318da9bfca0d08975c8fa7250d13b`, CPU PyTorch `2.14.0+cpu`, GLiNER `2.0.0`, Transformers `4.57.6` and the image's exact dependency constraints. Docker ran `linux/amd64` under emulation on an Apple ARM host, with **one CPU, 2,500,000,000 bytes RAM and no swap**, and networking disabled. The only remote behavior was a test-only paused-workspace transport mounted outside the image.
+
+Cold startup reached healthy after 59 seconds; a restart reached healthy after 48 seconds. Both showed UID/GID 10001 and zero OOM kills. SIGTERM exited normally in 1.32 seconds; encrypted-state key identity survived restart. Both language registrations loaded the same model and health remained unavailable until warmup and a successful authenticated fixture poll/heartbeat. Cgroup memory reached its cap while loading/reclaiming model file cache, without an OOM; this is not evidence for a smaller memory allocation.
+
+A separate synthetic model measurement at 2.5 GiB measured 0.47–0.56 seconds for short English/German examples and 1.8–2.3 seconds at 467–470 tokens; final cgroup usage was about 1,901 MiB. These timings include amd64 emulation, carry no accuracy claim and are not a Railway SLA. Repeat `scripts/measure_cpu.py` for actual deployed hardware and max-token inputs. The container lifecycle check is reproducible with `scripts/test_hosted_container.py`; it does not prove live website authorization, persisted results, human blinding or a deployed unattended service. Those require separate live application acceptance.
