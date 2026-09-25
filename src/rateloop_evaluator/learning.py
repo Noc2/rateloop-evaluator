@@ -151,6 +151,20 @@ class LearningStore:
                 raise ValueError("Worker authorization must expire within 15 minutes")
             grant["authorization_until"] = expires_at
 
+    def suspend_authorization(self, grant_id: str, workspace_id: str, *, now: float | None = None) -> None:
+        """Expire a durable execution lease without revoking its source consent.
+
+        Legacy grants have no renewable lease and are outside this operation.
+        Revoked grants remain revoked; this never restores managed lineage.
+        """
+        current=time.time() if now is None else now
+        with self.transaction() as state:
+            grant=state["grants"].get(grant_id)
+            if not grant or grant["workspace_id"]!=workspace_id or grant.get("authorization_until") is None:
+                raise PermissionError("Durable consent is unavailable for suspension")
+            if grant["revoked_at"] is None:
+                grant["authorization_until"]=min(grant["authorization_until"],current)
+
     @staticmethod
     def _matching_grants(state: dict, *, workspace_id: str, right: str, case_id: str,
                          template_id: str, fields: list[str], now: float, model_bundle_id: str | None = None,
