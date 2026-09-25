@@ -452,11 +452,32 @@ def test_changed_content_or_review_identity_rejected_before_inference(website,ch
     assert backend.calls==0 and behavior["failed"]["retryable"] is False
 
 
-def test_paused_workspace_never_claims_content(website):
+@pytest.mark.parametrize("mode",["off","paused"])
+def test_paused_workspace_never_claims_content(website,mode):
     worker,_,backend,remote,_,calls=website
-    remote["settings"]["mode"]="paused"
+    remote["settings"]["mode"]=mode
     assert worker.run_once()=={"state":"paused"}
     assert backend.calls==0 and not any("/jobs/" in r.url.path for r in calls)
+    heartbeat=next(r for r in calls if r.url.path.endswith("/workers/heartbeat"))
+    assert json.loads(heartbeat.content)["state"]=="ready"
+
+
+def test_loop_health_tracks_connectivity_and_shutdown(website,monkeypatch):
+    worker,*_=website
+    health=[]; outcomes=iter([ConnectorUnavailable("offline"),{"state":"paused"}])
+    def poll():
+        value=next(outcomes)
+        if isinstance(value,Exception): raise value
+        return value
+    def report(value):
+        health.append(value)
+        if value: worker.stop.set()
+    monkeypatch.setattr(worker,"run_once",poll)
+    monkeypatch.setattr(worker.stop,"wait",lambda _seconds:False)
+    monkeypatch.setattr(worker,"sync_labels",lambda:pytest.fail("Paused worker imported labels"))
+    worker.on_poll=report
+    worker.run()
+    assert health==[False,True]
 
 
 def test_launchd_install_has_only_private_config_path_not_credentials(tmp_path,monkeypatch):

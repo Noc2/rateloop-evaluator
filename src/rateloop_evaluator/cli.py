@@ -145,28 +145,9 @@ def run(args):
             allow_insecure_loopback=connection.get("allowInsecureLoopback",False))
         try:
             if args.command == "worker":
-                from .backends import GLiNERBackend
-                from .service import Principal, create_app
+                from .worker_runtime import prepare_evaluator
                 from .worker import OutboundWorker, run_worker
-                apps={}
-                identity=Principal(workspace,frozenset({"evaluate"}))
-                def evaluate_job(request):
-                    bundle_id=request.modelBundleId
-                    if bundle_id not in apps:
-                        record=registry.get(bundle_id,workspace)
-                        backend=GLiNERBackend(record["artifact_root"],args.device)
-                        backend.load()
-                        def validate(value):
-                            registry.get(bundle_id,workspace,verify_artifacts=False)
-                            active=registry.active(workspace,value.template_commitment(),value.template.language,verify_artifacts=False)
-                            if active["bundle_id"] != bundle_id: raise PermissionError("Queued model is no longer active")
-                            return active
-                        def allow_retention(value):
-                            with store.transaction() as database:
-                                return connector._state(database).get("collections",{}).get(value.input_commitment(),{}).get("trainingAllowed") is True
-                        apps[bundle_id]=create_app(backend=backend,bundle=record["manifest"],learning=store,runtime=connector.runtime,
-                            tokens={"0"*64:identity},validate_bundle=validate,allow_training_retention=allow_retention)
-                    return apps[bundle_id].state.evaluate(request,identity)
+                evaluate_job=prepare_evaluator(connector,registry,args.bundle_id,device=args.device)
                 return run_worker(OutboundWorker(connector,worker_id=args.worker_id,model_bundle_ids=args.bundle_id,
                     evaluate=evaluate_job,poll_seconds=args.poll_seconds),root,once=args.once)
             if args.command == "connect-sync": return connector.sync_grants()
