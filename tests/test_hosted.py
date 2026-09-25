@@ -121,3 +121,31 @@ def test_cli_errors_do_not_disclose_secret_config(config,tmp_path,capsys,monkeyp
     assert hosted.main(["bootstrap","--config",str(path)])==1
     out=capsys.readouterr()
     assert "private-test-api-key" not in out.out+out.err
+
+
+def test_explicit_registration_export_matches_volume_without_secrets(config,capsys):
+    hosted.emit_registrations(config)
+    first=capsys.readouterr().out
+    records=[]
+    for line in first.splitlines():
+        prefix,body=line.split(" ",1)
+        assert prefix=="RATELOOP_HOSTED_REGISTRATION_V1"
+        registration=json.loads(body)
+        stored=Path(config["stateDir"])/"registrations"/(registration["language"]+".json")
+        assert registration==json.loads(stored.read_text())
+        records.append(registration)
+    assert {r["language"] for r in records}=={"en","de"}
+    for forbidden in (config["workspaceId"],config["connection"]["apiKey"],config["connection"]["apiKeyId"],
+        config["connection"]["agentId"],config["connection"]["agentVersionId"],config["stateDir"],"Synthetic registration example."):
+        assert forbidden not in first
+    # Exporting again uses the real original activation evidence, without
+    # replacing timestamps or mutating immutable bundle registrations.
+    hosted.emit_registrations(config)
+    assert capsys.readouterr().out==first
+    _,_,store,_=cli.state(SimpleNamespace(state_dir=config["stateDir"]))
+    with store.transaction() as db: assert not db["grants"]
+
+
+def test_ordinary_bootstrap_does_not_log_registration_metadata(config,capsys):
+    hosted.bootstrap(config)
+    assert capsys.readouterr().out==""

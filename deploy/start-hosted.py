@@ -17,7 +17,7 @@ def start():
     if os.getuid()!=10001: raise PermissionError("Unexpected runtime identity")
     os.environ["HOME"]="/home/evaluator"
     from rateloop_evaluator.cli import write_private
-    from rateloop_evaluator.hosted import read_config
+    from rateloop_evaluator.hosted import read_config, emit_registrations
     path=volume/"hosted.json"
     encoded=os.environ.pop("RATELOOP_HOSTED_CONFIG_JSON",None)
     if encoded is not None:
@@ -30,12 +30,15 @@ def start():
         raise ValueError("Health port does not match service port")
     provision=os.environ.pop("RATELOOP_PROVISION_MODEL","0")
     if provision not in ("0","1"): raise ValueError("Invalid provisioning selection")
+    export=os.environ.pop("RATELOOP_HOSTED_EXPORT_REGISTRATIONS","0")
+    if export not in ("0","1"): raise ValueError("Invalid registration export selection")
     if provision=="1":
         env=dict(os.environ)
         # Explicit provisioning is a separate process; offline inference never
         # imports a model downloader or accesses an upstream model repository.
         env.pop("HF_HUB_OFFLINE",None); env.pop("TRANSFORMERS_OFFLINE",None)
         subprocess.run([sys.executable,"-m","rateloop_evaluator.hosted","prepare","--config",str(path)],env=env,check=True)
+    if export=="1": emit_registrations(config)
     os.execv(sys.executable,[sys.executable,"-m","rateloop_evaluator.hosted","run","--config",str(path)])
 
 

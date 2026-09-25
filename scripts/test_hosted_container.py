@@ -54,14 +54,24 @@ try:
         "--memory","2500000000","--memory-swap","2500000000","-v",volume+":/data",
         "-v",str(Path(model).resolve())+":/data/models/gliner25:ro",
         "-v",str(root/"tests/container_fixture")+":/testing:ro",
-        "-e","PYTHONPATH=/testing","-e","RATELOOP_HOSTED_CONFIG_JSON="+json.dumps(config),image)
+        "-e","PYTHONPATH=/testing","-e","RATELOOP_HOSTED_EXPORT_REGISTRATIONS=1",
+        "-e","RATELOOP_HOSTED_CONFIG_JSON="+json.dumps(config),image)
     first=wait_ready()
+    logs=docker("logs",name).stdout
+    records=[json.loads(line.split(" ",1)[1]) for line in logs.splitlines() if line.startswith("RATELOOP_HOSTED_REGISTRATION_V1 ")]
+    assert len(records)==2
+    for record in records:
+        stored=json.loads(docker("exec",name,"cat","/data/state/registrations/"+record["language"]+".json").stdout)
+        assert record==stored
+    assert config["connection"]["apiKey"] not in logs and config["workspaceId"] not in logs
     started=time.monotonic();docker("stop","--time","20",name)
     state=json.loads(docker("inspect",name,"--format","{{json .State}}").stdout)
     assert state["ExitCode"]==0 and not state["OOMKilled"]
     print(json.dumps({"stoppedSeconds":round(time.monotonic()-started,2),"exitCode":state["ExitCode"]}),flush=True)
     docker("start",name)
     assert wait_ready()==first,"Restart rotated the encryption identity"
+    restarted=[json.loads(line.split(" ",1)[1]) for line in docker("logs",name).stdout.splitlines() if line.startswith("RATELOOP_HOSTED_REGISTRATION_V1 ")]
+    assert restarted==records+records,"Restart changed registration evidence"
     docker("stop","--time","20",name)
     print(json.dumps({"result":"passed","model":"real offline pinned GLiNER","remote":"synthetic paused transport","budget":"1 CPU / 2500000000 bytes / no swap"}),flush=True)
 finally:

@@ -128,6 +128,18 @@ def bootstrap(config: dict) -> dict:
     return {"state":"prepared","registrations":exports,"contentIncluded":False}
 
 
+def emit_registrations(config: dict) -> None:
+    """Explicit operator handoff of actual volume registrations, never secrets.
+
+    Bootstrap writes the exports immediately before reading them. Their original
+    activation evidence and immutable bundle identity are preserved verbatim.
+    """
+    report=bootstrap(config)
+    for path in report["registrations"]:
+        registration=json.loads(read_secret(path))
+        print("RATELOOP_HOSTED_REGISTRATION_V1 "+json.dumps(registration,separators=(",",":"),sort_keys=True),flush=True)
+
+
 class WorkerHealth:
     def __init__(self, clock=time.monotonic):
         self.clock=clock; self.warm=False; self.last_success=None; self.reachable=False; self.stopping=False
