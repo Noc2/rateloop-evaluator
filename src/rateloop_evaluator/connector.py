@@ -299,7 +299,7 @@ class RateLoopConnector:
             raise ValueError("Invalid durable consent revocation")
         return deepcopy(consent)
 
-    def _sync_consents(self, response: dict, *, now: float, watermark: int) -> int:
+    def _sync_consents(self, response: dict, *, now: float, watermark: int, authorization_enabled: bool) -> int:
         consents=response.get("consents",[])
         if not isinstance(consents,list) or len(consents)>1000:
             raise ValueError("Invalid durable consent collection")
@@ -308,7 +308,7 @@ class RateLoopConnector:
             raise ValueError("Duplicate consent identity")
         lease=response.get("authorizationLease")
         lease_expiry=now
-        if consents:
+        if consents and authorization_enabled:
             expected={"leaseId","issuedAt","expiresAt","revocationWatermark","recipientApiKeyId","workspaceId"}
             if not isinstance(lease,dict) or set(lease) != expected:
                 raise ValueError("Durable permissions require a scoped worker authorization lease")
@@ -345,11 +345,21 @@ class RateLoopConnector:
                 raise PermissionError("Durable consent changed without a new explicit revision")
         mirrored={}
         for consent in consents:
+            identity=consent["consentId"]
+            old=previous.get(identity)
             expiration=_timestamp(consent["expiresAt"]) if consent["expiresAt"] else 253402300799.0
+            # Off/paused responses deliberately carry no execution lease.
+            # Preserve an unchanged durable mirror (including a revoked local
+            # grant), but expire its lease and never create new authority.
+            if not authorization_enabled:
+                if (consent["revokedAt"] is None and expiration-CLOCK_SKEW_SECONDS>now
+                        and old is not None and old["consent"]["revision"]==consent["revision"]):
+                    self.learning.suspend_authorization(old["local_id"],self.workspace_id,now=now)
+                    mirrored[identity]=old
+                continue
             authorization_until=local_authorization_deadline(lease_expiry,now,expiration)
             if consent["revokedAt"] is not None or authorization_until<=now:
                 continue
-            identity=consent["consentId"]
             local_id="consent_"+hashlib.sha256((self.namespace+identity+":"+str(consent["revision"])).encode()).hexdigest()[:48]
             old=previous.get(identity)
             if old is not None and old["local_id"] == local_id:
@@ -363,7 +373,7 @@ class RateLoopConnector:
             with self.learning.transaction() as database:
                 self._state(database).setdefault("consents",{})[identity]=mirrored[identity]
         with self.learning.transaction() as database:
-            self._state(database).update(consents=mirrored,authorization_lease=lease)
+            self._state(database).update(consents=mirrored,authorization_lease=lease if authorization_enabled else None)
         return len(mirrored)
 
     def sync_grants(self, *, now: float | None = None) -> dict:
@@ -401,7 +411,7 @@ class RateLoopConnector:
             if watermark < previous["watermark"]:
                 raise PermissionError("Remote revocation watermark moved backwards")
             self._sync_deletions(response)
-            consent_count=self._sync_consents(response,now=current,watermark=watermark)
+            consent_count=self._sync_consents(response,now=current,watermark=watermark,authorization_enabled=mode=="shadow")
             received={g["grantId"]:g for g in grants}
             for remote_id,old in previous["grants"].items():
                 remote=received.get(remote_id)

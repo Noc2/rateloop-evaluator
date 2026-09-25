@@ -358,10 +358,13 @@ def test_later_opt_in_cannot_retain_an_earlier_queued_case(website):
 
 
 @pytest.mark.parametrize("mode",["ai","ai_and_human"])
-def test_explicit_case_tombstone_purges_retained_case_and_acknowledgment(website,mode):
+@pytest.mark.parametrize("workspace_mode",["shadow","paused"])
+def test_explicit_case_tombstone_purges_retained_case_and_acknowledgment(website,mode,workspace_mode):
     worker,req,_,remote,behavior,_=website
     if mode=="ai": choose_ai_only(behavior)
     worker.run_once()
+    remote["settings"]["mode"]=workspace_mode
+    if workspace_mode=="paused":remote["authorizationLease"]=None
     remote.update(deletedCases=[{"caseId":req.caseId,"deletedAt":iso(time.time())}],deletionWatermark=1)
     worker.connector.sync_grants()
     with worker.connector.learning.transaction() as db:
@@ -453,9 +456,12 @@ def test_changed_content_or_review_identity_rejected_before_inference(website,ch
 
 
 @pytest.mark.parametrize("mode",["off","paused"])
-def test_paused_workspace_never_claims_content(website,mode):
+@pytest.mark.parametrize("poisoned",[False,True])
+def test_paused_workspace_never_claims_content(website,mode,poisoned):
     worker,_,backend,remote,_,calls=website
-    remote["settings"]["mode"]=mode
+    worker.connector.sync_grants()
+    if poisoned:worker.connector._revoke_mirrors("invalid_remote_grant_state")
+    remote["settings"]["mode"]=mode;remote["authorizationLease"]=None
     assert worker.run_once()=={"state":"paused"}
     assert backend.calls==0 and not any("/jobs/" in r.url.path for r in calls)
     heartbeat=next(r for r in calls if r.url.path.endswith("/workers/heartbeat"))

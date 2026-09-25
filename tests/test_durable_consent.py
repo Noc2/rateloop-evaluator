@@ -157,3 +157,125 @@ def test_snapshot_cli_and_store_share_exact_multilingual_scope(setup,monkeypatch
         snapshot=learning.load_snapshot(result["snapshotId"],req.workspaceId)
         assert result["groups"]==3
         assert {row["template"]["language"] for part in ("train","calibration","test") for row in snapshot[part]}=={language}
+
+
+@pytest.mark.parametrize("mode",["off","paused"])
+def test_pause_restart_resume_preserves_durable_grant_and_snapshot_lineage(setup,mode):
+    from rateloop_evaluator.connector import RateLoopConnector
+    from rateloop_evaluator.learning import LearningStore
+    from rateloop_evaluator.storage import RuntimeStore
+    connector,req,learning,runtime,remote,_,_,kwargs=setup
+    now=time.time();durable(remote,req,now)
+    connector.sync_grants(now=now)
+    scope=dict(workspace_id=req.workspaceId,right="private_training",case_id=req.caseId,template_id=req.template.id,
+        fields=["input.text"],model_bundle_id=req.modelBundleId,template_commitment=req.template_commitment())
+    original=learning.check_right(**scope,now=now)
+    for index in range(3):
+        item=req.model_copy(deep=True);item.caseId=f"pause-case-{index}";item.sourceGroupId=item.caseId;item.input.text+=str(index)
+        evaluate(learning,item)
+        learning.add_feedback(workspace_id=item.workspaceId,evaluation_id=item.input_commitment(),input_commitment=item.input_commitment(),
+            template_commitment=item.template_commitment(),annotator_id="human-1",labels={"tone":"suitable"},exposed_to_ai=False,independent_human=True)
+    snapshot=learning.create_snapshot(req.workspaceId,req.template.id,req.template.version)
+    learning.register_model_lineage("paused-candidate",snapshot["id"],req.workspaceId)
+    remote["settings"]["mode"]=mode;remote["authorizationLease"]=None
+    assert connector.sync_grants(now=now+1)["mode"]==mode
+    with pytest.raises(PermissionError):learning.check_right(**scope,now=now+1)
+    with pytest.raises(PermissionError,match="renewal"):learning.load_snapshot(snapshot["id"],req.workspaceId,now=now+1)
+    with learning.transaction() as db:
+        assert db["grants"][original[0]]["revoked_at"] is None
+        assert db["snapshots"][snapshot["id"]].get("invalidated_at") is None
+        assert db["lineage"]["paused-candidate"]["retired_at"] is None
+        assert connector._state(db)["authorization_lease"] is None
+    # Reopen the encrypted disk stores, not just the in-memory connector.
+    learning=LearningStore(learning.root,learning.root.parent/"key")
+    restarted=RateLoopConnector(**{**kwargs,"learning":learning,"runtime":RuntimeStore(runtime.path,learning.root.parent/"key")},metadata_upload_enabled=True)
+    assert restarted.sync_grants(now=now+2)["mode"]==mode
+    with pytest.raises(PermissionError):learning.check_right(**scope,now=now+2)
+    remote["settings"]["mode"]="shadow"
+    remote["authorizationLease"]={"leaseId":"resumed-lease","issuedAt":iso(now+3),"expiresAt":iso(now+803),
+        "revocationWatermark":remote["revocationWatermark"],"workspaceId":req.workspaceId,"recipientApiKeyId":"api-key-1"}
+    restarted.sync_grants(now=now+3)
+    assert learning.check_right(**scope,now=now+3)==original
+    assert learning.load_snapshot(snapshot["id"],req.workspaceId,now=now+3)["id"]==snapshot["id"]
+    with learning.transaction() as db: assert db["lineage"]["paused-candidate"]["retired_at"] is None
+
+
+@pytest.mark.parametrize("withdrawal",["revoked","missing","expired","local"])
+def test_paused_sync_never_revives_real_withdrawal(setup,withdrawal):
+    connector,req,learning,_,remote,_,_,_=setup
+    now=time.time();durable(remote,req,now)
+    if withdrawal=="expired":remote["consents"][0]["expiresAt"]=iso(now+10)
+    connector.sync_grants(now=now)
+    with learning.transaction() as db: local_id=connector._state(db)["consents"]["permission-1"]["local_id"]
+    original=deepcopy(remote["consents"])
+    remote["settings"]["mode"]="paused";remote["authorizationLease"]=None
+    if withdrawal=="revoked":remote["consents"][0]["revokedAt"]=iso(now+1)
+    elif withdrawal=="missing":remote["consents"]=[]
+    elif withdrawal=="local":learning.revoke_grant(local_id,req.workspaceId,now=now+1)
+    connector.sync_grants(now=now+20)
+    with learning.transaction() as db: assert db["grants"][local_id]["revoked_at"] is not None
+    remote["consents"]=original;remote["settings"]["mode"]="shadow"
+    remote["authorizationLease"]={"leaseId":"resumed-lease","issuedAt":iso(now+21),"expiresAt":iso(now+821),
+        "revocationWatermark":remote["revocationWatermark"],"workspaceId":req.workspaceId,"recipientApiKeyId":"api-key-1"}
+    if withdrawal=="expired":connector.sync_grants(now=now+21)
+    else:
+        with pytest.raises((PermissionError,ValueError)):connector.sync_grants(now=now+21)
+    with learning.transaction() as db: assert db["grants"][local_id]["revoked_at"] is not None
+
+
+def test_initial_paused_consent_creates_no_grant_and_poisoned_mirror_requires_fresh_owner_consent(setup):
+    connector,req,learning,_,remote,_,_,_=setup
+    now=time.time();durable(remote,req,now);remote["settings"]["mode"]="paused";remote["authorizationLease"]=None
+    with learning.transaction() as db: original_ids=set(db["grants"])
+    connector.sync_grants(now=now)
+    with learning.transaction() as db: assert set(db["grants"])==original_ids
+    durable(remote,req,now+1);remote["settings"]["mode"]="shadow";connector.sync_grants(now=now+1)
+    connector._revoke_mirrors("invalid_remote_grant_state")
+    remote["settings"]["mode"]="paused";remote["authorizationLease"]=None
+    assert connector.sync_grants(now=now+2)["mode"]=="paused"
+    durable(remote,req,now+3);remote["settings"]["mode"]="shadow"
+    with pytest.raises(PermissionError):connector.sync_grants(now=now+3)
+    # A fresh explicit server consent gets a new mirror; the old one stays revoked.
+    remote["consents"][0].update(consentId="fresh-owner-permission",revision=2)
+    remote["revocationWatermark"]=2;remote["authorizationLease"]["revocationWatermark"]=2
+    assert connector.sync_grants(now=now+3)["mirroredConsents"]==1
+    with learning.transaction() as db:
+        assert connector._state(db)["consents"]["fresh-owner-permission"]["local_id"] not in original_ids
+        assert any(g["revoked_at"] is not None for g in db["grants"].values())
+
+
+@pytest.mark.parametrize("mode",["off","paused"])
+@pytest.mark.parametrize("stray_lease",[None,{"forged":"not-authority"}])
+def test_inactive_mode_never_creates_authority_even_with_stray_lease(setup,mode,stray_lease):
+    connector,req,learning,_,remote,_,_,_=setup
+    now=time.time();durable(remote,req,now);connector.sync_grants(now=now)
+    remote["settings"]["mode"]=mode;remote["authorizationLease"]=stray_lease
+    connector.sync_grants(now=now+1)
+    with pytest.raises(PermissionError):
+        learning.check_right(workspace_id=req.workspaceId,right="private_training",case_id=req.caseId,template_id=req.template.id,
+            fields=["input.text"],model_bundle_id=req.modelBundleId,template_commitment=req.template_commitment(),now=now+1)
+    with learning.transaction() as db:assert connector._state(db)["authorization_lease"] is None
+
+
+@pytest.mark.parametrize("revoked_purpose",["ai_use","private_learning"])
+def test_revocation_during_pause_preserves_independent_durable_permission(setup,revoked_purpose):
+    connector,req,learning,_,remote,_,_,_=setup
+    now=time.time();durable(remote,req,now)
+    ai=deepcopy(remote["consents"][0]);ai.update(consentId="ai-permission",purpose="ai_use")
+    remote["consents"].append(ai);connector.sync_grants(now=now)
+    with learning.transaction() as db: before=deepcopy(connector._state(db)["consents"])
+    remote["settings"]["mode"]="paused";remote["authorizationLease"]=None
+    for consent in remote["consents"]:
+        if consent["purpose"]==revoked_purpose:consent["revokedAt"]=iso(now+1)
+    connector.sync_grants(now=now+2)
+    remote["settings"]["mode"]="shadow"
+    remote["authorizationLease"]={"leaseId":"resumed-lease","issuedAt":iso(now+3),"expiresAt":iso(now+803),
+        "revocationWatermark":remote["revocationWatermark"],"workspaceId":req.workspaceId,"recipientApiKeyId":"api-key-1"}
+    connector.sync_grants(now=now+3)
+    with learning.transaction() as db:
+        for record in before.values():
+            grant=db["grants"][record["local_id"]]
+            if record["consent"]["purpose"]==revoked_purpose:assert grant["revoked_at"] is not None
+            else:
+                assert grant["revoked_at"] is None
+                assert grant["authorization_until"]>now+3
