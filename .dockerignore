@@ -14,3 +14,7 @@ data
 *credentials*.json
 client.json
 config.json
+.env
+.env.*
+hosted.json
+connector.json

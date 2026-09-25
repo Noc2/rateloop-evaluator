@@ -6,13 +6,13 @@ Use a dedicated account and an encrypted disk. Keep model files, state, credenti
 
 - **Mac:** native Python 3.12 and `.[model]`, with `--device mps`. Edit absolute paths in `deploy/ai.rateloop.evaluator.plist`, place it in the service user's LaunchAgents directory and load it using `launchctl bootstrap gui/UID PATH`. Native MPS inference and training were verified on the maintainer's M5 Max; the launchd template itself is an installation example, not a completed enterprise installation.
 - **Linux:** install under `/opt/rateloop-evaluator`, create a dedicated `rateloop-evaluator` user, provision models under an allowed read-only path, and configure `deploy/rateloop-evaluator.service`. CPU is the default. CUDA requires a matching PyTorch/driver installation and separate hardware acceptance tests.
-- **Container:** `docker build -f deploy/Dockerfile -t rateloop-evaluator:local .` builds the application. Mount private state and provisioned models at their configured absolute paths. Expose an authenticated TLS listener explicitly for cross-container/network access. Do not mount the Docker socket or bake keys/weights into the image. This CPU-oriented example was not used for the Mac MPS measurements.
+- **Container:** `docker build --target runtime -f deploy/Dockerfile -t rateloop-evaluator:local .` builds the application. Mount private state and provisioned models at their configured absolute paths. Expose an authenticated TLS listener explicitly for cross-container/network access. Do not mount the Docker socket or bake keys/weights into the image. The pinned CPU image contains no CUDA libraries. Its default final stage is the outbound hosted worker described below; `--target runtime` retains the standalone CLI entrypoint.
 
 The service binds loopback by default and rejects browser origins. Remote serving requires both `--tls-cert` and `--tls-key`; put the worker behind customer network controls. Grant only needed token roles. The runtime intentionally has no cloud model fallback, proxy inheritance, automated package/model update or training-report upload. Enforce no-outbound-network policy at the OS/container boundary for strict offline operation; software environment flags are not a firewall.
 
 Provision public checkpoints before disconnecting networking. Package versions and full model SHAs are recorded in verification evidence. Maintain a tested environment lock for each OS and device instead of assuming one GPU dependency lock is portable. Install GLiClass `.[compare]` in a separate virtual environment: its Transformers 5 dependency conflicts with GLiNER's Transformers 4 requirement.
 
-`requirements-macos-py312.lock` records the exact Python package versions from the verified native Mac environment. On that platform, install with `pip install -c requirements-macos-py312.lock -e '.[model,test]'` to reproduce those versions. It is a version snapshot, not a hash-verified universal lock; select and verify wheels separately for an offline enterprise installation.
+`requirements-macos-py312.lock` records the native Mac package versions, including subsequent verified security dependency updates. On that platform, install with `pip install -c requirements-macos-py312.lock -e '.[model,test]'` to reproduce those versions. It is a version snapshot, not a hash-verified universal lock; select and verify wheels separately for an offline enterprise installation.
 
 ## Upgrades and recovery
 
@@ -32,7 +32,7 @@ The signed model registry and evaluation gates do not replace authentication of 
 
 ## Outbound website worker
 
-The current Alpha website accepts its configured RateLoop-operated Mac. Standalone customer-local operation is supported; connecting customer hardware to the hosted website queue is not enabled.
+The Alpha website accepts its explicitly configured RateLoop-operated worker. That worker can run on an always-on Linux CPU service or a connected Mac. Standalone customer-local operation is supported; website admission remains controlled by the deployed application.
 
 Use a dedicated private state directory initialized with the actual workspace ID. Provision and register the overall-approval request for each intended language, then import the exported registration into the workspace. The connector's agent and version IDs must match the selected website integration. The workspace credential needs `evaluation:read` and `telemetry:write`. For AI + human, the website creates the authorized human review before worker inference; AI-only cases create no human review.
 
@@ -59,7 +59,7 @@ Rollback requires matching choices on the Mac and the website. Stop or drain the
 
 The synthetic acceptance operator combines the permission refresh, execution lock and checked local rollback: `python scripts/alpha_e2e_operator.py --config /private/operator.json rollback --language en --bundle-id PREVIOUS_BUNDLE_ID`. It returns the restored bundle, template, language and mode as metadata. The browser harness separately changes the website choice. A `worker --once` or `worker-once` command can return a failed or idle state without a nonzero exit code; callers must inspect its returned state and verify the expected job and model IDs before treating the case as completed.
 
-Connected workers report ready or busy while polling and running inference. Explicit connected training reports training immediately and refreshes it every 30 seconds after checking current consent. A unique operation ID prevents a polling worker or an older training process from clearing a newer training status; presence expires after 120 seconds without a matching refresh. Presence conveys availability only and never authorizes processing or learning. After a failed final status update, the last report remains visible only until that timeout.
+Connected workers load and warm every configured model before reporting presence. English and German registrations with the same immutable local artifacts share one model instance. A warm worker reports presence while the workspace is off or paused, so an owner can see it before enabling AI; it still cannot claim content without current authorization. Connected workers report ready or busy while polling and running inference. Explicit connected training reports training immediately and refreshes it every 30 seconds after checking current consent. A unique operation ID prevents a polling worker or an older training process from clearing a newer training status; presence expires after 120 seconds without a matching refresh. Presence conveys availability only and never authorizes processing or learning. After a failed final status update, the last report remains visible only until that timeout.
 
 The idempotent presence update retries at most three times, after 100 ms and 300 ms, only when HTTP 503 explicitly reports `database_coordination_busy` with `retryable: true`. Other server failures, transport failures and authentication refusals are not retried by this path. This does not change retry behavior for receipts or other connector writes.
 
@@ -81,3 +81,55 @@ This creates an owner-only LaunchAgent file and loads it into the current user's
 Inspect the returned service label with `launchctl print gui/$(id -u)/LABEL`; restart it with `launchctl kickstart -k gui/$(id -u)/LABEL`. A registered service or assigned PID alone is not proof that the worker can process a case: submit a synthetic case and verify its completed result and expected model bundle after installation. A durable pilot needs its own retained workspace, scoped credential, registered model and explicit AI-use consent; do not reuse the disposable acceptance workspace after cleanup. Private learning requires its separate consent before new cases are collected.
 
 On 2026-09-17, commit `7ed241ad314f69da9a784f47f2a4d0642995db05` passed actual macOS launchd bootstrap, worker-lock acquisition, restart with a new PID, stop and lock release, private plist/configuration permissions, refusal to overwrite an existing plist, and complete service/state cleanup. This check used a temporary runtime outside Documents and a dummy credential directed only at a non-listening loopback port; it verifies service lifecycle, not hosted inference or an unattended deployment. The same runtime launched from the maintainer's Documents checkout blocked while Python read its environment, before worker startup, despite launchd reporting a running PID. No macOS privacy permissions were changed to complete the check.
+
+
+## Always-on hosted CPU worker
+
+Build the default `hosted` stage of `deploy/Dockerfile` for `linux/amd64`. Python, CPU PyTorch and dependencies are pinned in the image and `deploy/constraints-cpu.txt`. The image contains software only: public weights are explicitly provisioned onto a private persistent volume and raw content, credentials, private weights and keys must never enter Git or image layers.
+
+Use one replica, one workspace, one private volume mounted at `/data`, and one CPU. The initial base-model pilot uses a **2,500,000,000-byte RAM cap**; budget and workload must be checked before deployment. CPU time and input length determine throughput. This is a serialized inference pilot, not a high-concurrency service or a hosted training service. Keep public networking disabled: the only listener is a metadata-only `/healthz` for the platform's private health check on port 8080. It has no inference, administration or credentials endpoint.
+
+Set private service variable `RATELOOP_HOSTED_CONFIG_JSON` to this JSON shape, replacing all example identities and the credential:
+
+```json
+{
+  "schemaVersion": "rateloop.hosted-worker.v1",
+  "workspaceId": "WORKSPACE_ID",
+  "workerId": "WORKER_ID",
+  "modelDir": "/data/models/gliner25",
+  "stateDir": "/data/state",
+  "bundles": [
+    {"language": "en", "modelBundleId": "hosted-gliner25-en-v1"},
+    {"language": "de", "modelBundleId": "hosted-gliner25-de-v1"}
+  ],
+  "connection": {
+    "baseUrl": "https://www.rateloop.ai",
+    "apiKey": "PRIVATE_WORKSPACE_CREDENTIAL",
+    "apiKeyId": "API_KEY_ID",
+    "agentId": "AGENT_ID",
+    "agentVersionId": "AGENT_VERSION_ID",
+    "metadataUploadEnabled": true
+  },
+  "pollSeconds": 5,
+  "healthPort": 8080
+}
+```
+
+The entrypoint changes only `/data` ownership when the platform mounts it as root, then drops all supplementary groups and runs as UID/GID 10001 before opening configuration, provisioning or inference. It writes configuration with owner-only permissions and removes the secret environment variable before executing the runtime. `/data/state` retains encryption/signing keys, encrypted state and fencing/outbox progress across restarts. Restart never changes the workspace, worker, agent, model or bundle identity. A credential can rotate within that identity; fresh server authorization is still required.
+
+For first installation, explicitly set `RATELOOP_PROVISION_MODEL=1`. The entrypoint runs **a separate provisioning process** pinned to the reviewed `MODEL_REVISION`, then starts a new offline runtime process. Existing model files are validated and reused; malformed or tampered files fail startup rather than downloading replacements. Clear the provisioning flag after successful installation. Alternatively provision the same pinned weights onto the volume beforehand and omit the flag. Inference and training never perform provisioning.
+
+The standalone lifecycle commands are `python -m rateloop_evaluator.hosted prepare|bootstrap|run --config /private/hosted.json`. `prepare` is the only command that can download a model. `bootstrap` validates local weights, preserves existing keys and registrations, and writes app-registration metadata to `/data/state/registrations/en.json` and `de.json`. Bootstrap does not authorize AI processing or learning. Import the matching registrations and configure the workspace-bound server credential before enabling AI use.
+
+For an explicit first-installation handoff, set server-only `RATELOOP_HOSTED_EXPORT_REGISTRATIONS=1`. After bootstrap, the entrypoint writes one `RATELOOP_HOSTED_REGISTRATION_V1 ` log line per language, followed by the exact registration JSON stored on that volume. These contain registration metadata only; no credential, workspace configuration, input or private weights are printed. Retrieve those actual cloud registrations from private provider logs and import them before enabling AI use, then clear the export flag. Ordinary startup emits none. A placeholder credential may be used for this isolated bootstrap; replacing it does not rewrite the actual model activation evidence. Workspace, worker, agent/version and bundle identities must already be final. Health remains unavailable until a valid scoped credential connects successfully.
+
+Readiness stays HTTP 503 until all model warmups finish and the worker completes a successful authenticated poll and heartbeat. It returns only `{"status":"ready"}` while that connection is fresh; failed polls, stale polling or shutdown restore 503. A paused or off workspace can be healthy because presence itself grants no content access. SIGTERM stops polling cleanly; failed requests use bounded retry delays. A volume/worker lock prevents duplicate processes from sharing the same durable identity.
+
+Before release, run the normal tests and the opt-in container acceptance check:
+
+```sh
+docker build --platform linux/amd64 -f deploy/Dockerfile -t rateloop-evaluator:hosted .
+python scripts/test_hosted_container.py rateloop-evaluator:hosted /absolute/path/to/provisioned/gliner25
+```
+
+That check uses the real local model, no network, and a test-only paused-server transport mounted outside the image. It checks cold/warm readiness, non-root runtime, the exact RAM/CPU cap, no OOM kills, SIGTERM, restart and encryption-key continuity. It is not evidence of a real hosted website case: deployment acceptance must also exercise an authorized case through the live application and verify its persisted result, selected bundle, permissions and blinding behavior. `scripts/measure_cpu.py` separately measures synthetic English/German inference and cgroup memory; emulated amd64 latency on Apple hardware is not a Railway service SLA.

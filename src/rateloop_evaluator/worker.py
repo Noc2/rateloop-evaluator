@@ -33,7 +33,7 @@ def _review_mode(value: dict) -> str:
 class OutboundWorker:
     def __init__(self, connector: RateLoopConnector, *, worker_id: str, model_bundle_ids: list[str],
                  evaluate: Callable[[EvaluationRequest],dict], poll_seconds: float = 5,
-                 heartbeat_seconds: float = 30):
+                 heartbeat_seconds: float = 30, on_poll: Callable[[bool],None] | None = None):
         _opaque(worker_id)
         if not model_bundle_ids or len(set(model_bundle_ids)) != len(model_bundle_ids):
             raise ValueError("Worker requires explicit unique pinned model bundles")
@@ -47,6 +47,7 @@ class OutboundWorker:
         self.presence=WorkerPresence(connector,worker_id,model_bundle_ids)
         self.stop=threading.Event()
         self.last_label_sync=0.0
+        self.on_poll=on_poll or (lambda _healthy: None)
 
     def sync_labels(self) -> dict:
         """Import only the website's exact overall-question labels under explicit learning consent."""
@@ -168,6 +169,7 @@ class OutboundWorker:
                     if status["mode"] != "shadow": raise PermissionError("Workspace paused")
                     self._heartbeat(job)
                     self.presence.report("busy")
+                    self.on_poll(True)
                 except Exception as error:
                     failed.append(error); return
         thread=threading.Thread(target=renew,name="evaluator-lease",daemon=True); thread.start()
@@ -222,12 +224,14 @@ class OutboundWorker:
 
     def run_once(self) -> dict:
         status=self.connector.sync_grants()
-        if status["mode"] != "shadow":
-            return {"state":"paused"}
         try:
             with model_execution(self.connector.learning):
+                # Presence is metadata, not authority to claim content. Owners
+                # must be able to see a warm worker before enabling AI use.
                 if self.presence.report("ready")["state"] == "training":
                     return {"state":"busy","reason":"training"}
+                if status["mode"] != "shadow":
+                    return {"state":"paused"}
                 try: return self._run_available()
                 finally:
                     try: self.presence.report("ready")
@@ -269,10 +273,12 @@ class OutboundWorker:
         failures=0
         while not self.stop.is_set():
             try:
-                self.run_once(); failures=0
-                if time.monotonic()-self.last_label_sync>=60: self.sync_labels()
+                result=self.run_once(); failures=0
+                self.on_poll(True)
+                if result["state"] != "paused" and time.monotonic()-self.last_label_sync>=60: self.sync_labels()
             except (ConnectorUnavailable,ConnectorRejected,PermissionError,ValueError):
                 failures+=1
+                self.on_poll(False)
             self.stop.wait(min(60,self.poll_seconds*2**min(failures,5)))
 
 
