@@ -64,13 +64,13 @@ def training_records(examples: list[dict[str, Any]]) -> list[dict[str, Any]]:
     for example in examples:
         questions = example["template"]["questions"]
         if set(example["labels"]) != {question["id"] for question in questions}:
-            raise ValueError("Training example lacks a complete human judgment")
+            raise ValueError("Training example lacks a complete declared judgment")
         classifications = []
         for question in questions:
             labels = {item["id"]: item["description"] for item in question["labels"]}
             label = example["labels"][question["id"]]
             if label not in labels:
-                raise ValueError("Human label does not belong to this template")
+                raise ValueError("Training label does not belong to this template")
             classifications.append({
                 "task": question["id"], "labels": list(labels),
                 "true_label": [label], "multi_label": False,
@@ -206,6 +206,9 @@ def train_snapshot(store: Any, snapshot_id: str, workspace_id: str,
         "trainableParametersChanged": before_fingerprint != after_fingerprint,
         "trainingGroupIds": sorted({example["group_id"] for example in examples}),
         "trainingExampleIds": sorted({example["evaluation_id"] for example in examples}),
+        "datasetVersionIds": sorted({example["dataset_version_id"] for example in examples if example.get("dataset_version_id")}),
+        "labelProvenanceCounts": {kind: sum(example.get("label_provenance", "blind_human") == kind for example in examples)
+                                   for kind in sorted({example.get("label_provenance", "blind_human") for example in examples})},
         "templateId": snapshot["template_id"], "templateVersion": snapshot["template_version"],
         "metrics": sanitized_training_metrics(result),
     }

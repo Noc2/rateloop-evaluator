@@ -17,6 +17,7 @@ import stat
 import tempfile
 import threading
 import time
+import unicodedata
 from typing import Any, Iterator
 import uuid
 
@@ -42,6 +43,15 @@ def is_independent_reference(row: dict) -> bool:
 
 def _label_field(row: dict) -> str:
     return "imported_labels" if row.get("source_kind") == "dataset" else "human_labels"
+
+
+def _source_aliases(row: dict) -> tuple[str, ...]:
+    # Detect exact and formatting-only near duplicates without a model or an
+    # unbounded similarity search. Semantic paraphrases still need source IDs.
+    normalized = {key: " ".join(unicodedata.normalize("NFKC", value).casefold().split())
+                  if isinstance(value, str) else value for key, value in row["input"].items()}
+    return ("case:"+row["case_id"], "group:"+row.get("source_group_id", row["group_id"]),
+            "input:"+_digest(row["input"]), "normalized_input:"+_digest(normalized))
 
 
 def provision_key(path: str | Path) -> None:
@@ -226,6 +236,10 @@ class LearningStore:
             if not grant or grant["workspace_id"] != workspace_id:
                 raise KeyError("Grant not found")
             grant["revoked_at"] = current
+            for version in state.get("datasets", {}).values():
+                if grant_id in version["grant_ids"]:
+                    version["invalidated_at"] = current
+                    version["invalidation_reason"] = "source_grant_revoked"
             affected_snapshots, retired_bundles = [], []
             for sid, snapshot in state["snapshots"].items():
                 if grant_id in snapshot["grant_ids"]:
@@ -359,7 +373,8 @@ class LearningStore:
     def create_snapshot(self, workspace_id: str, template_id: str, template_version: int | str, *,
                         train_fraction: float = .7, calibration_fraction: float = .15, seed: str = "rateloop-v1",
                         minimum_groups: int = 3, purpose: str = "private_training", now: float | None = None,
-                        template_commitment: str | None = None) -> dict:
+                        template_commitment: str | None = None, dataset_version_ids: list[str] | None = None,
+                        include_feedback: bool = True) -> dict:
         current = time.time() if now is None else now
         if purpose not in ("private_training", "shared_contribution", "public_weight_distribution"):
             raise ValueError("Invalid snapshot purpose")
@@ -367,7 +382,7 @@ class LearningStore:
             raise ValueError("All three partitions require a positive fraction")
         with self.transaction() as state:
             examples, grant_ids = [], set()
-            for row in state["evaluations"].values():
+            for row in (state["evaluations"].values() if include_feedback else []):
                 if row["workspace_id"] != workspace_id or row["template"]["id"] != template_id or row["template"]["version"] != template_version or row["input"] is None:
                     continue
                 if template_commitment is not None and row["template_commitment"] != template_commitment:
@@ -390,6 +405,31 @@ class LearningStore:
                 example.update({"labels": deepcopy(labels[0]["labels"]), "human_labels": deepcopy(labels), "grant_ids": sorted(source_grants)})
                 grant_ids.update(source_grants)
                 examples.append(example)
+            if dataset_version_ids is not None:
+                from .datasets import _validate_version
+                if (not isinstance(dataset_version_ids, list) or not dataset_version_ids
+                        or len(dataset_version_ids) != len(set(dataset_version_ids))):
+                    raise ValueError("Select distinct immutable dataset versions")
+                for version_id in dataset_version_ids:
+                    version = state.get("datasets", {}).get(version_id)
+                    if not version:
+                        raise KeyError("Dataset version not found")
+                    _validate_version(self, state, version, workspace_id, current)
+                    if ((version["template_id"], version["template_version"]) != (template_id, template_version)
+                            or template_commitment is not None and version["template_commitment"] != template_commitment):
+                        raise ValueError("Dataset version does not match the selected template")
+                    for example_id in version["example_ids"]:
+                        row = deepcopy(state["dataset_examples"][example_id])
+                        source_grants = set(row["grant_ids"])
+                        if purpose != "private_training":
+                            source_grants.update(self._matching_grants(state, workspace_id=workspace_id, right=purpose,
+                                case_id=row["case_id"], template_id=template_id, fields=[*row["fields"], "imported_labels"],
+                                now=current, model_bundle_id=row.get("model_bundle_id"), template_commitment=row["template_commitment"]))
+                        # The snapshot's historical identifier field is internal;
+                        # no AI evaluation receipt or human feedback is fabricated.
+                        row.update({"evaluation_id": example_id, "human_labels": [], "grant_ids": sorted(source_grants)})
+                        grant_ids.update(source_grants)
+                        examples.append(row)
             if len({r["template_commitment"] for r in examples}) > 1:
                 raise ValueError("Template version maps to conflicting committed definitions")
             # Union cases, caller-supplied source groups and exact duplicate inputs,
@@ -402,7 +442,7 @@ class LearningStore:
                 return i
             seen: dict[str, int] = {}
             for i, row in enumerate(examples):
-                for key in ("case:"+row["case_id"], "group:"+row["group_id"], "input:"+_digest(row["input"])):
+                for key in _source_aliases(row):
                     if key in seen:
                         parent[find(i)] = find(seen[key])
                     seen[key] = i
@@ -432,7 +472,7 @@ class LearningStore:
                         if old["template_commitment"] not in {r["template_commitment"] for r in examples}:
                             continue
                         original = state["evaluations"].get(old["evaluation_id"], old)
-                        aliases = ("case:"+old["case_id"], "group:"+original.get("source_group_id", original["group_id"]), "input:"+_digest(old["input"]))
+                        aliases = _source_aliases({**old, "source_group_id": original.get("source_group_id", original["group_id"])})
                         for alias in aliases:
                             key = _digest(alias)
                             known = ledger["aliases"].get(key)
@@ -441,8 +481,16 @@ class LearningStore:
                             ledger["aliases"].setdefault(key, {"partition": partition, "group_id": old["group_id"]})
             grouped = []
             for rows in groups.values():
-                aliases = sorted({_digest(alias) for row in rows for alias in (
-                    "case:"+row["case_id"], "group:"+row["group_id"], "input:"+_digest(row["input"]))})
+                if len({_digest(row["labels"]) for row in rows}) > 1:
+                    # A source can contain several distinct, valid judgments.
+                    # Only identical material with contradictory labels conflicts.
+                    by_input = {}
+                    for row in rows:
+                        key = _source_aliases(row)[-1]
+                        if key in by_input and by_input[key] != row["labels"]:
+                            raise ValueError("Duplicate material has conflicting labels; resolve labels before training")
+                        by_input[key] = row["labels"]
+                aliases = sorted({_digest(alias) for row in rows for alias in _source_aliases(row)})
                 known = [ledger["aliases"][key] for key in aliases if key in ledger["aliases"]]
                 if len({entry["partition"] for entry in known}) > 1:
                     raise ValueError("A source group bridges frozen partitions; quarantine the conflicting data")
@@ -501,7 +549,7 @@ class LearningStore:
                 required_rights = {"private_training", snapshot["purpose"]}
                 for right in required_rights:
                     LearningStore._matching_grants(state, workspace_id=workspace_id, right=right, case_id=row["case_id"],
-                                                   template_id=snapshot["template_id"], fields=[*row["fields"], "human_labels"], now=now,
+                                                   template_id=snapshot["template_id"], fields=[*row["fields"], _label_field(row)], now=now,
                                                    model_bundle_id=row.get("model_bundle_id"), template_commitment=row["template_commitment"])
 
     def load_snapshot(self, snapshot_id: str, workspace_id: str, *, now: float | None = None) -> dict:
@@ -547,6 +595,16 @@ class LearningStore:
             state.setdefault("deleted_cases", {})[_digest([workspace_id, case_id])] = current
             ids = [k for k,v in state["evaluations"].items() if v["workspace_id"] == workspace_id and v["case_id"] == case_id]
             commitments = {state["evaluations"][key]["input_commitment"] for key in ids}
+            dataset_ids = [key for key, row in state.get("dataset_examples", {}).items()
+                           if row["workspace_id"] == workspace_id and row["case_id"] == case_id]
+            for version in state.get("datasets", {}).values():
+                if set(version["example_ids"]) & set(dataset_ids):
+                    version["invalidated_at"] = current
+                    version["invalidation_reason"] = "source_deleted"
+                    version["example_ids"] = [key for key in version["example_ids"] if key not in dataset_ids]
+            for key in dataset_ids:
+                del state["dataset_examples"][key]
+            ids.extend(dataset_ids)
             feedback_ids = {k for k,v in state["feedback"].items() if v["evaluation_id"] in ids}
             for connector in state.get("connectors", {}).values():
                 results = connector.get("results", {})
@@ -560,7 +618,7 @@ class LearningStore:
                     connector[collection]={k:v for k,v in connector.get(collection,{}).items() if v.get("caseId")!=case_id}
             for evaluation_id in ids:
                 self._invalidate_evaluation(state, evaluation_id, current, "source_deleted")
-                del state["evaluations"][evaluation_id]
+                state["evaluations"].pop(evaluation_id, None)
             state["feedback"] = {k:v for k,v in state["feedback"].items() if v["evaluation_id"] not in ids}
             for snapshot in state["snapshots"].values():
                 for part in ("train", "calibration", "test"):
