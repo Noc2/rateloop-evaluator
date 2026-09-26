@@ -55,7 +55,11 @@ def preview_dataset(*, template: Template | dict, content: bytes | str,
         if not columns or len(columns) != len(set(columns)) or any(not c for c in columns):
             raise ValueError('CSV requires unique nonempty column names')
         raw_rows = []
-        for row in reader:
+        try:
+            parsed_rows = list(reader)
+        except csv.Error:
+            raise ValueError('CSV structure is invalid') from None
+        for row in parsed_rows:
             if None in row or any(value is None for value in row.values()):
                 raise ValueError('Every CSV row must match the header')
             raw_rows.append(row)
@@ -151,7 +155,7 @@ def import_dataset(store: LearningStore, *, workspace_id: str, dataset_id: str,
         workspace_versions = [v for v in versions.values() if v['workspace_id'] == workspace_id]
         stored_bytes = sum(len(_json(row)) for row in examples.values() if row['workspace_id'] == workspace_id)
         if len(workspace_versions) >= MAX_WORKSPACE_VERSIONS or stored_bytes+len(_json(identity)) > MAX_WORKSPACE_BYTES:
-            raise ValueError('Workspace dataset capacity exceeded; remove unused datasets before importing more')
+            raise ValueError('Workspace dataset capacity exceeded')
         example_ids = []
         for row in preview['rows']:
             example_id = 'sample_'+_digest([version_id, row['case_id']])
