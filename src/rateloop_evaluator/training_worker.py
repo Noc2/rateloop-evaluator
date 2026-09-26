@@ -392,7 +392,11 @@ class TrainingWorker:
         # The server acknowledges identical completed receipts idempotently even
         # after the original execution lease. Persist before and after that edge
         # so a crash cannot silently leave a different local model selected.
-        self._post(job,"complete",result=job["result"])
+        response=self._post(job,"complete",result=job["result"])
+        if response.get("jobId")!=job["jobId"] or response.get("status")!="completed":
+            # An ambiguous HTTP success is not proof of the intended switch.
+            # Keep the immutable result so the next attempt can reconcile it.
+            raise ConnectorUnavailable("Training completion acknowledgment is ambiguous")
         job["serverAcknowledged"]=True; self._save(job)
         self.sync_permissions("training")
         self._apply_switch(job)

@@ -45,7 +45,7 @@ def runner(initialized,tmp_path,capsys,monkeypatch):
         "leaseToken":"training-job-fencing-token","leaseExpiresAt":iso(time.time()+120)}
     authorization.update(datasetVersionId=job["datasetVersionId"],datasetCommitment=job["datasetCommitment"])
     behavior={"pending":deepcopy(job),"claimed":False,"completed":[],"failed":[],"permission":True,"cancelled":False,"offline_complete":False,
-        "train_calls":0,"cancel_during_train":False,"complete_status":200,"content_mutator":lambda value:None}
+        "train_calls":0,"cancel_during_train":False,"complete_status":200,"ambiguous_complete":False,"content_mutator":lambda value:None}
     calls=[]
     def transport(req):
         calls.append(req)
@@ -75,7 +75,7 @@ def runner(initialized,tmp_path,capsys,monkeypatch):
             if behavior["offline_complete"]: raise httpx.ConnectError("Synthetic interruption",request=req)
             if behavior["complete_status"]!=200: return httpx.Response(behavior["complete_status"],json={"state":"cancelled"})
             behavior["completed"].append(body["result"])
-            return httpx.Response(200,json={"state":"completed"})
+            return httpx.Response(200,json={"status":"completed","jobId":"wrong-job" if behavior["ambiguous_complete"] else behavior["pending"]["jobId"]})
         if path.endswith("/fail"):
             behavior["failed"].append(body)
             return httpx.Response(200,json={"state":"failed"})
@@ -269,3 +269,17 @@ def test_retention_deadline_erases_rows_even_if_website_is_unavailable(runner,mo
     with pytest.raises(ConnectorUnavailable): worker.sync_permissions()
     with store.transaction() as db: assert not db["dataset_examples"]
     with pytest.raises(PermissionError): registry.get("candidate","workspace-test")
+
+
+def test_ambiguous_completion_never_applies_switch_and_retries_exact_result(runner):
+    worker,behavior,_,job,template,_,registry,changed,_=runner
+    assert worker.run_once()["state"]=="training_completed"
+    next_job(behavior,job,"activate")
+    behavior["ambiguous_complete"]=True
+    with pytest.raises(ConnectorUnavailable,match="ambiguous"): worker.run_once()
+    saved=worker._saved()["result"]
+    assert not changed
+    with pytest.raises(PermissionError): registry.serving_policy("candidate","workspace-test",template)
+    behavior["ambiguous_complete"]=False
+    assert worker.run_once()["state"]=="training_completed"
+    assert behavior["completed"][-1]==saved and changed==[["base","candidate"]]
