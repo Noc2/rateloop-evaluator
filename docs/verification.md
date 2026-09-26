@@ -250,3 +250,11 @@ no external service was called, and no paid infrastructure or hosted state chang
 machine-readable reports remained outside Git. This proves local import → snapshot → train → reload → compare →
 register/export → explicit activation/rollback mechanics. Website import/training UI, hosted queue dispatch and a
 website result from this custom candidate require their separate end-to-end acceptance.
+
+## Optional training runner and bounded checkpoint cache — 26 September 2026
+
+Evaluator `041ac94b017aa206ecb913d195506be4010742a6` passed **369 tests**, with four optional hardware skips, and the portable contract checker. Authenticated-transport tests cover dataset import, frozen comparison, candidate export, separate activation and rollback, cancellation during optimization, revoked or expired dataset erasure, exact completion acknowledgments, and restart reconciliation. Neural computation is stubbed in those transport tests; the separate real optimizer rehearsal above establishes checkpoint mechanics.
+
+A durable isolated operator runtime at that source version reused the existing pinned public checkpoint and installed dependencies. Its two English/German registrations shared one model instance. Real native MPS inference accepted custom questions about whether a summary mentions a budget; no dataset, grant, human label or quality claim was created. A separate cache check loaded the prior synthetic trained checkpoint, then the public checkpoint, then the trained checkpoint again. Each completed load reported 1,158,335,488 allocated MPS bytes; closing the cache returned allocated MPS memory to zero. This is bounded resident-checkpoint evidence, not a process-RAM peak measurement or a service throughput guarantee. Unit checks additionally verify eviction before loading a new private checkpoint, exact queued bundle routing, and rejection of revoked bundles before loading.
+
+The prepared operator uses its own private state, signing key and workspace credential. Its outbound service definition was prepared but not loaded during this check. No model download, hosted service change, website dataset request, private-weight upload or additional training occurred. The always-on hosted CPU deployment and website training journey still require their separate live acceptance; the local checks do not establish those outcomes.
