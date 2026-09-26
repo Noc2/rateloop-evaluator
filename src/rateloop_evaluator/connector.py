@@ -77,6 +77,14 @@ class ConnectorRejected(ValueError):
         super().__init__(f"RateLoop rejected the connector request (HTTP {status})")
 
 
+class ReceiptRejected(ValueError):
+    """A permanent receipt rejection must not renew its website job forever."""
+    def __init__(self, status: int | None):
+        self.status=status
+        self.code="receipt_rejected"+(f"_http_{status}" if status is not None else "")
+        super().__init__(self.code)
+
+
 def _timestamp(value: Any) -> float:
     if not isinstance(value, str) or not value.endswith("Z"):
         raise ValueError("Expected a UTC timestamp")
@@ -471,6 +479,7 @@ class RateLoopConnector:
             if acknowledged.get("receiptHash") != commitment(receipt,"rateloop.product-evaluator.v2"):
                 raise ValueError("Persisted receipt acknowledgment has a different commitment")
             return receipt_id
+        self.assert_receipt_retryable(receipt_id)
         if job_context is not None:
             if not isinstance(job_context,dict) or set(job_context)!={"jobId","workerId","leaseToken"}:
                 raise ValueError("Job receipts require their exact execution fence")
@@ -481,6 +490,13 @@ class RateLoopConnector:
                 self._state(database).setdefault("receipt_jobs",{})[receipt_id]={**job_context,"caseId":receipt["result"]["caseId"]}
         self.runtime.enqueue(receipt_id,receipt)
         return receipt_id
+
+    def assert_receipt_retryable(self, receipt_id: str) -> None:
+        with self.learning.transaction() as database:
+            rejected=self._state(database)["dead_letters"].get(receipt_id)
+        if rejected is not None:
+            status=rejected.get("http_status")
+            raise ReceiptRejected(status if type(status) is int and 400<=status<500 else None)
 
     def flush(self, limit: int = 20, *, now: float | None = None) -> dict:
         if not self.metadata_upload_enabled:
@@ -521,6 +537,10 @@ class RateLoopConnector:
             except PermissionError:
                 self.runtime.retry(receipt_id)
                 raise
+            except ConnectorRejected as error:
+                with self.learning.transaction() as database:
+                    self._state(database)["dead_letters"][receipt_id]={"reason":"receipt_http_rejected","http_status":error.status,"at":current}
+                self.runtime.delivered(receipt_id); rejected+=1
             except (ValueError,KeyError,TypeError) as error:
                 with self.learning.transaction() as database:
                     self._state(database)["dead_letters"][receipt_id]={"reason":str(error),"at":current}

@@ -100,6 +100,26 @@ def test_website_job_uses_shared_inference_core_and_encrypts_progress(website):
         assert db["evaluations"][req.input_commitment()]["input"]["text"]==req.input.text
 
 
+@pytest.mark.parametrize("status",[400,413,422])
+def test_permanently_rejected_receipt_fails_job_once_without_renewing_or_reenqueuing(website,status):
+    worker,req,backend,_,behavior,calls=website
+    behavior["receipt_status"]=status
+    result=worker.run_once()
+    assert result=={"state":"failed","jobId":"job-1","errorCode":f"receipt_rejected_http_{status}"}
+    assert behavior["failed"]["retryable"] is False
+    assert behavior["failed"]["errorCode"]==result["errorCode"]
+    assert worker._saved() is None and backend.calls==1
+    assert worker.run_once()=={"state":"idle"}
+    assert len([call for call in calls if call.url.path.endswith("/receipts")])==1
+    with worker.connector.learning.transaction() as db:
+        saved=worker.connector._state(db)["results"][req.input_commitment()]
+        rejected=next(iter(worker.connector._state(db)["dead_letters"].values()))
+        assert rejected["http_status"]==status
+    with pytest.raises(ValueError,match=f"receipt_rejected_http_{status}"):
+        worker.connector.queue_result(saved)
+    assert worker.connector.runtime.pending()==[]
+
+
 @pytest.mark.parametrize("kind,probability",[("mandatory",10000),("mandatory",500),("random",250)])
 def test_inference_only_permission_does_not_retain_training_inputs(website,kind,probability):
     worker,req,_,remote,behavior,_=website

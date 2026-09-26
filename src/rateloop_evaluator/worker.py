@@ -14,7 +14,7 @@ from typing import Callable
 
 from fastapi import HTTPException
 
-from .connector import ConnectorRejected, ConnectorUnavailable, RateLoopConnector, _audit_selection, _hash, _opaque, _timestamp
+from .connector import ConnectorRejected, ConnectorUnavailable, ReceiptRejected, RateLoopConnector, _audit_selection, _hash, _opaque, _timestamp
 from .protocol import EvaluationRequest, EvaluationResult
 from .templates import website_binary_question
 from .execution import ExecutionBusy, model_execution
@@ -223,6 +223,7 @@ class OutboundWorker:
             self.connector.flush()
             acknowledgment=self.connector.runtime.acknowledgment(receipt_key)
         if acknowledgment is None:
+            self.connector.assert_receipt_retryable(receipt_key)
             raise ConnectorUnavailable("Result remains in the encrypted outbox")
         self._post(job,"complete",receiptId=acknowledgment["receiptId"])
         self._save(None)
@@ -268,6 +269,11 @@ class OutboundWorker:
             return self._process(job)
         except ConnectorUnavailable:
             raise  # Keep the fencing token for recovery; never duplicate a review.
+        except ReceiptRejected as error:
+            try: self._post(job,"fail",retryable=False,errorCode=error.code)
+            except (ConnectorUnavailable,ConnectorRejected,PermissionError): pass
+            self._save(None)
+            return {"state":"failed","jobId":job["jobId"],"errorCode":error.code}
         except ConnectorRejected as error:
             if error.status in (404,409,410):
                 self._save(None)
