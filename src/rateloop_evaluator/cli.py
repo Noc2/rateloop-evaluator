@@ -215,6 +215,7 @@ def run(args):
                     evaluate=evaluate_job,poll_seconds=args.poll_seconds,training_worker=training_worker)
                 if training_worker:
                     def reload_models(updated):
+                        worker.evaluate.close()
                         worker.evaluate=prepare_evaluator(connector,registry,updated,device=args.device)
                         worker.model_bundle_ids=updated
                         worker.presence.model_bundle_ids=list(updated)

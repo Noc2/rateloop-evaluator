@@ -39,3 +39,39 @@ def test_warmup_failure_never_returns_a_ready_worker(monkeypatch):
     registry=SimpleNamespace(get=lambda *_:{"artifact_root":"/missing","manifest":{"files":{},"languages":["en"]}})
     with pytest.raises(RuntimeError,match="missing model"):
         worker_runtime.prepare_evaluator(SimpleNamespace(workspace_id="w"),registry,["bundle"])
+
+
+def test_private_checkpoint_cache_is_bounded_and_routes_exact_authorized_queued_models(monkeypatch):
+    resident=set(); events=[]; revoked=set()
+    records={name:{"artifact_root":"/"+name,"manifest":{"id":name,"languages":["en"],
+        "files":{"weights":name},**({"snapshot_id":"snapshot-"+name} if name!="base" else {})}}
+        for name in ("base","candidate-a","candidate-b","candidate-c")}
+    class Registry:
+        def get(self,name,*args,**kwargs): return deepcopy(records[name])
+        def serving_policy(self,name,*_args,**_kwargs):
+            if name in revoked: raise PermissionError("Revoked source")
+            return {"bundle_id":name}
+    class Backend:
+        def __init__(self,path,device): self.path=path
+        def load(self):
+            resident.add(self.path); events.append(("load",self.path))
+            assert len(resident-{"/base"})<=1
+        def unload(self): resident.discard(self.path); events.append(("unload",self.path))
+        def predict(self,*_args): return self.path
+    def app(**kw):
+        def evaluate(request,_identity):
+            kw["validate_bundle"](request)
+            return kw["backend"].predict("Synthetic",[])
+        return SimpleNamespace(state=SimpleNamespace(evaluate=evaluate))
+    monkeypatch.setattr(worker_runtime,"GLiNERBackend",Backend)
+    monkeypatch.setattr(worker_runtime,"create_app",app)
+    evaluate=worker_runtime.prepare_evaluator(SimpleNamespace(workspace_id="workspace",learning=None,runtime=None),Registry(),list(records))
+    assert resident=={"/base","/candidate-c"}
+    for name in ("candidate-a","candidate-b","candidate-c","base","candidate-a"):
+        assert evaluate(SimpleNamespace(modelBundleId=name,template=None))=="/"+name
+    assert resident=={"/base","/candidate-a"}
+    revoked.add("candidate-b"); previous=list(events)
+    with pytest.raises(PermissionError): evaluate(SimpleNamespace(modelBundleId="candidate-b",template=None))
+    assert events==previous
+    evaluate.close()
+    assert not resident

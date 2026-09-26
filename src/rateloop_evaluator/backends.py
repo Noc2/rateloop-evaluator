@@ -220,6 +220,19 @@ class GLiNERBackend:
             self._model = model
         return self._model
 
+    def unload(self) -> None:
+        """Release this serialized worker's checkpoint before loading another."""
+        if self._model is None:
+            return
+        import gc
+        import torch
+        if self.device == "mps": torch.mps.synchronize()
+        elif self.device == "cuda": torch.cuda.synchronize()
+        self._model = None
+        gc.collect()
+        if self.device == "mps": torch.mps.empty_cache()
+        elif self.device == "cuda": torch.cuda.empty_cache()
+
     def count_tokens(self, text: str, questions: list[dict[str, Any]]) -> int:
         model = self.load()
         schema = question_schema(questions)
