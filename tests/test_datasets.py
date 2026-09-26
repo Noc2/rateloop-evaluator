@@ -3,7 +3,7 @@ import time
 
 import pytest
 
-from rateloop_evaluator.datasets import import_dataset, load_dataset, preview_dataset, MAX_BYTES
+from rateloop_evaluator.datasets import import_dataset, load_dataset, preview_dataset, erase_dataset_version, MAX_BYTES
 from rateloop_evaluator.learning import LearningStore, provision_key, is_independent_reference
 from rateloop_evaluator.protocol import Template, commitment
 from rateloop_evaluator.training import training_records
@@ -167,6 +167,31 @@ def test_delete_purges_dataset_material_snapshots_and_invalidates_version(store)
     with store.transaction() as state:
         assert all(r['case_id'] != row['case_id'] for r in state['dataset_examples'].values())
         assert all(r['case_id'] != row['case_id'] for part in ('train', 'calibration', 'test') for r in state['snapshots'][snap['id']][part])
+
+
+def test_erasure_is_version_scoped_and_preserves_hashed_holdout_assignments(store):
+    authorize(store)
+    first = upload(store)
+    second = upload(store, rows(12))
+    a = store.create_snapshot('workspace-a', 'summary', 1, dataset_version_ids=[first['id']], include_feedback=False)
+    b = store.create_snapshot('workspace-a', 'summary', 1, dataset_version_ids=[second['id']], include_feedback=False)
+    store.register_model_lineage('erase-candidate', a['id'], 'workspace-a')
+    store.register_model_lineage('keep-candidate', b['id'], 'workspace-a')
+    with store.transaction() as state:
+        ledger = json.dumps(state['split_manifests'], sort_keys=True)
+    with pytest.raises(KeyError):
+        erase_dataset_version(store, first['id'], 'workspace-b')
+    result = erase_dataset_version(store, first['id'], 'workspace-a')
+    assert result == {'erased_examples': 8, 'invalidated_snapshots': [a['id']], 'retired_bundles': ['erase-candidate']}
+    assert erase_dataset_version(store, first['id'], 'workspace-a')['erased_examples'] == 0
+    with pytest.raises(PermissionError): load_dataset(store, first['id'], 'workspace-a')
+    with pytest.raises(PermissionError): store.assert_model_usable('erase-candidate', 'workspace-a')
+    assert len(load_dataset(store, second['id'], 'workspace-a')['rows']) == 12
+    store.assert_model_usable('keep-candidate', 'workspace-a')
+    with store.transaction() as state:
+        assert not any(state['snapshots'][a['id']][part] for part in ('train', 'calibration', 'test'))
+        assert json.dumps(state['split_manifests'], sort_keys=True) == ledger
+        assert all(row['dataset_version_id'] == second['id'] for row in state['dataset_examples'].values())
 
 
 def test_formatting_duplicates_stay_together_and_conflicting_labels_reject(store):

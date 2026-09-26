@@ -205,3 +205,37 @@ def load_dataset(store: LearningStore, version_id: str, workspace_id: str, *, no
             raise KeyError('Dataset version not found')
         _validate_version(store, state, version, workspace_id, time.time() if now is None else now)
         return {**deepcopy(version), 'rows': [deepcopy(state['dataset_examples'][key]) for key in version['example_ids']]}
+
+
+def erase_dataset_version(store: LearningStore, version_id: str, workspace_id: str, *, now: float | None = None) -> dict:
+    """Erase this version's local row copies and retire dependent managed models.
+
+    Hashed split assignments remain as holdout tombstones. Other imported
+    versions, even those sharing case IDs, and unrelated evaluations are kept.
+    Backups and previously trained weights require separate operator handling.
+    """
+    current = time.time() if now is None else now
+    with store.transaction() as state:
+        version = state.get('datasets', {}).get(version_id)
+        if not version or version['workspace_id'] != workspace_id:
+            raise KeyError('Dataset version not found')
+        removed = [key for key, row in state.get('dataset_examples', {}).items()
+                   if row['workspace_id'] == workspace_id and row['dataset_version_id'] == version_id]
+        for key in removed:
+            del state['dataset_examples'][key]
+        version.update(invalidated_at=current, invalidation_reason='source_erased', example_ids=[], erased_at=current)
+        affected = []
+        for sid, snapshot in state['snapshots'].items():
+            if snapshot['workspace_id'] != workspace_id:
+                continue
+            if any(row.get('dataset_version_id') == version_id for part in ('train', 'calibration', 'test') for row in snapshot[part]):
+                snapshot.update(invalidated_at=current, invalidation_reason='source_erased')
+                affected.append(sid)
+                for part in ('train', 'calibration', 'test'):
+                    snapshot[part] = [row for row in snapshot[part] if row.get('dataset_version_id') != version_id]
+        retired = []
+        for bundle_id, lineage in state['lineage'].items():
+            if lineage['workspace_id'] == workspace_id and lineage['snapshot_id'] in affected:
+                lineage.update(retired_at=current, retirement_reason='source_erased')
+                retired.append(bundle_id)
+        return {'erased_examples': len(removed), 'invalidated_snapshots': affected, 'retired_bundles': retired}
