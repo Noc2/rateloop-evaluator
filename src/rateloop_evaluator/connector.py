@@ -28,7 +28,7 @@ _ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$")
 _HASH = re.compile(r"^sha256:[0-9a-f]{64}$")
 _GRANT_KEYS = {"grantId", "workspaceId", "apiKeyId", "purpose", "modelBundleId", "templateCommitment", "fields",
                "publicWeightsAllowed", "issuedAt", "expiresAt", "revokedAt", "revision"}
-_FIELD_MAP = {"input":"input.text", "context":"input.context", "evidence":"input.evidence", "human_labels":"human_labels"}
+_FIELD_MAP = {"input":"input.text", "context":"input.context", "evidence":"input.evidence", "human_labels":"human_labels", "imported_labels":"imported_labels"}
 _CONSENT_KEYS = {"consentId","revision","workspaceId","apiKeyId","purpose","processingLocation","modelFamilyId",
                  "modelBundleIds","templateCommitments","fields","issuedAt","expiresAt","revokedAt"}
 _PURPOSE_RIGHTS = {"ai_use":"ai_use","private_learning":"private_training","shared_contribution":"shared_contribution",

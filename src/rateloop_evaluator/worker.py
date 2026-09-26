@@ -33,7 +33,7 @@ def _review_mode(value: dict) -> str:
 class OutboundWorker:
     def __init__(self, connector: RateLoopConnector, *, worker_id: str, model_bundle_ids: list[str],
                  evaluate: Callable[[EvaluationRequest],dict], poll_seconds: float = 5,
-                 heartbeat_seconds: float = 30, on_poll: Callable[[bool],None] | None = None):
+                 heartbeat_seconds: float = 30, on_poll: Callable[[bool],None] | None = None, training_worker=None):
         _opaque(worker_id)
         if not model_bundle_ids or len(set(model_bundle_ids)) != len(model_bundle_ids):
             raise ValueError("Worker requires explicit unique pinned model bundles")
@@ -48,6 +48,7 @@ class OutboundWorker:
         self.stop=threading.Event()
         self.last_label_sync=0.0
         self.on_poll=on_poll or (lambda _healthy: None)
+        self.training_worker=training_worker
 
     def sync_labels(self) -> dict:
         """Map labels only from stored exact templates and current learning consent."""
@@ -229,6 +230,9 @@ class OutboundWorker:
             "humanReviewRequired":review_mode=="ai_and_human"}
 
     def run_once(self) -> dict:
+        if self.training_worker is not None:
+            training=self.training_worker.run_once()
+            if training["state"]!="idle": return training
         status=self.connector.sync_grants()
         try:
             with model_execution(self.connector.learning):
@@ -313,7 +317,7 @@ def run_worker(worker: OutboundWorker, root: Path, *, once: bool = False):
 
 
 def install_launchd(*, state_dir: Path, config_path: str, worker_id: str, bundle_ids: list[str], device: str,
-                    poll_seconds: float, output: str, load: bool = False) -> dict:
+                    poll_seconds: float, output: str, load: bool = False, training_model_dir: str | None = None) -> dict:
     """Write an owner-only native Mac service; credentials stay in their private file."""
     import plistlib
     import subprocess
@@ -331,6 +335,10 @@ def install_launchd(*, state_dir: Path, config_path: str, worker_id: str, bundle
     arguments=[sys.executable,"-m","rateloop_evaluator.cli","--state-dir",str(state_dir.resolve()),"worker",
         "--config",str(config),"--worker-id",worker_id,"--device",device,"--poll-seconds",str(poll_seconds)]
     for bundle in bundle_ids: arguments.extend(["--bundle-id",bundle])
+    if training_model_dir:
+        from .hosted import validate_pinned_model
+        path=Path(training_model_dir).expanduser().resolve(); validate_pinned_model(path)
+        arguments.extend(["--allow-training","--training-model-dir",str(path)])
     label="ai.rateloop.evaluator."+hashlib.sha256(worker_id.encode()).hexdigest()[:16]
     value={"Label":label,"ProgramArguments":arguments,"WorkingDirectory":str(state_dir.resolve()),
         "RunAtLoad":True,"KeepAlive":True,"ThrottleInterval":30,"ProcessType":"Background",

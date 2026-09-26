@@ -307,14 +307,18 @@ class BundleRegistry:
                 "evidence_digest": hashlib.sha256(_json(evidence)).hexdigest()}
 
     def promote(self, bundle_id: str, workspace_id: str, *, template_commitment: str, language: str,
-                mode: str = "shadow", evidence: dict | None = None, now: float | None = None) -> dict:
+                mode: str = "shadow", evidence: dict | None = None, now: float | None = None, template: Template | None = None) -> dict:
         if mode not in ("shadow", "assisted", "selective"):
             raise ValueError("Unsupported deployment mode")
         current = time.time() if now is None else now
         with self.store.transaction() as state:
             record = self._get(state, bundle_id, workspace_id, current)
             manifest = record["manifest"]
-            if template_commitment not in manifest["template_commitments"] or language not in manifest["languages"]:
+            dynamic_scope = (template is not None and manifest.get("task_capability") == CUSTOM_TEXT_CAPABILITY
+                and template.language == language and mode == "shadow"
+                and commitment(template.model_dump(), "rateloop.evaluator.template.v1") == template_commitment
+                and bundle_supports_template(manifest, template))
+            if (template_commitment not in manifest["template_commitments"] or language not in manifest["languages"]) and not dynamic_scope:
                 raise ValueError("Promotion scope does not match the bundle")
             gate = None
             if mode == "selective":
@@ -346,7 +350,7 @@ class BundleRegistry:
             return deepcopy({k:v for k,v in deployment.items() if k != "previous"})
 
     def rollback(self, workspace_id: str, template_commitment: str, language: str, *, now: float | None = None,
-                 expected_bundle_id: str | None = None) -> dict:
+                 expected_bundle_id: str | None = None, dry_run: bool = False) -> dict:
         current = time.time() if now is None else now
         key = hashlib.sha256(_json([workspace_id, template_commitment, language])).hexdigest()
         with model_execution(self.store), self.store.transaction() as state:
@@ -359,5 +363,5 @@ class BundleRegistry:
             self._get(state, previous["bundle_id"], workspace_id, current)
             if previous["mode"] == "selective" and (not previous.get("gate") or previous["gate"].get("valid_until", 0) <= current):
                 raise PermissionError("Rollback cannot restore expired selective evidence")
-            state["deployments"][key] = previous
+            if not dry_run: state["deployments"][key] = previous
             return deepcopy({k:v for k,v in previous.items() if k != "previous"})

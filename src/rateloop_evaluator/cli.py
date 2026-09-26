@@ -92,6 +92,8 @@ def main(argv=None):
         command.add_argument("--bundle-id",action="append",required=True)
         command.add_argument("--device",choices=["cpu","mps","cuda"],default="cpu")
         command.add_argument("--poll-seconds",type=float,default=5)
+        command.add_argument("--allow-training",action="store_true",help="Explicitly allow bounded website training on this operator-owned machine")
+        command.add_argument("--training-model-dir",help="Provisioned public base for opt-in training; never accepted from a website job")
         if name=="worker": command.add_argument("--once",action="store_true")
         else:
             command.add_argument("--output",default="~/Library/LaunchAgents/ai.rateloop.evaluator.worker.plist")
@@ -177,10 +179,12 @@ def run(args):
         write_private(args.output,report)
         return {"report":str(Path(args.output).resolve()),"testGroups":report["test_group_count"],
                 "qualityClaim":False,"activationChanged":False}
+    if args.command in ("worker","install-launchd") and bool(getattr(args,"allow_training",False))!=bool(getattr(args,"training_model_dir",None)):
+        raise ValueError("Training requires both --allow-training and --training-model-dir")
     if args.command == "install-launchd":
         from .worker import install_launchd
         return install_launchd(state_dir=root,config_path=args.config,worker_id=args.worker_id,bundle_ids=args.bundle_id,
-            device=args.device,poll_seconds=args.poll_seconds,output=args.output,load=args.load)
+            device=args.device,poll_seconds=args.poll_seconds,output=args.output,load=args.load,training_model_dir=args.training_model_dir)
     if args.command.startswith("connect-") or args.command == "worker":
         import httpx
         from urllib.parse import urlsplit
@@ -198,9 +202,24 @@ def run(args):
             if args.command == "worker":
                 from .worker_runtime import prepare_evaluator
                 from .worker import OutboundWorker, run_worker
-                evaluate_job=prepare_evaluator(connector,registry,args.bundle_id,device=args.device)
-                return run_worker(OutboundWorker(connector,worker_id=args.worker_id,model_bundle_ids=args.bundle_id,
-                    evaluate=evaluate_job,poll_seconds=args.poll_seconds),root,once=args.once)
+                training_worker=None
+                bundle_ids=args.bundle_id
+                if args.allow_training:
+                    from .training_worker import TrainingWorker
+                    training_worker=TrainingWorker(connector,registry,state_dir=root,worker_id=args.worker_id,
+                        model_dir=args.training_model_dir,model_bundle_ids=bundle_ids,device=args.device)
+                    training_worker.sync_permissions()
+                    bundle_ids=training_worker.configured_bundles()
+                evaluate_job=prepare_evaluator(connector,registry,bundle_ids,device=args.device)
+                worker=OutboundWorker(connector,worker_id=args.worker_id,model_bundle_ids=bundle_ids,
+                    evaluate=evaluate_job,poll_seconds=args.poll_seconds,training_worker=training_worker)
+                if training_worker:
+                    def reload_models(updated):
+                        worker.evaluate=prepare_evaluator(connector,registry,updated,device=args.device)
+                        worker.model_bundle_ids=updated
+                        worker.presence.model_bundle_ids=list(updated)
+                    training_worker.on_models_changed=reload_models
+                return run_worker(worker,root,once=args.once)
             if args.command == "connect-sync": return connector.sync_grants()
             if args.command == "connect-flush": return connector.flush()
             if args.command == "connect-release": return connector.release_result(args.input_commitment)
