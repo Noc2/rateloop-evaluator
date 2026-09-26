@@ -27,6 +27,23 @@ RIGHTS = frozenset({"ai_use", "private_training", "shared_contribution", "public
 COLLECTIONS = ("grants", "evaluations", "feedback", "snapshots", "lineage", "bundles", "deployments")
 
 
+def is_independent_reference(row: dict) -> bool:
+    """Only authenticated, unexposed human feedback is an independent reference.
+
+    Imported labels are useful training targets, but an upload or user-selected
+    provenance label cannot turn them into verified blind human judgments.
+    """
+    labels = row.get("human_labels", [])
+    return (row.get("source_kind", "evaluation") == "evaluation" and bool(labels)
+            and all(label.get("independent_human") is True
+                    and label.get("exposed_to_ai") is False
+                    and not label.get("quarantine_reasons") for label in labels))
+
+
+def _label_field(row: dict) -> str:
+    return "imported_labels" if row.get("source_kind") == "dataset" else "human_labels"
+
+
 def provision_key(path: str | Path) -> None:
     """Create a customer-owned encryption key exclusively, never overwrite it."""
     fd = os.open(Path(path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
@@ -392,22 +409,72 @@ class LearningStore:
             groups: dict[int, list[dict]] = {}
             for i, row in enumerate(examples):
                 groups.setdefault(find(i), []).append(row)
+            # Persist assignments by source aliases, not the current dataset size.
+            # Once held out, a case/source/duplicate cannot enter training in a
+            # later snapshot, even when more data changes the target proportions.
+            scope = _digest([workspace_id, template_id, template_version,
+                             sorted({r["template_commitment"] for r in examples})])
+            ledger = state.setdefault("split_manifests", {}).setdefault(scope, {
+                "seed": seed, "train_fraction": train_fraction,
+                "calibration_fraction": calibration_fraction, "aliases": {},
+            })
+            if any(ledger[key] != value for key, value in (
+                    ("seed", seed), ("train_fraction", train_fraction),
+                    ("calibration_fraction", calibration_fraction))):
+                raise ValueError("Existing split assignments cannot be reconfigured")
+            # Upgrade stores created before persistent manifests. Existing
+            # snapshots take precedence over a newly requested random split.
+            for previous in state["snapshots"].values():
+                if (previous["workspace_id"], previous["template_id"], previous["template_version"]) != (workspace_id, template_id, template_version):
+                    continue
+                for partition in ("train", "calibration", "test"):
+                    for old in previous[partition]:
+                        if old["template_commitment"] not in {r["template_commitment"] for r in examples}:
+                            continue
+                        original = state["evaluations"].get(old["evaluation_id"], old)
+                        aliases = ("case:"+old["case_id"], "group:"+original.get("source_group_id", original["group_id"]), "input:"+_digest(old["input"]))
+                        for alias in aliases:
+                            key = _digest(alias)
+                            known = ledger["aliases"].get(key)
+                            if known and known["partition"] != partition:
+                                raise ValueError("Historical source groups crossed partitions; a fresh benchmark is required")
+                            ledger["aliases"].setdefault(key, {"partition": partition, "group_id": old["group_id"]})
             grouped = []
             for rows in groups.values():
-                group = "group_"+_digest(sorted(r["evaluation_id"] for r in rows))
+                aliases = sorted({_digest(alias) for row in rows for alias in (
+                    "case:"+row["case_id"], "group:"+row["group_id"], "input:"+_digest(row["input"]))})
+                known = [ledger["aliases"][key] for key in aliases if key in ledger["aliases"]]
+                if len({entry["partition"] for entry in known}) > 1:
+                    raise ValueError("A source group bridges frozen partitions; quarantine the conflicting data")
+                group = min((entry["group_id"] for entry in known), default="group_"+_digest(aliases))
                 for row in rows:
+                    row["source_group_id"] = row["group_id"]
                     row["group_id"] = group
-                grouped.append((hashlib.sha256((seed+group).encode()).hexdigest(), rows))
+                    row["independent_reference"] = is_independent_reference(row)
+                grouped.append((hashlib.sha256((ledger["seed"]+group).encode()).hexdigest(), rows, aliases,
+                                known[0]["partition"] if known else None))
             grouped.sort(key=lambda x: x[0])
             if len(grouped) < max(3, minimum_groups):
                 raise ValueError("Insufficient independent eligible groups for train/calibration/test")
             n_train = min(len(grouped)-2, max(1, int(len(grouped)*train_fraction)))
             n_cal = min(len(grouped)-n_train-1, max(1, int(len(grouped)*calibration_fraction)))
-            partitions = {"train": grouped[:n_train], "calibration": grouped[n_train:n_train+n_cal], "test": grouped[n_train+n_cal:]}
+            targets = {"train": n_train, "calibration": n_cal, "test": len(grouped)-n_train-n_cal}
+            partitions = {key: [] for key in targets}
+            for _, rows, aliases, assigned in grouped:
+                if assigned:
+                    partitions[assigned].append(rows)
+            for _, rows, aliases, assigned in grouped:
+                if assigned is None:
+                    assigned = max(targets, key=lambda part: targets[part]-len(partitions[part]))
+                    partitions[assigned].append(rows)
+                for alias in aliases:
+                    ledger["aliases"].setdefault(alias, {"partition": assigned, "group_id": rows[0]["group_id"]})
+            if not all(partitions.values()):
+                raise ValueError("Frozen partitions need additional eligible source groups")
             snapshot = {"id": "snapshot_"+uuid.uuid4().hex, "workspace_id": workspace_id,
                         "template_id": template_id, "template_version": template_version, "purpose": purpose,
                         "created_at": current, "seed": seed, "grant_ids": sorted(grant_ids), "invalidated_at": None,
-                        "group_count": len(grouped), **{k: [row for _, rows in part for row in rows] for k,part in partitions.items()}}
+                        "group_count": len(grouped), **{k: [row for rows in part for row in rows] for k,part in partitions.items()}}
             snapshot["content_digest"] = _digest({k: snapshot[k] for k in ("workspace_id", "template_id", "template_version", "purpose", "train", "calibration", "test")})
             state["snapshots"][snapshot["id"]] = snapshot
             return deepcopy(snapshot)

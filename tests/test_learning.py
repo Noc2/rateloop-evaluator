@@ -291,3 +291,43 @@ def test_deletion_purges_connector_metadata_and_import_references(store):
         assert database["connectors"]["connection-a"]["audits"]=={}
         assert database["connectors"]["connection-a"]["imports"]=={}
         assert database["connectors"]["other-workspace"]["audits"]
+
+
+def test_frozen_groups_stay_in_partition_after_growth_and_related_rows(store):
+    grant(store)
+    first = snapshot(store, 9)
+    original = {row['case_id']: (part, row['group_id'])
+                for part in ('train', 'calibration', 'test') for row in first[part]}
+    for number in range(9, 35):
+        example(store, number)
+    held_out = first['test'][0]
+    example(store, 99, group_id=held_out['source_group_id'])
+    second = store.create_snapshot('workspace-a', 'reply', '1')
+    positions = {row['case_id']: (part, row['group_id'])
+                 for part in ('train', 'calibration', 'test') for row in second[part]}
+    assert all(positions[case] == assigned for case, assigned in original.items())
+    assert positions['case-99'] == original[held_out['case_id']]
+    with pytest.raises(ValueError, match='cannot be reconfigured'):
+        store.create_snapshot('workspace-a', 'reply', '1', seed='try-to-reshuffle')
+
+
+def test_new_bridge_between_training_and_holdout_fails_closed(store):
+    grant(store)
+    first = snapshot(store, 9)
+    # A later row claims the training source while duplicating held-out content.
+    training, held_out = first['train'][0], first['test'][0]
+    example(store, 99, group_id=training['source_group_id'], text=held_out['input']['text'])
+    with pytest.raises(ValueError, match='bridges frozen partitions'):
+        store.create_snapshot('workspace-a', 'reply', '1')
+
+
+def test_legacy_snapshot_assignments_are_preserved_on_manifest_upgrade(store):
+    grant(store)
+    first = snapshot(store, 8)
+    with store.transaction() as state:
+        del state['split_manifests']
+    for number in range(8, 15):
+        example(store, number)
+    second = store.create_snapshot('workspace-a', 'reply', '1')
+    for part in ('train', 'calibration', 'test'):
+        assert {r['case_id'] for r in first[part]} <= {r['case_id'] for r in second[part]}
