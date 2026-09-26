@@ -323,6 +323,8 @@ def run(args):
         manifest = {"id":req.modelBundleId,"model_id":source["source"]["repository"],"model_revision":source["source"]["revision"],
             "files":{**source["files"],MANIFEST_NAME:file_hash(Path(args.model_dir) / MANIFEST_NAME)},"template_commitments":[req.template_commitment()],"languages":[req.template.language],
             "calibrations":read_json(args.calibrations) if args.calibrations else [],"synthetic":not args.real_data,"max_tokens":req.template.maxTokens}
+        from .templates import is_custom_text_template
+        if is_custom_text_template(req.template): manifest["template"]=req.template.model_dump()
         if getattr(args,"custom_text",False):
             from .templates import CUSTOM_TEXT_CAPABILITY
             manifest.update(task_capability=dict(CUSTOM_TEXT_CAPABILITY),template=req.template.model_dump())

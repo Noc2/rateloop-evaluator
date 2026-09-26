@@ -193,3 +193,31 @@ def test_custom_capability_registration_rejects_unsupported_model_or_scope(initi
     else: manifest["snapshot_id"]="private-training"
     with pytest.raises(ValueError,match="Custom task capability"):
         registry.register(manifest,seed.workspaceId,model)
+
+
+def test_hosted_addition_cannot_collide_with_existing_language_export(config):
+    original=hosted.bootstrap(config)
+    saved={path:Path(path).read_bytes() for path in original["registrations"]}
+    config["bundles"].append({"language":"en","modelBundleId":"en","taskCapability":CUSTOM_TEXT_CAPABILITY})
+    report=hosted.bootstrap(config)
+    assert len(set(report["registrations"]))==3
+    assert all(Path(path).read_bytes()==data for path,data in saved.items())
+    reordered=deepcopy(config); reordered["bundles"].reverse()
+    with pytest.raises(PermissionError): hosted.bootstrap(reordered)
+
+
+def test_service_advertises_explicit_custom_capability_without_training_claim(tmp_path):
+    from fastapi.testclient import TestClient
+    from rateloop_evaluator.learning import LearningStore, provision_key
+    from rateloop_evaluator.storage import RuntimeStore
+    from rateloop_evaluator.service import Principal, create_app
+    key=tmp_path/"key"; provision_key(key)
+    token="test-only-scoped-credential"
+    app=create_app(backend=object(),bundle={"id":"custom","languages":["en"],"template_commitments":[],
+        "task_capability":CUSTOM_TEXT_CAPABILITY},learning=LearningStore(tmp_path/"learning",key),
+        runtime=RuntimeStore(tmp_path/"runtime.sqlite",key),tokens={hashlib.sha256(token.encode()).hexdigest():Principal("workspace",frozenset({"evaluate"}))})
+    with TestClient(app) as client:
+        assert client.get("/v1/capabilities").status_code==401
+        result=client.get("/v1/capabilities",headers={"Authorization":"Bearer "+token}).json()
+    assert result["taskCapability"]==CUSTOM_TEXT_CAPABILITY
+    assert result["defaultMode"]=="shadow"

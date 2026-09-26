@@ -92,10 +92,13 @@ def create_app(*, backend: Backend, bundle: dict, learning: LearningStore, runti
     @app.get("/v1/capabilities")
     def capabilities(identity: Principal = Depends(principal)):
         if "evaluate" not in identity.roles: raise HTTPException(403,detail="Evaluation scope required")
-        return {"schemaVersion":"rateloop.evaluator.capabilities.v1", "modelBundleId":bundle["id"],
+        result = {"schemaVersion":"rateloop.evaluator.capabilities.v1", "modelBundleId":bundle["id"],
                 "languages":bundle["languages"],"templateCommitments":bundle["template_commitments"],
                 "maxTokens":bundle.get("max_tokens",512),"training":"local_privileged_cli",
                 "defaultMode":"shadow", "rawContentUploads":False}
+        if bundle.get("task_capability"):
+            result["taskCapability"]=bundle["task_capability"]
+        return result
 
     @app.post("/v1/evaluate")
     def evaluate(request: EvaluationRequest, identity: Principal = Depends(principal)):

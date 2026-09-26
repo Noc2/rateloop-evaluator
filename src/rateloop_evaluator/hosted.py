@@ -108,10 +108,10 @@ def bootstrap(config: dict) -> dict:
     if identity_path.exists():
         previous=json.loads(read_secret(identity_path))
         if (any(previous.get(key)!=value for key,value in identity.items() if key!="bundles")
-                or any(bundle not in identity["bundles"] for bundle in previous.get("bundles",[]))):
+                or previous.get("bundles",[]) != identity["bundles"][:len(previous.get("bundles",[]))]):
             raise PermissionError("Hosted volume identity changed; existing bundles must be preserved")
     cli.write_private(root/"connector.json",config["connection"])
-    exports=[]
+    exports=[]; legacy_languages=set()
     for bundle in config["bundles"]:
         language=bundle["language"]; bundle_id=bundle["modelBundleId"]
         template=custom_text_seed(language) if bundle.get("taskCapability") else overall_approval(language)
@@ -128,7 +128,9 @@ def bootstrap(config: dict) -> dict:
         else:
             if record["artifact_root"]!=config["modelDir"] or record["manifest"]["template_commitments"]!=[request.template_commitment()] or record["manifest"]["languages"]!=[language] or record["manifest"].get("task_capability")!=bundle.get("taskCapability"):
                 raise PermissionError("Hosted registration differs from immutable local bundle")
-        output=root/"registrations"/((bundle_id if bundle.get("taskCapability") else language)+".json")
+        export_name="bundle-"+bundle_id if bundle.get("taskCapability") or language in legacy_languages else language
+        if not bundle.get("taskCapability"): legacy_languages.add(language)
+        output=root/"registrations"/(export_name+".json")
         cli.run(Namespace(command="export-registration",state_dir=str(root),bundle_id=bundle_id,request=str(request_path),output=str(output)))
         exports.append(str(output))
     cli.write_private(identity_path,identity)
