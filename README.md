@@ -19,7 +19,7 @@ python3.12 -m venv .venv
 .venv/bin/rateloop-evaluator init --workspace example-workspace
 .venv/bin/rateloop-evaluator provision --model-dir "$HOME/rateloop-models/gliner25"
 .venv/bin/rateloop-evaluator grant --right ai_use --template customer-reply-tone --hours 24 --evidence 'Owner enables local evaluation of this template'
-.venv/bin/rateloop-evaluator register --model-dir "$HOME/rateloop-models/gliner25" --request examples/reply-request.json
+.venv/bin/rateloop-evaluator register --activate --model-dir "$HOME/rateloop-models/gliner25" --request examples/reply-request.json
 .venv/bin/rateloop-evaluator serve --bundle-id gliner25-multi-shadow-v1 --device mps
 ```
 
@@ -48,11 +48,13 @@ The initial result contains typed labels and raw scores, with `outcome: uncertai
 
 The pinned public GLiNER model can answer custom binary text questions in English or German without a dataset or training run. Build a canonical template with `custom_text_evaluation(language, prompt, positive_label, negative_label)`: one question (up to 500 UTF-16 code units), two distinct answer descriptions (up to 40 each), and a 512-token combined input budget. Input text, optional context, and evidence remain separate fields. The helper normalizes wording; the wire contract requires that exact normalized template.
 
-Register a **new** public-base bundle using `register --custom-text --model-dir <local-model> --request <seed-request>`. Its signed `task_capability` and exported `taskCapability` use `rateloop.evaluator.custom-binary-text.v1`. Exported metadata includes the complete template. Every task still requires consent for its exact template commitment and model identity; a capability alone grants no processing or training rights. Changing the question or labels changes that commitment. The worker returns an advisory label and raw scores with `uncertain` / `uncalibrated`; no probability of correctness or automatic approval is asserted.
+Register a **new** public-base bundle using `register --custom-text --activate --model-dir <local-model> --request <seed-request>`. Its signed `task_capability` and exported `taskCapability` use `rateloop.evaluator.custom-binary-text.v1`. Exported metadata includes the complete template. Every task still requires consent for its exact template commitment and model identity; a capability alone grants no processing or training rights. Changing the question or labels changes that commitment. The worker returns an advisory label and raw scores with `uncertain` / `uncalibrated`; no probability of correctness or automatic approval is asserted.
 
 Hosted configurations may add new capability bundles to the existing volume while preserving all existing bundle entries, workspace, worker, model path and agent identity. Add `"taskCapability":{"schemaVersion":"rateloop.evaluator.custom-binary-text.v1"}` to each new English/German bundle entry. Old registrations stay immutable and queued jobs keep their original identity. All registrations reuse the same verified local weights. Training-derived bundles stay bound to their exact rubric and never receive this general base-model capability.
 
 ## Integrate RateLoop
+
+`register` creates a candidate by default. Training, registering, and exporting metadata do not switch the active model. Use `promote --mode shadow` after reviewing the candidate, or deliberately choose `register --activate` for the initial base model. Promotion changes the default; already queued jobs continue using their original activated bundle only while it remains configured and its exact consent is current. Revocation and expired evidence still block those jobs. Never-activated candidates cannot serve inference.
 
 Export the registered bundle's metadata:
 

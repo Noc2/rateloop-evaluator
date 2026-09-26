@@ -173,23 +173,50 @@ class BundleRegistry:
         with self.store.transaction() as state:
             return self._get(state, bundle_id, workspace_id, time.time() if now is None else now, verify_artifacts=verify_artifacts)
 
+    def _registered_policy(self, bundle_id: str, workspace_id: str, template: Template, *,
+                           verify_artifacts: bool, require_activation: bool) -> dict:
+        """Resolve this pinned bundle's policy, never silently substitute the latest."""
+        current = time.time()
+        with self.store.transaction() as state:
+            record = self._get(state, bundle_id, workspace_id, current, verify_artifacts=verify_artifacts)
+            manifest = record["manifest"]
+            digest = commitment(template.model_dump(), "rateloop.evaluator.template.v1")
+            if not bundle_supports_template(manifest, template):
+                raise PermissionError("Bundle does not support this exact task")
+            activation_digest = manifest["template_commitments"][0] if manifest.get("task_capability") else digest
+            key = hashlib.sha256(_json([workspace_id, activation_digest, template.language])).hexdigest()
+            deployment = state["deployments"].get(key)
+            while deployment and deployment["bundle_id"] != bundle_id:
+                deployment = deployment.get("previous")
+            if not deployment:
+                if require_activation:
+                    raise PermissionError("Candidate bundle requires explicit activation")
+                return {"bundle_id": bundle_id, "template_commitment": digest, "language": template.language,
+                        "mode": "candidate", "registered_at": manifest["registered_at"], "qualityClaim": False}
+            if deployment["mode"] == "selective" and (not deployment.get("gate") or deployment["gate"].get("valid_until", 0) <= current):
+                raise PermissionError("Pinned bundle evidence expired; human review is required until revalidation")
+            selected = deepcopy({key:value for key,value in deployment.items() if key != "previous"})
+            if manifest.get("task_capability"):
+                # A signed base capability never transfers a quality gate to
+                # another rubric. AI-use rights remain exact and separately checked.
+                return {"bundle_id": bundle_id, "template_commitment": digest, "language": template.language,
+                        "mode": "shadow", "activation_commitment": commitment(selected, "rateloop.deployment-evidence.v1")}
+            return selected
+
     def serving_policy(self, bundle_id: str, workspace_id: str, template: Template, *, verify_artifacts: bool = True) -> dict:
-        """Validate exact artifacts and activation; custom scope remains advisory."""
-        record = self.get(bundle_id, workspace_id, verify_artifacts=verify_artifacts)
-        manifest = record["manifest"]
-        digest = commitment(template.model_dump(), "rateloop.evaluator.template.v1")
-        if not bundle_supports_template(manifest, template):
-            raise PermissionError("Bundle does not support this exact task")
-        activation_digest = manifest["template_commitments"][0] if manifest.get("task_capability") else digest
-        active = self.active(workspace_id, activation_digest, template.language, verify_artifacts=verify_artifacts)
-        if active["bundle_id"] != bundle_id:
-            raise PermissionError("Queued model is no longer active")
-        if manifest.get("task_capability"):
-            # The signed base capability cannot inherit another rubric's quality
-            # gate, calibration, or permissions. The service checks exact rights.
-            return {"bundle_id": bundle_id, "template_commitment": digest, "language": template.language,
-                    "mode": "shadow", "activation_commitment": commitment(active, "rateloop.deployment-evidence.v1")}
-        return active
+        """Allow an explicitly activated, still-authorized pinned queued bundle.
+
+        Changing the default does not rebind queued jobs. The caller also requires
+        this exact bundle in its allowlist and current request-scoped AI consent.
+        A never-activated candidate is not serveable, including after export.
+        """
+        return self._registered_policy(bundle_id, workspace_id, template,
+                                       verify_artifacts=verify_artifacts, require_activation=True)
+
+    def registration_policy(self, bundle_id: str, workspace_id: str, template: Template) -> dict:
+        """Export metadata for review without activating or qualifying a candidate."""
+        return self._registered_policy(bundle_id, workspace_id, template,
+                                       verify_artifacts=True, require_activation=False)
 
     @staticmethod
     def _quality_gate(manifest: dict, snapshot: dict, evidence: dict, *, now: float | None = None) -> dict:

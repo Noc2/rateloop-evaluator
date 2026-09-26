@@ -48,6 +48,7 @@ def main(argv=None):
     delete = commands.add_parser("delete-case"); delete.add_argument("--case-id",required=True)
     register = commands.add_parser("register"); register.add_argument("--model-dir",required=True); register.add_argument("--request",required=True)
     register.add_argument("--snapshot-id"); register.add_argument("--calibrations"); register.add_argument("--real-data",action="store_true",help="Declare verified non-synthetic provenance; does not qualify deployment")
+    register.add_argument("--activate",action="store_true",help="Explicitly activate this registration for advisory evaluation")
     register.add_argument("--custom-text",action="store_true",help="Allow custom binary text tasks on the pinned public base, with exact per-task consent")
     register.add_argument("--selective-policy",help="JSON operating threshold/error policy fixed before final testing")
     export = commands.add_parser("export-registration"); export.add_argument("--bundle-id",required=True); export.add_argument("--request",required=True); export.add_argument("--output",required=True)
@@ -274,8 +275,10 @@ def run(args):
         if args.snapshot_id: manifest["snapshot_id"] = args.snapshot_id
         if args.selective_policy: manifest["selective_policy"] = read_json(args.selective_policy)
         registry.register(manifest,workspace,args.model_dir)
-        registry.promote(req.modelBundleId,workspace,template_commitment=req.template_commitment(),language=req.template.language,mode="shadow")
-        return {"modelBundleId":req.modelBundleId,"templateCommitment":req.template_commitment(),"mode":"shadow","publicKey":registry.public_key}
+        if getattr(args,"activate",False):
+            registry.promote(req.modelBundleId,workspace,template_commitment=req.template_commitment(),language=req.template.language,mode="shadow")
+        return {"modelBundleId":req.modelBundleId,"templateCommitment":req.template_commitment(),
+                "mode":"shadow" if getattr(args,"activate",False) else "candidate","publicKey":registry.public_key}
     if args.command == "export-registration":
         from .backends import MANIFEST_NAME, GLINER_SCORE_CAPABILITY
         record = registry.get(args.bundle_id,workspace); manifest = record["manifest"]
@@ -288,7 +291,7 @@ def run(args):
             raise ValueError("Trained model is missing its original weight digest")
         base_hash = model["source"].get("baseWeightsSha256",model["files"].get("model.safetensors"))
         if not base_hash: raise ValueError("Original model weight digest is unavailable")
-        active = registry.serving_policy(args.bundle_id,workspace,req.template)
+        active = registry.registration_policy(args.bundle_id,workspace,req.template)
         calibrations = {c["question_id"]:c for c in manifest["calibrations"] if c["template_commitment"] == req.template_commitment() and c["language"] == req.template.language}
         # No calibration is asserted to SaaS until a time-bounded deployment gate exists.
         expiry = (active.get("gate") or {}).get("valid_until")

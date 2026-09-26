@@ -81,7 +81,7 @@ def run(args):
             request=json.loads((Path(__file__).resolve().parents[1]/f"examples/approval-request-{language}.json").read_text())
             request.update(workspaceId=config["workspaceId"],modelBundleId=bundle_id)
             request_file=operator_dir/(language+"-request.json"); write_private(request_file,request)
-            call(state_dir,"register","--model-dir",config["modelDir"],"--request",request_file)
+            call(state_dir,"register","--activate","--model-dir",config["modelDir"],"--request",request_file)
             registration_file=operator_dir/(language+"-registration.json")
             call(state_dir,"export-registration","--bundle-id",bundle_id,"--request",request_file,"--output",registration_file)
             registrations.append(json.loads(read_secret(registration_file)))
@@ -171,7 +171,7 @@ def run(args):
                 call(state_dir,"export-registration","--bundle-id",args.bundle_id[0],"--request",request_file,"--output",registration)
                 return {"registration":json.loads(read_secret(registration)),"modelBundleId":args.bundle_id[0],
                     "snapshotId":snapshot["snapshotId"],"optimizerSteps":trained["optimizerSteps"],"synthetic":True,
-                    "mode":"shadow","qualityClaim":False,"evidenceFile":str(evidence)}
+                    "mode":"candidate","qualityClaim":False,"evidenceFile":str(evidence)}
         raise ValueError("Unknown operator command")
     finally: connector.close()
 

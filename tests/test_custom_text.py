@@ -24,7 +24,7 @@ def register_custom(state, model_dir, tmp_path, capsys, bundle="base-custom", la
     request=EvaluationRequest.model_validate({"workspaceId":"workspace-test","caseId":"seed","idempotencyKey":"seed-key",
         "modelBundleId":bundle,"template":custom_text_seed(language).model_dump(),"input":{"text":"Synthetic seed"}})
     path=tmp_path/(bundle+".json"); path.write_text(request.model_dump_json())
-    invoke(capsys,state,"register","--custom-text","--model-dir",model_dir,"--request",path)
+    invoke(capsys,state,"register","--activate","--custom-text","--model-dir",model_dir,"--request",path)
     return request,path
 
 

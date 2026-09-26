@@ -75,7 +75,7 @@ def test_cli_register_serve_review_snapshot_train_and_revoke(initialized, tmp_pa
            "--evidence", "Authored synthetic test fixture")
     reviewer_path = tmp_path / "reviewer.json"
     invoke(capsys, state, "issue-reviewer-token", "--reviewer-id", "reviewer-test", "--output", reviewer_path)
-    registered = invoke(capsys, state, "register", "--model-dir", model_dir, "--request", request_path)
+    registered = invoke(capsys, state, "register", "--activate", "--model-dir", model_dir, "--request", request_path)
     assert registered["mode"] == "shadow"
 
     class NeuralTestDouble:
@@ -144,19 +144,19 @@ def test_cli_adapted_registration_cannot_omit_lineage(initialized, tmp_path, cap
     request_path, body = request_file(tmp_path)
     model_dir = model_files(tmp_path, training={"bundleId": body["modelBundleId"],
         "workspaceId": body["workspaceId"], "snapshotId": "unregistered-snapshot"})
-    invoke(capsys, initialized, "register", "--model-dir", model_dir, "--request", request_path, expected=1)
+    invoke(capsys, initialized, "register", "--activate", "--model-dir", model_dir, "--request", request_path, expected=1)
 
 
-def test_cli_export_rejects_inactive_bundle(initialized, tmp_path, capsys):
+def test_cli_exports_previously_activated_pinned_bundle(initialized, tmp_path, capsys):
     model_dir = model_files(tmp_path)
     request_a, body_a = request_file(tmp_path, "model-a")
     request_b, _ = request_file(tmp_path, "model-b")
-    invoke(capsys, initialized, "register", "--model-dir", model_dir, "--request", request_a)
-    invoke(capsys, initialized, "register", "--model-dir", model_dir, "--request", request_b)
+    invoke(capsys, initialized, "register", "--activate", "--model-dir", model_dir, "--request", request_a)
+    invoke(capsys, initialized, "register", "--activate", "--model-dir", model_dir, "--request", request_b)
     output = tmp_path / "registration.json"
     invoke(capsys, initialized, "export-registration", "--bundle-id", "model-a", "--request", request_a,
-           "--output", output, expected=1)
-    assert not output.exists()
+           "--output", output)
+    assert json.loads(output.read_text())["modelBundleId"] == "model-a"
     invoke(capsys, initialized, "export-registration", "--bundle-id", "model-b", "--request", request_b,
            "--output", output)
     registration = json.loads(output.read_text())
@@ -165,3 +165,28 @@ def test_cli_export_rejects_inactive_bundle(initialized, tmp_path, capsys):
     assert registration["scoreCapability"] == json.loads(fixture.read_text())
     assert all(criterion["calibrationId"] is None for criterion in registration["criteria"])
     assert body_a["input"]["text"] not in output.read_text()
+
+
+def test_register_and_export_candidate_do_not_activate_or_replace_default(initialized,tmp_path,capsys):
+    from types import SimpleNamespace
+    from rateloop_evaluator.protocol import EvaluationRequest
+    model=model_files(tmp_path)
+    original,body=request_file(tmp_path,"original")
+    candidate,candidate_body=request_file(tmp_path,"candidate")
+    invoke(capsys,initialized,"register","--activate","--model-dir",model,"--request",original)
+    _,_,_,registry=cli.state(SimpleNamespace(state_dir=initialized))
+    request=EvaluationRequest.model_validate(body)
+    before=registry.serving_policy("original","workspace-test",request.template)
+    report=invoke(capsys,initialized,"register","--model-dir",model,"--request",candidate)
+    assert report["mode"]=="candidate"
+    output=tmp_path/"candidate-registration.json"
+    report=invoke(capsys,initialized,"export-registration","--bundle-id","candidate","--request",candidate,"--output",output)
+    assert report["mode"]=="candidate"
+    assert all(c["calibrationId"] is None for c in json.loads(output.read_text())["criteria"])
+    assert registry.active("workspace-test",request.template_commitment(),request.template.language)["bundle_id"]=="original"
+    with pytest.raises(PermissionError,match="explicit activation"):
+        registry.serving_policy("candidate","workspace-test",request.template)
+    invoke(capsys,initialized,"promote","--bundle-id","candidate","--template-commitment",request.template_commitment(),"--language",request.template.language)
+    assert registry.active("workspace-test",request.template_commitment(),request.template.language)["bundle_id"]=="candidate"
+    assert registry.serving_policy("candidate","workspace-test",request.template)["mode"]=="shadow"
+    assert registry.serving_policy("original","workspace-test",request.template)==before

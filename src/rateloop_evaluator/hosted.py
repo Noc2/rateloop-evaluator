@@ -124,7 +124,7 @@ def bootstrap(config: dict) -> dict:
         try: record=registry.get(bundle_id,config["workspaceId"])
         except KeyError:
             cli.run(Namespace(command="register",state_dir=str(root),model_dir=config["modelDir"],request=str(request_path),
-                snapshot_id=None,calibrations=None,real_data=False,selective_policy=None,custom_text=bool(bundle.get("taskCapability"))))
+                snapshot_id=None,calibrations=None,real_data=False,selective_policy=None,activate=True,custom_text=bool(bundle.get("taskCapability"))))
         else:
             if record["artifact_root"]!=config["modelDir"] or record["manifest"]["template_commitments"]!=[request.template_commitment()] or record["manifest"]["languages"]!=[language] or record["manifest"].get("task_capability")!=bundle.get("taskCapability"):
                 raise PermissionError("Hosted registration differs from immutable local bundle")
