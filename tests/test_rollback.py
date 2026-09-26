@@ -29,7 +29,7 @@ def operator_state(tmp_path, monkeypatch):
     template=EvaluationRequest.model_validate(request).template_commitment()
     request["modelBundleId"]="candidate"
     request_file=tmp_path/"candidate-request.json";cli.write_private(request_file,request)
-    operator.call(state,"register","--model-dir",model,"--request",request_file)
+    operator.call(state,"register","--activate","--model-dir",model,"--request",request_file)
     events=[]
     def sync():
         events.append("sync")

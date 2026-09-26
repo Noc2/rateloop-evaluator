@@ -100,7 +100,7 @@ def test_real_train_optimizer_save_reload_and_revocation(tmp_path, monkeypatch, 
         policy_path = tmp_path / "selective-policy.json"
         cli.write_private(policy_path, {"threshold": .95, "max_false_approval_rate": .01,
                                         "minimum_coverage": .3, "confidence": .95})
-        registered = command("register", "--model-dir", result["modelDir"], "--request", request_path,
+        registered = command("register", "--activate", "--model-dir", result["modelDir"], "--request", request_path,
             "--snapshot-id", snapshot["id"], "--calibrations", calibration_path, "--selective-policy", policy_path)
         assert registered["mode"] == "shadow"
         evidence_path = tmp_path / "test-evidence.json"
