@@ -266,9 +266,13 @@ class TrainingWorker:
             imported_rows.append({"case_id":row["caseId"],"group_id":row["sourceGroupId"],**row["input"],"label":row["labels"][template.questions[0].id]})
         encoded="\n".join(json.dumps(row,ensure_ascii=False) for row in imported_rows).encode()
         if len(encoded)>MAX_BYTES: raise ValueError("Training dataset exceeds private import size limit")
+        with self.connector.learning.transaction() as db:
+            permission=self._state(db)["permissions"].get(content["authorization"]["grantId"])
+        if permission is None: raise PermissionError("Dataset permission was withdrawn before import")
         version=import_dataset(self.connector.learning,workspace_id=self.connector.workspace_id,dataset_id=job["datasetVersionId"],
             template=template,content=encoded,format="jsonl",provenance=dataset["provenance"],
-            evidence="Explicit website training permission "+content["authorization"]["grantId"],model_bundle_id=job["modelBundleId"])
+            evidence="Explicit website training permission "+content["authorization"]["grantId"],model_bundle_id=job["modelBundleId"],
+            authorized_grant_id=permission["localId"])
         snapshot=self.connector.learning.create_snapshot(self.connector.workspace_id,template.id,template.version,
             template_commitment=job["templateCommitment"],dataset_version_ids=[version["id"]],include_feedback=False)
         with self.connector.learning.transaction() as db:

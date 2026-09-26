@@ -123,7 +123,8 @@ def preview_dataset(*, template: Template | dict, content: bytes | str,
 def import_dataset(store: LearningStore, *, workspace_id: str, dataset_id: str,
                    template: Template | dict, content: bytes | str, format: Literal['csv', 'jsonl'],
                    provenance: str, evidence: str, mapping: dict | None = None,
-                   model_bundle_id: str | None = None, now: float | None = None) -> dict:
+                   model_bundle_id: str | None = None, authorized_grant_id: str | None = None,
+                   now: float | None = None) -> dict:
     """Atomically import an immutable version under private-training permission.
 
     Labels keep their declared source. Only the separate authenticated blind
@@ -131,6 +132,7 @@ def import_dataset(store: LearningStore, *, workspace_id: str, dataset_id: str,
     """
     _IDENTIFIER.validate_python(workspace_id)
     _IDENTIFIER.validate_python(dataset_id)
+    if authorized_grant_id is not None: _IDENTIFIER.validate_python(authorized_grant_id)
     if provenance not in PROVENANCES or not isinstance(evidence, str) or not 1 <= len(evidence.strip()) <= 1000:
         raise ValueError('Declare owner, AI-assisted or synthetic label provenance and authorization evidence')
     preview = preview_dataset(template=template, content=content, format=format, mapping=mapping)
@@ -139,6 +141,7 @@ def import_dataset(store: LearningStore, *, workspace_id: str, dataset_id: str,
     identity = {'workspace_id': workspace_id, 'dataset_id': dataset_id, 'template': preview['template'],
                 'rows': preview['rows'], 'provenance': provenance, 'evidence': evidence,
                 'model_bundle_id': model_bundle_id}
+    if authorized_grant_id is not None: identity['authorized_grant_id'] = authorized_grant_id
     version_id = 'dataset_'+_digest(identity)
     with store.transaction() as state:
         versions = state.setdefault('datasets', {})
@@ -146,9 +149,14 @@ def import_dataset(store: LearningStore, *, workspace_id: str, dataset_id: str,
         grant_ids = set()
         for row in preview['rows']:
             fields = ['input.'+key for key, value in row['input'].items() if value]
-            grant_ids.update(store._matching_grants(state, workspace_id=workspace_id, right='private_training',
+            matching = store._matching_grants(state, workspace_id=workspace_id, right='private_training',
                 case_id=row['case_id'], template_id=preview['template']['id'], fields=[*fields, 'imported_labels'],
-                model_bundle_id=model_bundle_id, template_commitment=committed_template, now=current))
+                model_bundle_id=model_bundle_id, template_commitment=committed_template, now=current)
+            if authorized_grant_id is not None:
+                if authorized_grant_id not in matching:
+                    raise PermissionError('The selected dataset permission does not cover every imported field and row')
+                matching = [authorized_grant_id]
+            grant_ids.update(matching)
         if version_id in versions:
             _validate_version(store, state, versions[version_id], workspace_id, current)
             return deepcopy(versions[version_id])

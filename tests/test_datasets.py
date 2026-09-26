@@ -194,6 +194,22 @@ def test_erasure_is_version_scoped_and_preserves_hashed_holdout_assignments(stor
         assert all(row['dataset_version_id'] == second['id'] for row in state['dataset_examples'].values())
 
 
+def test_explicit_dataset_grants_do_not_cross_bind_reused_case_ids(store):
+    a = authorize(store)
+    b = authorize(store)
+    first = upload(store, authorized_grant_id=a['id'])
+    second = upload(store, rows(12), authorized_grant_id=b['id'])
+    assert first['grant_ids'] == [a['id']] and second['grant_ids'] == [b['id']]
+    snapshot = store.create_snapshot('workspace-a', 'summary', 1, dataset_version_ids=[second['id']], include_feedback=False)
+    store.register_model_lineage('still-authorized', snapshot['id'], 'workspace-a')
+    store.revoke_grant(a['id'], 'workspace-a')
+    erase_dataset_version(store, first['id'], 'workspace-a')
+    assert load_dataset(store, second['id'], 'workspace-a')['row_count'] == 12
+    store.assert_model_usable('still-authorized', 'workspace-a')
+    with pytest.raises(PermissionError, match='selected dataset permission'):
+        upload(store, authorized_grant_id=a['id'])
+
+
 def test_formatting_duplicates_stay_together_and_conflicting_labels_reject(store):
     authorize(store)
     examples = rows()

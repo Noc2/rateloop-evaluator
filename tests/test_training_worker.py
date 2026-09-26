@@ -271,6 +271,21 @@ def test_retention_deadline_erases_rows_even_if_website_is_unavailable(runner,mo
     with pytest.raises(PermissionError): registry.get("candidate","workspace-test")
 
 
+def test_website_import_selects_exact_dataset_permission_among_overlapping_local_grants(runner):
+    worker,_,authorization,_,_,store,registry,_,_=runner
+    unrelated=store.add_grant(workspace_id="workspace-test",rights=["private_training"],
+        case_ids=authorization["caseIds"],template_ids=authorization["templateIds"],
+        template_commitments=authorization["templateCommitments"],model_bundle_ids=["base"],
+        fields=authorization["fields"],expires_at=time.time()+3600,evidence="Separate owner-authorized dataset")
+    assert worker.run_once()["state"]=="training_completed"
+    with store.transaction() as db:
+        selected=worker._state(db)["permissions"][authorization["grantId"]]["localId"]
+        assert all(version["grant_ids"]==[selected] for version in db["datasets"].values())
+        assert all(snapshot["grant_ids"]==[selected] for snapshot in db["snapshots"].values())
+    store.revoke_grant(unrelated["id"],"workspace-test")
+    assert registry.get("candidate","workspace-test")["manifest"]["id"]=="candidate"
+
+
 def test_ambiguous_completion_never_applies_switch_and_retries_exact_result(runner):
     worker,behavior,_,job,template,_,registry,changed,_=runner
     assert worker.run_once()["state"]=="training_completed"
