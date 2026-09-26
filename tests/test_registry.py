@@ -74,9 +74,9 @@ def gate_inputs(count=300):
         template_commitment="template",question_id="q",language="en",example_ids=["cal-a","cal-b"])
     template={"language":"en","questions":[{"id":"q","passLabels":["yes"]}]}
     test=[{"evaluation_id":f"test-{i:04d}","group_id":f"test-group-{i}","template_commitment":"template",
-           "template":template,"labels":{"q":"yes"}} for i in range(count)]
+           "template":template,"labels":{"q":"yes"},"human_labels":[{"independent_human":True,"exposed_to_ai":False,"quarantine_reasons":[]}]} for i in range(count)]
     snapshot={"purpose":"private_training","train":[{"group_id":"train-a"}],
-              "calibration":[{"group_id":"cal-a"},{"group_id":"cal-b"}],"test":test}
+              "calibration":[{"group_id":group,"human_labels":[{"independent_human":True,"exposed_to_ai":False,"quarantine_reasons":[]}]} for group in ("cal-a","cal-b")],"test":test}
     manifest={"id":"model","synthetic":False,"template_commitments":["template"],"languages":["en"],"calibrations":[calibration],
               "selective_policy":{"threshold":.95,"max_false_approval_rate":.01,"minimum_coverage":.3,"confidence":.95}}
     evidence={"synthetic":False,"template_commitment":"template","language":"en","threshold":.95,

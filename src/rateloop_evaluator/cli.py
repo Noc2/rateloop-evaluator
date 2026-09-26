@@ -9,7 +9,7 @@ import secrets
 import sys
 import time
 
-from .learning import LearningStore, provision_key, read_secret
+from .learning import LearningStore, provision_key, read_secret, is_independent_reference
 from .protocol import CaseInput, EvaluationRequest, commitment
 from .registry import BundleRegistry, provision_signing_key
 
@@ -43,6 +43,7 @@ def main(argv=None):
     reviewer = commands.add_parser("issue-reviewer-token"); reviewer.add_argument("--reviewer-id",required=True); reviewer.add_argument("--output",required=True)
     provision = commands.add_parser("provision"); provision.add_argument("--model-dir",required=True); provision.add_argument("--revision"); provision.add_argument("--backend",choices=["gliner","gliclass"],default="gliner")
     grant = commands.add_parser("grant"); grant.add_argument("--right",action="append",required=True,choices=["ai_use","private_training","shared_contribution","public_weight_distribution"])
+    grant.add_argument("--field",action="append",choices=["input.text","input.context","input.evidence","human_labels","imported_labels"],help="Explicit fields, including imported_labels for user datasets")
     grant.add_argument("--template",action="append",required=True); grant.add_argument("--hours",type=float,default=24); grant.add_argument("--evidence",required=True)
     revoke = commands.add_parser("revoke"); revoke.add_argument("--grant-id",required=True)
     delete = commands.add_parser("delete-case"); delete.add_argument("--case-id",required=True)
@@ -57,6 +58,24 @@ def main(argv=None):
     snapshot = commands.add_parser("snapshot"); snapshot.add_argument("--template",required=True); snapshot.add_argument("--version",type=int,required=True)
     snapshot.add_argument("--template-commitment",help="Select one exact language/rubric definition when an ID has multiple translations")
     snapshot.add_argument("--purpose",choices=["private_training","shared_contribution","public_weight_distribution"],default="private_training")
+    snapshot.add_argument("--dataset-version",action="append",help="Immutable imported dataset version to include")
+    snapshot.add_argument("--no-feedback",action="store_true",help="Use only explicitly selected imported datasets")
+    for name in ("dataset-preview","dataset-import"):
+        dataset=commands.add_parser(name)
+        dataset.add_argument("--file",required=True); dataset.add_argument("--template-file",required=True)
+        dataset.add_argument("--format",required=True,choices=["csv","jsonl"])
+        dataset.add_argument("--mapping",help="JSON column mapping")
+        if name=="dataset-preview": dataset.add_argument("--output",help="Optional private preview file including normalized rows")
+        else:
+            dataset.add_argument("--dataset-id",required=True)
+            dataset.add_argument("--provenance",required=True,choices=["owner","ai_assisted","synthetic"])
+            dataset.add_argument("--evidence",required=True,help="Owner authorization evidence for these examples")
+            dataset.add_argument("--model-bundle-id",help="Required when the training grant is scoped to a model")
+    compare=commands.add_parser("compare")
+    compare.add_argument("--snapshot-id",required=True)
+    compare.add_argument("--model",action="append",required=True,help="NAME=/absolute/local/model/path (one to three)")
+    compare.add_argument("--device",choices=["cpu","mps","cuda"],default="cpu")
+    compare.add_argument("--output",required=True)
     train = commands.add_parser("train"); train.add_argument("--snapshot-id",required=True); train.add_argument("--model-dir",required=True); train.add_argument("--output",required=True); train.add_argument("--bundle-id",required=True)
     train.add_argument("--device",choices=["cpu","mps","cuda"],default="cpu"); train.add_argument("--method",choices=["full","lora"],default="lora"); train.add_argument("--epochs",type=int,default=3); train.add_argument("--max-steps",type=int,default=-1)
     calibrate = commands.add_parser("calibrate"); calibrate.add_argument("--snapshot-id",required=True); calibrate.add_argument("--model-dir",required=True); calibrate.add_argument("--bundle-id",required=True); calibrate.add_argument("--output",required=True); calibrate.add_argument("--device",choices=["cpu","mps","cuda"],default="cpu")
@@ -123,11 +142,41 @@ def run(args):
         report = benchmark_backend(backend_type(args.model_dir,args.device),[{"text":req.input.render(),"questions":[q.model_dump() for q in req.template.questions]}],iterations=args.iterations)
         write_private(args.output,report)
         return {"report":str(Path(args.output).resolve()),"qualityClaim":False}
+    if args.command in ("dataset-preview","dataset-import"):
+        from .datasets import MAX_BYTES, preview_dataset
+        with Path(args.file).open("rb") as stream:
+            content=stream.read(MAX_BYTES+1)
+        template=read_json(args.template_file)
+        mapping=read_json(args.mapping) if args.mapping else None
+        preview=preview_dataset(template=template,content=content,format=args.format,mapping=mapping)
+        if args.command=="dataset-preview":
+            if args.output: write_private(args.output,preview)
+            return {key:preview[key] for key in ("row_count","group_count","label_counts","token_validation")}
     root,config,store,registry = state(args); workspace = config["workspaceId"]
-    if args.command in ("calibrate","score-test") and not getattr(args,"_model_execution_owned",False):
+    if args.command in ("calibrate","score-test","compare") and not getattr(args,"_model_execution_owned",False):
         from .execution import model_execution
         args._model_execution_owned=True
         with model_execution(store): return run(args)
+    if args.command == "dataset-import":
+        from .datasets import import_dataset
+        return import_dataset(store,workspace_id=workspace,dataset_id=args.dataset_id,template=template,content=content,
+            format=args.format,mapping=mapping,provenance=args.provenance,evidence=args.evidence,model_bundle_id=args.model_bundle_id)
+    if args.command == "compare":
+        from .backends import GLiNERBackend
+        from .comparison import compare_snapshot
+        from .connector import _opaque
+        models={}
+        if not 1<=len(args.model)<=3: raise ValueError("Choose one to three local models")
+        for item in args.model:
+            name,separator,path=item.partition("=")
+            _opaque(name)
+            if not separator or name in models or not Path(path).is_absolute():
+                raise ValueError("Comparison model must have a unique name and absolute local path")
+            models[name]=GLiNERBackend(path,args.device)
+        report=compare_snapshot(store,args.snapshot_id,workspace,models)
+        write_private(args.output,report)
+        return {"report":str(Path(args.output).resolve()),"testGroups":report["test_group_count"],
+                "qualityClaim":False,"activationChanged":False}
     if args.command == "install-launchd":
         from .worker import install_launchd
         return install_launchd(state_dir=root,config_path=args.config,worker_id=args.worker_id,bundle_ids=args.bundle_id,
@@ -193,7 +242,7 @@ def run(args):
     if args.command == "grant":
         if not 0 < args.hours <= 24*30: raise ValueError("Local grants must expire within 30 days")
         return store.add_grant(workspace_id=workspace,rights=args.right,expires_at=time.time()+args.hours*3600,
-            template_ids=args.template,fields=["input.text","input.context","input.evidence","human_labels"],evidence=args.evidence)
+            template_ids=args.template,fields=getattr(args,"field",None) or ["input.text","input.context","input.evidence","human_labels"],evidence=args.evidence)
     if args.command == "revoke": return store.revoke_grant(args.grant_id,workspace)
     if args.command == "delete-case":
         from .storage import RuntimeStore
@@ -202,7 +251,8 @@ def run(args):
         return deleted
     if args.command == "snapshot":
         snapshot = store.create_snapshot(workspace,args.template,args.version,purpose=args.purpose,
-            template_commitment=getattr(args,"template_commitment",None))
+            template_commitment=getattr(args,"template_commitment",None),
+            dataset_version_ids=getattr(args,"dataset_version",None),include_feedback=not getattr(args,"no_feedback",False))
         return {"snapshotId":snapshot["id"],"groups":snapshot["group_count"],"purpose":snapshot["purpose"]}
     if args.command == "train":
         from .training import TrainOptions, train_snapshot
@@ -216,11 +266,13 @@ def run(args):
         model_files = validate_local_model(args.model_dir)
         if model_files.get("training",{}).get("bundleId") != args.bundle_id or model_files.get("training",{}).get("snapshotId") != args.snapshot_id or model_files.get("training",{}).get("workspaceId") != workspace:
             raise ValueError("Calibration requires the matching trained bundle and snapshot")
-        backend = GLiNERBackend(args.model_dir,args.device)
         representatives = {}
         for row in sorted(snapshot["calibration"],key=lambda r:r["evaluation_id"]): representatives.setdefault(row["group_id"],row)
         rows = list(representatives.values())
         if not rows: raise ValueError("Calibration groups are required")
+        if any(not is_independent_reference(row) for row in snapshot["calibration"]):
+            raise PermissionError("Calibration requires independently collected blind human references")
+        backend = GLiNERBackend(args.model_dir,args.device)
         predictions = []
         for row in rows:
             text = CaseInput.model_validate(row["input"]).render()
@@ -242,6 +294,8 @@ def run(args):
         representatives = {}
         for row in sorted(snapshot["test"],key=lambda r:r["evaluation_id"]): representatives.setdefault(row["group_id"],row)
         if not representatives: raise ValueError("Independent test groups are required")
+        if any(not is_independent_reference(row) for row in snapshot["test"]):
+            raise PermissionError("Qualification scoring requires independently collected blind human references; use compare for uploaded labels")
         backend = GLiNERBackend(record["artifact_root"],args.device)
         rows = []; first = next(iter(representatives.values()))
         for row in representatives.values():
@@ -283,7 +337,7 @@ def run(args):
         from .backends import MANIFEST_NAME, GLINER_SCORE_CAPABILITY
         record = registry.get(args.bundle_id,workspace); manifest = record["manifest"]
         req = EvaluationRequest.model_validate(read_json(args.request))
-        from .templates import bundle_supports_template
+        from .templates import bundle_supports_template, is_custom_text_template
         if req.workspaceId != workspace or req.modelBundleId != args.bundle_id or not bundle_supports_template(manifest,req.template):
             raise ValueError("Registration request does not match the signed bundle")
         model = read_json(Path(record["artifact_root"]) / MANIFEST_NAME)
@@ -312,7 +366,8 @@ def run(args):
             "licenseManifestCommitment":commitment({"software":"Apache-2.0","weights":model["source"].get("license","Apache-2.0"),"model":manifest["model_id"],"revision":manifest["model_revision"]},"rateloop.licenses.v1"),
             "maxTokens":manifest["max_tokens"],"criteria":criteria,"scoreCapability":dict(GLINER_SCORE_CAPABILITY)}
         if manifest.get("task_capability"):
-            registration.update(taskCapability=manifest["task_capability"],template=req.template.model_dump())
+            registration["taskCapability"]=manifest["task_capability"]
+        if is_custom_text_template(req.template): registration["template"]=req.template.model_dump()
         write_private(args.output,registration)
         return {"registrationFile":str(Path(args.output).resolve()),"contentIncluded":False,"mode":active["mode"]}
     if args.command == "promote":
