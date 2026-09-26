@@ -24,6 +24,8 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey,
 from .calibration import apply_temperature, false_approval_upper_bound, validate_calibration
 from .execution import model_execution
 from .learning import LearningStore, _json, read_secret
+from .templates import CUSTOM_TEXT_CAPABILITY, bundle_supports_template, is_custom_text_template
+from .protocol import Template, commitment
 
 
 def provision_signing_key(path: str | Path) -> None:
@@ -108,6 +110,18 @@ class BundleRegistry:
             raise ValueError("Model revision must be a full lowercase commit SHA or SHA-256 digest")
         if len(manifest["template_commitments"]) != len(set(manifest["template_commitments"])) or len(manifest["languages"]) != len(set(manifest["languages"])):
             raise ValueError("Bundle scopes must be unique")
+        if "task_capability" in manifest:
+            from .backends import MODEL_ID, MODEL_REVISION, validate_local_model
+            template = Template.model_validate(manifest.get("template"))
+            local_model = validate_local_model(artifact_root)
+            if (manifest["task_capability"] != CUSTOM_TEXT_CAPABILITY or not is_custom_text_template(template)
+                    or manifest.get("snapshot_id") or manifest["calibrations"] or local_model.get("training")
+                    or manifest.get("max_tokens") != 512
+                    or (manifest["model_id"], manifest["model_revision"]) != (MODEL_ID, MODEL_REVISION)
+                    or (local_model["source"].get("repository"), local_model["source"].get("revision")) != (MODEL_ID, MODEL_REVISION)
+                    or manifest["languages"] != [template.language]
+                    or manifest["template_commitments"] != [commitment(template.model_dump(), "rateloop.evaluator.template.v1")]):
+                raise ValueError("Custom task capability requires the pinned untrained public model and canonical seed")
         ids = set()
         bindings = set()
         for artifact in manifest["calibrations"]:
@@ -158,6 +172,24 @@ class BundleRegistry:
     def get(self, bundle_id: str, workspace_id: str, *, now: float | None = None, verify_artifacts: bool = True) -> dict:
         with self.store.transaction() as state:
             return self._get(state, bundle_id, workspace_id, time.time() if now is None else now, verify_artifacts=verify_artifacts)
+
+    def serving_policy(self, bundle_id: str, workspace_id: str, template: Template, *, verify_artifacts: bool = True) -> dict:
+        """Validate exact artifacts and activation; custom scope remains advisory."""
+        record = self.get(bundle_id, workspace_id, verify_artifacts=verify_artifacts)
+        manifest = record["manifest"]
+        digest = commitment(template.model_dump(), "rateloop.evaluator.template.v1")
+        if not bundle_supports_template(manifest, template):
+            raise PermissionError("Bundle does not support this exact task")
+        activation_digest = manifest["template_commitments"][0] if manifest.get("task_capability") else digest
+        active = self.active(workspace_id, activation_digest, template.language, verify_artifacts=verify_artifacts)
+        if active["bundle_id"] != bundle_id:
+            raise PermissionError("Queued model is no longer active")
+        if manifest.get("task_capability"):
+            # The signed base capability cannot inherit another rubric's quality
+            # gate, calibration, or permissions. The service checks exact rights.
+            return {"bundle_id": bundle_id, "template_commitment": digest, "language": template.language,
+                    "mode": "shadow", "activation_commitment": commitment(active, "rateloop.deployment-evidence.v1")}
+        return active
 
     @staticmethod
     def _quality_gate(manifest: dict, snapshot: dict, evidence: dict, *, now: float | None = None) -> dict:

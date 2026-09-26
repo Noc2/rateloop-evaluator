@@ -20,7 +20,7 @@ from .learning import provision_key, read_secret
 from .protocol import EvaluationRequest
 from .registry import provision_signing_key
 from .storage import RuntimeStore
-from .templates import overall_approval
+from .templates import CUSTOM_TEXT_CAPABILITY, overall_approval, custom_text_seed
 from .worker import OutboundWorker, single_worker
 from .worker_runtime import prepare_evaluator
 
@@ -42,14 +42,17 @@ def read_config(path: str | Path) -> dict:
     if type(value["healthPort"]) is not int or not 1024<=value["healthPort"]<=65535:
         raise ValueError("Invalid hosted health port")
     bundles=value["bundles"]
-    if not isinstance(bundles,list) or not 1<=len(bundles)<=2:
-        raise ValueError("Hosted worker requires one or two language bundles")
+    if not isinstance(bundles,list) or not 1<=len(bundles)<=20:
+        raise ValueError("Hosted worker requires one to twenty explicit model bundles")
     for bundle in bundles:
-        if not isinstance(bundle,dict) or set(bundle)!={"language","modelBundleId"} or bundle["language"] not in ("en","de"):
+        if (not isinstance(bundle,dict) or set(bundle)-{"language","modelBundleId","taskCapability"}
+                or not {"language","modelBundleId"}<=set(bundle) or bundle["language"] not in ("en","de")):
             raise ValueError("Invalid hosted language bundle")
         _opaque(bundle["modelBundleId"])
-    if len({b["language"] for b in bundles})!=len(bundles) or len({b["modelBundleId"] for b in bundles})!=len(bundles):
-        raise ValueError("Hosted bundle identities and languages must be unique")
+        if "taskCapability" in bundle and bundle["taskCapability"] != CUSTOM_TEXT_CAPABILITY:
+            raise ValueError("Unknown hosted task capability")
+    if len({b["modelBundleId"] for b in bundles})!=len(bundles):
+        raise ValueError("Hosted bundle identities must be unique")
     connection=value["connection"]
     if not isinstance(connection,dict) or set(connection)!={"baseUrl","apiKey","apiKeyId","agentId","agentVersionId","metadataUploadEnabled"}:
         raise ValueError("Invalid hosted connector configuration")
@@ -102,29 +105,33 @@ def bootstrap(config: dict) -> dict:
     identity={key:config[key] for key in ("workspaceId","workerId","modelDir","bundles")}
     identity.update({key:config["connection"][key] for key in ("baseUrl","agentId","agentVersionId")})
     identity_path=root/"hosted-identity.json"
-    if identity_path.exists() and json.loads(read_secret(identity_path))!=identity:
-        raise PermissionError("Hosted volume identity changed; provision a separate service")
-    cli.write_private(identity_path,identity)
+    if identity_path.exists():
+        previous=json.loads(read_secret(identity_path))
+        if (any(previous.get(key)!=value for key,value in identity.items() if key!="bundles")
+                or any(bundle not in identity["bundles"] for bundle in previous.get("bundles",[]))):
+            raise PermissionError("Hosted volume identity changed; existing bundles must be preserved")
     cli.write_private(root/"connector.json",config["connection"])
     exports=[]
     for bundle in config["bundles"]:
         language=bundle["language"]; bundle_id=bundle["modelBundleId"]
+        template=custom_text_seed(language) if bundle.get("taskCapability") else overall_approval(language)
         request=EvaluationRequest.model_validate({"schemaVersion":"rateloop.evaluator.request.v1",
             "workspaceId":config["workspaceId"],"caseId":"hosted-bootstrap-"+language,
             "idempotencyKey":"hosted-bootstrap-"+language,"modelBundleId":bundle_id,
-            "template":overall_approval(language).model_dump(),"input":{"text":"Synthetic registration example.","context":"","evidence":""},"deadlineMs":5000})
-        request_path=root/("request-"+language+".json")
+            "template":template.model_dump(),"input":{"text":"Synthetic registration example.","context":"","evidence":""},"deadlineMs":5000})
+        request_path=root/("request-"+bundle_id+".json")
         cli.write_private(request_path,request.model_dump())
         try: record=registry.get(bundle_id,config["workspaceId"])
         except KeyError:
             cli.run(Namespace(command="register",state_dir=str(root),model_dir=config["modelDir"],request=str(request_path),
-                snapshot_id=None,calibrations=None,real_data=False,selective_policy=None))
+                snapshot_id=None,calibrations=None,real_data=False,selective_policy=None,custom_text=bool(bundle.get("taskCapability"))))
         else:
-            if record["artifact_root"]!=config["modelDir"] or record["manifest"]["template_commitments"]!=[request.template_commitment()] or record["manifest"]["languages"]!=[language]:
+            if record["artifact_root"]!=config["modelDir"] or record["manifest"]["template_commitments"]!=[request.template_commitment()] or record["manifest"]["languages"]!=[language] or record["manifest"].get("task_capability")!=bundle.get("taskCapability"):
                 raise PermissionError("Hosted registration differs from immutable local bundle")
-        output=root/"registrations"/(language+".json")
+        output=root/"registrations"/((bundle_id if bundle.get("taskCapability") else language)+".json")
         cli.run(Namespace(command="export-registration",state_dir=str(root),bundle_id=bundle_id,request=str(request_path),output=str(output)))
         exports.append(str(output))
+    cli.write_private(identity_path,identity)
     return {"state":"prepared","registrations":exports,"contentIncluded":False}
 
 

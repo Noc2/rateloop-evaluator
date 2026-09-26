@@ -4,6 +4,7 @@ from __future__ import annotations
 from .backends import GLiNERBackend
 from .service import Principal, create_app
 from .templates import overall_approval
+from .protocol import Template
 
 
 def prepare_evaluator(connector, registry, bundle_ids: list[str], *, device: str = "cpu"):
@@ -26,13 +27,10 @@ def prepare_evaluator(connector, registry, bundle_ids: list[str], *, device: str
             backends[key]=backend
         backend=backends[key]
         for language in manifest["languages"]:
-            template=overall_approval(language)
+            template=Template.model_validate(manifest["template"]) if manifest.get("template") else overall_approval(language)
             backend.predict("Ready.",[question.model_dump() for question in template.questions])
         def validate(value, expected_id=bundle_id):
-            registry.get(expected_id,workspace,verify_artifacts=False)
-            active=registry.active(workspace,value.template_commitment(),value.template.language,verify_artifacts=False)
-            if active["bundle_id"] != expected_id: raise PermissionError("Queued model is no longer active")
-            return active
+            return registry.serving_policy(expected_id,workspace,value.template,verify_artifacts=False)
         def allow_retention(value):
             with connector.learning.transaction() as database:
                 return connector._state(database).get("collections",{}).get(value.input_commitment(),{}).get("trainingAllowed") is True

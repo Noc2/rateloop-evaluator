@@ -11,7 +11,7 @@ def test_worker_warms_before_returning_and_shares_identical_weights(monkeypatch)
         for name,language in (("english","en"),("german","de"))}
     class Registry:
         def get(self,name,*args,**kwargs): return deepcopy(records[name])
-        def active(self,_workspace,_commitment,language,**kwargs): return {"bundle_id":{"en":"english","de":"german"}[language]}
+        def serving_policy(self,name,_workspace,template,**kwargs): return {"bundle_id":name}
     class Backend:
         def __init__(self,path,device): events.append("construct")
         def load(self): events.append("load")

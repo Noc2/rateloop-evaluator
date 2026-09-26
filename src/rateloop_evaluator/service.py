@@ -18,6 +18,7 @@ from .learning import LearningStore
 from .protocol import EvaluationRequest, EvaluationResult, WireModel, Identifier, Digest, commitment, make_result, utc_now
 from .storage import RuntimeStore
 from .execution import ExecutionBusy, model_execution
+from .templates import bundle_supports_template
 
 
 class Backend(Protocol):
@@ -124,7 +125,7 @@ def create_app(*, backend: Backend, bundle: dict, learning: LearningStore, runti
                 return EvaluationResult.model_validate(cached["result"]).model_dump()
             reason = None; criteria = []; outcome = "uncertain"
             if request.template.language not in bundle["languages"]: reason = "unsupported_language"
-            elif template_digest not in bundle["template_commitments"]: reason = "unsupported_template"
+            elif not bundle_supports_template(bundle,request.template): reason = "unsupported_template"
             else:
                 questions = [q.model_dump() for q in request.template.questions]
                 text = request.input.render()

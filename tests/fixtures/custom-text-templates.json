@@ -1,0 +1,114 @@
+[
+  {
+    "template": {
+      "id": "custom-text-evaluation",
+      "version": 1,
+      "language": "en",
+      "questions": [
+        {
+          "id": "judgment",
+          "text": "Does this content meet the stated requirements?",
+          "labels": [
+            {
+              "id": "approved",
+              "description": "Yes"
+            },
+            {
+              "id": "rejected",
+              "description": "No"
+            }
+          ],
+          "passLabels": [
+            "approved"
+          ]
+        }
+      ],
+      "maxTokens": 512
+    },
+    "templateCommitment": "sha256:d08c2837e59912a23d2cdfb8ed838d2410533e664420cc1d36304e393dbebf17"
+  },
+  {
+    "template": {
+      "id": "custom-text-evaluation",
+      "version": 1,
+      "language": "de",
+      "questions": [
+        {
+          "id": "judgment",
+          "text": "Erfüllt dieser Inhalt die angegebenen Anforderungen?",
+          "labels": [
+            {
+              "id": "approved",
+              "description": "Ja"
+            },
+            {
+              "id": "rejected",
+              "description": "Nein"
+            }
+          ],
+          "passLabels": [
+            "approved"
+          ]
+        }
+      ],
+      "maxTokens": 512
+    },
+    "templateCommitment": "sha256:46976fd78ef3cc139cff6b0df224621798475a32f3718686ff6d1c2fe4890a16"
+  },
+  {
+    "template": {
+      "id": "custom-text-evaluation",
+      "version": 1,
+      "language": "en",
+      "questions": [
+        {
+          "id": "judgment",
+          "text": "Does this summary match the source?",
+          "labels": [
+            {
+              "id": "approved",
+              "description": "Supported"
+            },
+            {
+              "id": "rejected",
+              "description": "Unsupported"
+            }
+          ],
+          "passLabels": [
+            "approved"
+          ]
+        }
+      ],
+      "maxTokens": 512
+    },
+    "templateCommitment": "sha256:04e211d23aa9738464839a2131b8eabae2ed0ec917d80cc77d12d820b61b62d5"
+  },
+  {
+    "template": {
+      "id": "custom-text-evaluation",
+      "version": 1,
+      "language": "de",
+      "questions": [
+        {
+          "id": "judgment",
+          "text": "Ist die Zusammenfassung durch die Quelle belegt?",
+          "labels": [
+            {
+              "id": "approved",
+              "description": "Belegt"
+            },
+            {
+              "id": "rejected",
+              "description": "Nicht belegt"
+            }
+          ],
+          "passLabels": [
+            "approved"
+          ]
+        }
+      ],
+      "maxTokens": 512
+    },
+    "templateCommitment": "sha256:2b7580fa7d8103b8446f4aa72c523e224c711cc1d08f7efc1dd228e6671aff90"
+  }
+]

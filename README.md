@@ -44,6 +44,14 @@ PY
 
 The initial result contains typed labels and raw scores, with `outcome: uncertain` and `abstainReason: uncalibrated`. Template changes require a new registration and calibration scope. Missing scope, excessive length and unmet deadlines produce abstention; required evidence is never silently truncated. A request carries a stable case ID and optional conversation/source group ID, so related examples can stay in the same training split. Reuse its idempotency key only for the same case and input.
 
+## Custom text questions without training
+
+The pinned public GLiNER model can answer custom binary text questions in English or German without a dataset or training run. Build a canonical template with `custom_text_evaluation(language, prompt, positive_label, negative_label)`: one question (up to 500 UTF-16 code units), two distinct answer descriptions (up to 40 each), and a 512-token combined input budget. Input text, optional context, and evidence remain separate fields. The helper normalizes wording; the wire contract requires that exact normalized template.
+
+Register a **new** public-base bundle using `register --custom-text --model-dir <local-model> --request <seed-request>`. Its signed `task_capability` and exported `taskCapability` use `rateloop.evaluator.custom-binary-text.v1`. Exported metadata includes the complete template. Every task still requires consent for its exact template commitment and model identity; a capability alone grants no processing or training rights. Changing the question or labels changes that commitment. The worker returns an advisory label and raw scores with `uncertain` / `uncalibrated`; no probability of correctness or automatic approval is asserted.
+
+Hosted configurations may add new capability bundles to the existing volume while preserving all existing bundle entries, workspace, worker, model path and agent identity. Add `"taskCapability":{"schemaVersion":"rateloop.evaluator.custom-binary-text.v1"}` to each new English/German bundle entry. Old registrations stay immutable and queued jobs keep their original identity. All registrations reuse the same verified local weights. Training-derived bundles stay bound to their exact rubric and never receive this general base-model capability.
+
 ## Integrate RateLoop
 
 Export the registered bundle's metadata:

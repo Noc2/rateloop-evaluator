@@ -48,6 +48,7 @@ def main(argv=None):
     delete = commands.add_parser("delete-case"); delete.add_argument("--case-id",required=True)
     register = commands.add_parser("register"); register.add_argument("--model-dir",required=True); register.add_argument("--request",required=True)
     register.add_argument("--snapshot-id"); register.add_argument("--calibrations"); register.add_argument("--real-data",action="store_true",help="Declare verified non-synthetic provenance; does not qualify deployment")
+    register.add_argument("--custom-text",action="store_true",help="Allow custom binary text tasks on the pinned public base, with exact per-task consent")
     register.add_argument("--selective-policy",help="JSON operating threshold/error policy fixed before final testing")
     export = commands.add_parser("export-registration"); export.add_argument("--bundle-id",required=True); export.add_argument("--request",required=True); export.add_argument("--output",required=True)
     serve = commands.add_parser("serve"); serve.add_argument("--bundle-id",required=True); serve.add_argument("--device",choices=["cpu","mps","cuda"],default="cpu")
@@ -267,6 +268,9 @@ def run(args):
         manifest = {"id":req.modelBundleId,"model_id":source["source"]["repository"],"model_revision":source["source"]["revision"],
             "files":{**source["files"],MANIFEST_NAME:file_hash(Path(args.model_dir) / MANIFEST_NAME)},"template_commitments":[req.template_commitment()],"languages":[req.template.language],
             "calibrations":read_json(args.calibrations) if args.calibrations else [],"synthetic":not args.real_data,"max_tokens":req.template.maxTokens}
+        if getattr(args,"custom_text",False):
+            from .templates import CUSTOM_TEXT_CAPABILITY
+            manifest.update(task_capability=dict(CUSTOM_TEXT_CAPABILITY),template=req.template.model_dump())
         if args.snapshot_id: manifest["snapshot_id"] = args.snapshot_id
         if args.selective_policy: manifest["selective_policy"] = read_json(args.selective_policy)
         registry.register(manifest,workspace,args.model_dir)
@@ -276,15 +280,15 @@ def run(args):
         from .backends import MANIFEST_NAME, GLINER_SCORE_CAPABILITY
         record = registry.get(args.bundle_id,workspace); manifest = record["manifest"]
         req = EvaluationRequest.model_validate(read_json(args.request))
-        if req.workspaceId != workspace or req.modelBundleId != args.bundle_id or req.template_commitment() not in manifest["template_commitments"]:
+        from .templates import bundle_supports_template
+        if req.workspaceId != workspace or req.modelBundleId != args.bundle_id or not bundle_supports_template(manifest,req.template):
             raise ValueError("Registration request does not match the signed bundle")
         model = read_json(Path(record["artifact_root"]) / MANIFEST_NAME)
         if model.get("training") and not model["source"].get("baseWeightsSha256"):
             raise ValueError("Trained model is missing its original weight digest")
         base_hash = model["source"].get("baseWeightsSha256",model["files"].get("model.safetensors"))
         if not base_hash: raise ValueError("Original model weight digest is unavailable")
-        active = registry.active(workspace,req.template_commitment(),req.template.language)
-        if active["bundle_id"] != args.bundle_id: raise ValueError("Only the active bundle can be exported for registration")
+        active = registry.serving_policy(args.bundle_id,workspace,req.template)
         calibrations = {c["question_id"]:c for c in manifest["calibrations"] if c["template_commitment"] == req.template_commitment() and c["language"] == req.template.language}
         # No calibration is asserted to SaaS until a time-bounded deployment gate exists.
         expiry = (active.get("gate") or {}).get("valid_until")
@@ -304,6 +308,8 @@ def run(args):
             "trainingSnapshotCommitment":snapshot_digest,"evaluationReportCommitment":commitment(active,"rateloop.deployment-evidence.v1"),
             "licenseManifestCommitment":commitment({"software":"Apache-2.0","weights":model["source"].get("license","Apache-2.0"),"model":manifest["model_id"],"revision":manifest["model_revision"]},"rateloop.licenses.v1"),
             "maxTokens":manifest["max_tokens"],"criteria":criteria,"scoreCapability":dict(GLINER_SCORE_CAPABILITY)}
+        if manifest.get("task_capability"):
+            registration.update(taskCapability=manifest["task_capability"],template=req.template.model_dump())
         write_private(args.output,registration)
         return {"registrationFile":str(Path(args.output).resolve()),"contentIncluded":False,"mode":active["mode"]}
     if args.command == "promote":
@@ -322,10 +328,7 @@ def run(args):
         from .execution import model_execution
         with model_execution(store): backend.load()
         def validate(request):
-            registry.get(args.bundle_id,workspace,verify_artifacts=False)
-            active = registry.active(workspace,request.template_commitment(),request.template.language,verify_artifacts=False)
-            if active["bundle_id"] != args.bundle_id: raise PermissionError("Active model changed; restart the worker")
-            return active
+            return registry.serving_policy(args.bundle_id,workspace,request.template,verify_artifacts=False)
         app = create_app(backend=backend,bundle=record["manifest"],learning=store,runtime=RuntimeStore(root / "runtime.sqlite",config["encryptionKey"]),
             tokens={token["sha256"]:Principal(token["workspaceId"],frozenset(token["roles"]),token.get("annotatorId")) for token in config["tokens"]},validate_bundle=validate)
         uvicorn.run(app,host=args.host,port=args.port,ssl_certfile=args.tls_cert,ssl_keyfile=args.tls_key,access_log=False,workers=1)

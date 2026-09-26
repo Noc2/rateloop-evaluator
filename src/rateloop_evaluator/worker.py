@@ -16,7 +16,7 @@ from fastapi import HTTPException
 
 from .connector import ConnectorRejected, ConnectorUnavailable, RateLoopConnector, _audit_selection, _hash, _opaque, _timestamp
 from .protocol import EvaluationRequest, EvaluationResult
-from .templates import overall_approval
+from .templates import website_binary_question
 from .execution import ExecutionBusy, model_execution
 from .presence import WorkerPresence
 from .authorization import CLOCK_SKEW_SECONDS
@@ -50,18 +50,25 @@ class OutboundWorker:
         self.on_poll=on_poll or (lambda _healthy: None)
 
     def sync_labels(self) -> dict:
-        """Import only the website's exact overall-question labels under explicit learning consent."""
-        from .protocol import commitment
+        """Map labels only from stored exact templates and current learning consent."""
+        from .protocol import Template
         with self.connector.learning.transaction() as database:
             consents=deepcopy(self.connector._state(database).get("consents",{}))
+            evaluations=deepcopy(database["evaluations"])
+        scopes={}
+        for row in evaluations.values():
+            if row["workspace_id"] != self.connector.workspace_id: continue
+            template=Template.model_validate(row["template"])
+            try: question=website_binary_question(template)
+            except ValueError: continue
+            scopes[row["template_commitment"]]=question.id
         imported=0; rejected=0; truncated=False
         for consent_id,record in consents.items():
             consent=record["consent"]
             if consent["purpose"] != "private_learning" or "human_labels" not in consent["fields"]: continue
-            for language in ("en","de"):
-                template_digest=commitment(overall_approval(language).model_dump(),"rateloop.evaluator.template.v1")
+            for template_digest,question_id in scopes.items():
                 if template_digest not in consent["templateCommitments"]: continue
-                report=self.connector.fetch_and_import_labels(consent_id,question_id="overall_approval",template_commitment=template_digest,
+                report=self.connector.fetch_and_import_labels(consent_id,question_id=question_id,template_commitment=template_digest,
                     outcome_labels={"positive":"approved","negative":"rejected"})
                 imported+=report["imported"]; rejected+=len(report["rejected"]); truncated=truncated or report["truncated"]
         self.last_label_sync=time.monotonic()
@@ -191,8 +198,7 @@ class OutboundWorker:
         review_mode=_review_mode(job)
         if _review_mode(body)!=review_mode:
             raise ValueError("Job content changed the claimed review mode")
-        if request.template != overall_approval(request.template.language):
-            raise ValueError("Website jobs require the exact frozen overall approval template")
+        website_binary_question(request.template)
         if review_mode=="ai" and ("audit" not in body or body["audit"] is not None or body.get("retainForTraining") is not False):
             raise PermissionError("AI-only website jobs cannot claim human audit or training provenance")
         self._remember_collection(request,body,review_mode)
