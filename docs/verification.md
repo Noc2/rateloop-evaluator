@@ -220,3 +220,33 @@ The hosted image and native Mac constraint files subsequently moved to `cryptogr
 
 
 The optional server-only registration handoff passed **264 tests** (four opt-in skips) and real-model container acceptance with `RATELOOP_HOSTED_EXPORT_REGISTRATIONS=1`. Both tagged registration JSON objects exactly matched the cloud-style volume exports, repeated unchanged after restart, and omitted the synthetic credential and workspace configuration. At the same exact cap, export-enabled cold/restart readiness took 78.2/64.2 seconds, graceful shutdown took 0.74 seconds, and OOM kills remained zero. Normal bootstrap emits no registration metadata. This explicit handoff preserves each actual installation's activation evidence; it does not make separately bootstrapped local and cloud activation timestamps identical.
+
+## Custom dataset and candidate rehearsal — 26 September 2026
+
+Evaluator `450b7f204f96ce52f76dc5389910f9cd2cd3b1b2` completed a real local rehearsal of the new dataset
+CLI and candidate lifecycle, using the already provisioned GLiNER checkpoint and native MPS runtime described above.
+The authored fixture asked whether a summary was supported by its supplied source; it was not a customer-reply task.
+Twelve synthetic, explicitly labeled source groups were imported under **private-training permission only**, with
+`input.text`, `input.evidence` and `imported_labels` scopes. No inference, shared-contribution or public-weight right
+was inferred from import. The immutable snapshot contained eight train, one calibration and three final-test groups.
+
+The baseline was compared before training. A single real LoRA optimizer step used FP32/MPS, one epoch, batch size 1,
+learning rate `1e-5`, rank 8 and seed 42. The training command took 9.73 seconds including checkpoint saving/reload;
+trainable parameters changed, and the merged checkpoint's prediction reload difference was **0.0** (required maximum
+`1e-4`). The manifest retained the imported dataset version and `synthetic: 8` training-label provenance. No test or
+calibration example entered training.
+
+The baseline and candidate were then compared on the same frozen snapshot and the same three held-out source-group
+representatives. Both matched all three synthetic reference labels; the 95% Wilson interval was **43.85%–100%**.
+This tiny mechanics fixture establishes neither quality, improvement from training, representative accuracy nor
+independent human agreement. The report correctly declared zero independent references and `quality_gate: false`.
+An attempted independent calibration from these imported labels was rejected.
+
+Registering the trained candidate and exporting its website registration preserved the active baseline. Separate,
+explicit shadow activation selected the candidate; explicit rollback restored the expected baseline. All steps took
+28.94 seconds combined, excluding the initial sandbox attempt that correctly reported MPS unavailable. Networking
+was blocked by rejecting every outbound socket connection throughout the successful run; no models were downloaded,
+no external service was called, and no paid infrastructure or hosted state changed. Raw fixtures, keys, checkpoint and
+machine-readable reports remained outside Git. This proves local import → snapshot → train → reload → compare →
+register/export → explicit activation/rollback mechanics. Website import/training UI, hosted queue dispatch and a
+website result from this custom candidate require their separate end-to-end acceptance.
