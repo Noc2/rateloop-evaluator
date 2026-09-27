@@ -14,6 +14,14 @@ Provision public checkpoints before disconnecting networking. Package versions a
 
 `requirements-macos-py312.lock` records the native Mac package versions, including subsequent verified security dependency updates. On that platform, install with `pip install -c requirements-macos-py312.lock -e '.[model,test]'` to reproduce those versions. It is a version snapshot, not a hash-verified universal lock; select and verify wheels separately for an offline enterprise installation.
 
+### Native Mac background-service paths
+
+Install the service's source, virtual environment, dependencies, models and private state under a dedicated directory such as `~/Library/Application Support/RateLoop Evaluator/`. Dependencies must also live outside protected `Documents`, `Desktop` and `Downloads` directories: a `.pth` file, editable install or symlink back to a development checkout can reintroduce protected-path access even when the service executable itself is elsewhere. A successful interactive terminal import does not establish that a background LaunchAgent can read the same paths.
+
+Before starting the service, inspect that interpreter's `sys.path` and the imported package's `__file__`; resolve dependency symlinks and confirm they stay within the intended installation. Preserve the exact package versions and verify inference after relocation. Treat a launchd `running` state as process existence, not readiness: require a fresh authenticated worker heartbeat in RateLoop. If no heartbeat arrives, inspect process activity and startup diagnostics before changing workspace permissions. For diagnosis, point `StandardOutPath` and `StandardErrorPath` at owner-only files in a private directory, keep logs bounded, and share only sanitized errors.
+
+On 27 September 2026, native runtime `e9a7980ad0b5d91e5a6c524d78e5f4b925994f35` remained alive without sending a heartbeat while its import stack waited in directory access. Its dependency path led into `Documents`. Copying the same dependencies into Application Support, removing the development editable-path loader and restarting the same launchd label restored production heartbeats. Credentials, keys, configuration and encrypted state were byte-checked unchanged before startup; the runtime source and hosted services were unchanged. This records recovery of startup/readiness, not completion of a connected training job.
+
 ## Upgrades and recovery
 
 1. Pause connected RateLoop evaluation and stop the local worker. Preserve a consistent encrypted state/key backup and the exact current bundle.
