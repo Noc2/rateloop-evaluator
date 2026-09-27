@@ -4,7 +4,7 @@ from __future__ import annotations
 import hashlib
 import re
 from datetime import datetime, timezone
-from typing import Annotated, Literal
+from typing import Annotated, Iterable, Literal
 
 import rfc8785
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_serializer, model_validator
@@ -82,6 +82,22 @@ def validate_no_demonstration_overlap(input_text: str, questions: list[dict]) ->
     if any(text == normalized(example.text)
            for question in questions for example in Question.model_validate(question).examples):
         raise ValueError("Dataset rows must not repeat a rubric demonstration")
+
+
+def validate_reference_demonstration_isolation(rows: Iterable[dict]) -> None:
+    """Blind human provenance cannot make a disclosed prompt answer held out.
+
+    Check every row, including nonrepresentative members of a source group, at
+    snapshot and qualification boundaries. Older templates with no examples
+    retain their existing validation and serialization behavior.
+    """
+    for row in rows:
+        questions = row.get("template", {}).get("questions", [])
+        if any(question.get("examples") for question in questions):
+            payload = row.get("input")
+            if not isinstance(payload, dict) or not isinstance(payload.get("text"), str):
+                raise ValueError("Reference rows with rubric demonstrations require retained input text")
+            validate_no_demonstration_overlap(payload["text"], questions)
 
 
 class Template(WireModel):

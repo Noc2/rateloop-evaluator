@@ -10,7 +10,7 @@ import sys
 import time
 
 from .learning import LearningStore, provision_key, read_secret, is_independent_reference
-from .protocol import CaseInput, EvaluationRequest, commitment
+from .protocol import CaseInput, EvaluationRequest, commitment, validate_reference_demonstration_isolation
 from .registry import BundleRegistry, provision_signing_key
 
 
@@ -321,6 +321,7 @@ def run(args):
         if not rows: raise ValueError("Calibration groups are required")
         if any(not is_independent_reference(row) for row in snapshot["calibration"]):
             raise PermissionError("Calibration requires independently collected blind human references")
+        validate_reference_demonstration_isolation(snapshot["calibration"])
         backend = GLiNERBackend(args.model_dir,args.device)
         predictions = []
         for row in rows:
@@ -345,6 +346,7 @@ def run(args):
         if not representatives: raise ValueError("Independent test groups are required")
         if any(not is_independent_reference(row) for row in snapshot["test"]):
             raise PermissionError("Qualification scoring requires independently collected blind human references; use compare for uploaded labels")
+        validate_reference_demonstration_isolation(snapshot["test"])
         backend = GLiNERBackend(record["artifact_root"],args.device)
         rows = []; first = next(iter(representatives.values()))
         for row in representatives.values():

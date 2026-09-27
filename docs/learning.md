@@ -70,6 +70,8 @@ exploratory comparison against those labels. An upload cannot claim `independent
 and qualification still require authenticated blind reviewer feedback. Registering imported data never creates a fake
 AI receipt or human review. Conflicting labels for duplicate material stop snapshot creation until resolved.
 
+Guiding examples are disclosed model inputs, even when a blind human later rates the same text. A training, calibration or test row that repeats an example after whitespace normalization blocks snapshot creation and loading, calibration, scoring and qualification. Existing stored snapshots are checked too; rows and human labels are never silently removed or relabeled. Keep guiding examples separate from evaluation evidence. This exact-text check does not detect semantic paraphrases.
+
 Imports create immutable version IDs; identical retries return the same version. Select exact versions when creating
 a snapshot. `--no-feedback` restricts it to those versions; without that flag, otherwise eligible authorized blind
 feedback is included too. Group assignments persist across snapshots as new data arrives: held-out groups never enter

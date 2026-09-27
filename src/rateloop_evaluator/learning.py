@@ -432,6 +432,8 @@ class LearningStore:
                         examples.append(row)
             if len({r["template_commitment"] for r in examples}) > 1:
                 raise ValueError("Template version maps to conflicting committed definitions")
+            from .protocol import validate_reference_demonstration_isolation
+            validate_reference_demonstration_isolation(examples)
             # Union cases, caller-supplied source groups and exact duplicate inputs,
             # preventing retries/revisions/duplicate text from crossing partitions.
             parent = list(range(len(examples)))
@@ -536,6 +538,9 @@ class LearningStore:
         digest = _digest({k: snapshot[k] for k in ("workspace_id", "template_id", "template_version", "purpose", "train", "calibration", "test")})
         if digest != snapshot["content_digest"]:
             raise ValueError("Snapshot digest mismatch")
+        from .protocol import validate_reference_demonstration_isolation
+        validate_reference_demonstration_isolation(
+            row for part in ("train", "calibration", "test") for row in snapshot[part])
         # Preserve the original authorization lineage. A new grant never silently
         # reauthorizes an old snapshot whose original permission has expired.
         for grant_id in snapshot["grant_ids"]:

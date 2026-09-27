@@ -25,7 +25,7 @@ from .calibration import apply_temperature, false_approval_upper_bound, validate
 from .execution import model_execution
 from .learning import LearningStore, _json, read_secret, is_independent_reference
 from .templates import CUSTOM_TEXT_CAPABILITY, bundle_supports_template, is_custom_text_template
-from .protocol import Template, commitment
+from .protocol import Template, commitment, validate_reference_demonstration_isolation
 
 
 def provision_signing_key(path: str | Path) -> None:
@@ -243,6 +243,8 @@ class BundleRegistry:
             raise PermissionError("Selective deployment needs a private-training snapshot")
         if any(not is_independent_reference(row) for part in ("calibration", "test") for row in snapshot[part]):
             raise PermissionError("Qualification requires independently collected blind human references")
+        validate_reference_demonstration_isolation(
+            row for part in ("train", "calibration", "test") for row in snapshot[part])
         template_commitment, language = evidence.get("template_commitment"), evidence.get("language")
         if template_commitment not in manifest["template_commitments"] or language not in manifest["languages"]:
             raise ValueError("Evidence scope does not match the bundle")
