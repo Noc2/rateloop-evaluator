@@ -48,6 +48,8 @@ The initial result contains typed labels and raw scores, with `outcome: uncertai
 
 The pinned public GLiNER model can answer custom binary text questions in English or German without a dataset or training run. Build a canonical template with `custom_text_evaluation(language, prompt, positive_label, negative_label)`: one question (up to 500 UTF-16 code units), two distinct answer descriptions (up to 40 each), and a 512-token combined input budget. Input text, optional context, and evidence remain separate fields. The helper normalizes wording; the wire contract requires that exact normalized template.
 
+Optionally supply up to four labeled guiding examples through `examples=[{"text": "...", "labelId": "approved"}]`. They become part of the immutable question and its token budget; they do not train the model. See the [bounded-example workflow](docs/operations.md#bounded-guiding-examples) before reusing calibration or importing a dataset.
+
 Register a **new** public-base bundle using `register --custom-text --activate --model-dir <local-model> --request <seed-request>`. Its signed `task_capability` and exported `taskCapability` use `rateloop.evaluator.custom-binary-text.v1`. Exported metadata includes the complete template. Every task still requires consent for its exact template commitment and model identity; a capability alone grants no processing or training rights. Changing the question or labels changes that commitment. The worker returns an advisory label and raw scores with `uncertain` / `uncalibrated`; no probability of correctness or automatic approval is asserted.
 
 Hosted configurations may add new capability bundles to the existing volume while preserving all existing bundle entries, workspace, worker, model path and agent identity. Add `"taskCapability":{"schemaVersion":"rateloop.evaluator.custom-binary-text.v1"}` to each new English/German bundle entry. Old registrations stay immutable and queued jobs keep their original identity. All registrations reuse the same verified local weights. Training-derived bundles stay bound to their exact rubric and never receive this general base-model capability.
@@ -132,6 +134,8 @@ rateloop-evaluator diagnose --model-dir /absolute/local/model --device mps \
 ```
 
 Its 24 synthetic cases cover criterion compliance, evidence support and email presence, including negation and missing evidence. Reports include per-task/language errors, per-label recall, balanced agreement and prediction latency. These are execution/regression measurements, not representative accuracy, calibrated confidence or deployment qualification. Compare candidates on authorized, frozen held-out data with `compare`; imported labels cannot satisfy independent-human qualification gates. Training and activation remain separate explicit actions.
+
+The [27 September comparison](docs/verification.md#bilingual-diagnostics-and-guiding-examples--27-september-2026) found 11/24 correct labels for the current base, 10/24 for the pinned Decide challenger, and 11/24 for the base with two guiding examples. Groundedness and email-presence cases exposed substantial errors, including confident errors. The hosted model remains unchanged; guidance and a newer checkpoint are not demonstrated general improvements. Decide is available only for [explicit local comparison](docs/operations.md#compare-the-pinned-decide-challenger).
 
 ## Hardware and verification
 

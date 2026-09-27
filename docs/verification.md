@@ -1,8 +1,8 @@
 # Local model verification
 
-This maintained record describes the local implementation checks performed on
-2026-09-17 for `rateloop-evaluator` 0.1.0. It verifies execution, not suitability
-for replacing human ratings. No customer content was used.
+This maintained record describes dated implementation checks for
+`rateloop-evaluator` 0.1.0, including the [27 September bilingual diagnostic comparison](#bilingual-diagnostics-and-guiding-examples--27-september-2026).
+It verifies execution, not suitability for replacing human ratings. No customer content was used.
 
 ## Hardware and runtime
 
@@ -258,3 +258,108 @@ Evaluator `041ac94b017aa206ecb913d195506be4010742a6` passed **369 tests**, with 
 A durable isolated operator runtime at that source version reused the existing pinned public checkpoint and installed dependencies. Its two English/German registrations shared one model instance. Real native MPS inference accepted custom questions about whether a summary mentions a budget; no dataset, grant, human label or quality claim was created. A separate cache check loaded the prior synthetic trained checkpoint, then the public checkpoint, then the trained checkpoint again. Each completed load reported 1,158,335,488 allocated MPS bytes; closing the cache returned allocated MPS memory to zero. This is bounded resident-checkpoint evidence, not a process-RAM peak measurement or a service throughput guarantee. Unit checks additionally verify eviction before loading a new private checkpoint, exact queued bundle routing, and rejection of revoked bundles before loading.
 
 The prepared operator uses its own private state, signing key and workspace credential. Its outbound service definition was prepared but not loaded during this check. No model download, hosted service change, website dataset request, private-weight upload or additional training occurred. The always-on hosted CPU deployment and website training journey still require their separate live acceptance; the local checks do not establish those outcomes.
+
+## Bilingual diagnostics and guiding examples — 27 September 2026
+
+The diagnostic suite and runtime content published in
+`24486a6013679a8b2f7fdfde309d7105bfb2869a` were exercised with the local runtime above.
+`diagnostic_cases()` fixes 24 authored cases: four per task and language, for numeric-budget
+criteria, supplied-evidence support and email-address presence in English and German.
+The suite commitment is
+`sha256:92656644bab0cb02ad80eb72bbfe639e1dd5c815ebfa5c44908efdb58875b2c4`.
+These are synthetic regression labels with zero independent references. Each report declares
+`quality_gate: false` and `activation_changed: false`; these results do not measure representative accuracy.
+
+Two Apache-2.0 checkpoints were explicitly provisioned and compared:
+
+| Checkpoint | Pinned upstream revision | `model.safetensors` SHA-256 |
+| --- | --- | --- |
+| Current `fastino/gliner2.5-multi-v1` | `235cf92d6d4318da9bfca0d08975c8fa7250d13b` | `c1ff4ec0bc00031c15530b8f3c33d3677f27949e6a0cb52e1247a6224b6c5395` |
+| Challenger `fastino/GLiNER2.5-multi-Decide` | `6bc1d43d201b0691e733626389af8c57eea3ea68` | `9efe0f88c99f2aa794452e9559dc60e98d60d9fa2bf1b60cf2710411b6da5b4e` |
+
+Both used GLiNER2 2.0.0, the unchanged `Schema.classification` interface with
+`multi_label=True`, `class_act="softmax"`, `cls_threshold=0.0`, complete returned label
+scores and adapter version 1. The multi-label decoder setting exposes every score;
+explicit softmax retains mutually exclusive binary semantics. No scores were calibrated.
+Prediction used the production context/evidence/artifact rendering and the existing
+`approved`/`rejected` IDs with `Yes`/`No` or `Ja`/`Nein` descriptions.
+
+Each checkpoint ran in its own fresh process, sequentially on native Mac CPU with one
+PyTorch intra-op and one inter-op thread, FP32. The process blocked outbound socket
+connections; only explicit prior provisioning downloaded model files. The 24 cases used
+66–109 tokens including the complete schema, below the 512-token task limit. Timing
+covered one prediction per distinct case after token counting, with no repeated warmups.
+It excludes loading, network, authorization, queues and human review.
+
+| Configuration | Correct / 24 | Balanced agreement | Prediction p50 / p95 | Sampled peak RSS / end RSS |
+| --- | ---: | ---: | ---: | ---: |
+| Current base | 11 | 50.71% | 36.23 / 43.09 ms | 3.628 / 2.518 GB |
+| Decide challenger | 10 | 47.14% | 38.68 / 46.52 ms | 3.577 / 2.517 GB |
+| Current base with two guiding examples per task/language | 11 | 49.29% | 46.09 / 66.48 ms | 3.518 / 2.525 GB |
+
+Balanced agreement is mean recall over the two reference labels; the suite contains
+10 positive and 14 negative references. A constant negative label would match 14/24,
+which further limits any interpretation of the raw agreement count. Model loading took
+4.76, 5.04 and 4.87 seconds respectively. RSS uses decimal GB and includes initialization;
+the 10 ms sampler may miss brief allocations. This Mac workload neither sizes the hosted
+Linux service nor proves that a challenger fits its 2,500,000,000-byte cap. No new hosted
+service, paid API, cloud trainer or additional monthly allocation was created.
+
+| Slice (four cases each) | Base | Decide | Guided base |
+| --- | ---: | ---: | ---: |
+| Numeric budget / English | 4 | 3 | 4 |
+| Numeric budget / German | 3 | 3 | 3 |
+| Evidence support / English | 1 | 1 | 1 |
+| Evidence support / German | 1 | 1 | 1 |
+| Email presence / English | 1 | 1 | 1 |
+| Email presence / German | 1 | 1 | 1 |
+
+All three configurations falsely approved contradictory, missing and partially supported
+evidence cases in both languages. The base falsely approved email placeholders and URLs,
+and rejected an actual email address when the surrounding sentence denied its presence.
+Those three email failures occurred in both languages. German budget evaluation confused
+an unrelated number with a budget; Decide also failed the English explicit no-budget case.
+These include large-margin errors: the base rejected the English negated-claim email case
+with raw score approximately 0.999987 and approved the unsupported partial-evidence case
+at approximately 0.992009. Raw score spread is therefore not a correctness probability.
+
+The guidance experiment supplied two authored examples per task/language, distinct from
+all test texts, without optimization or a training run. Its full suite commitment is
+`sha256:7e07b3a6210b3b088556f3ddc68b9cb329dcd0d739054d0ad80b2340028066db`;
+combined lengths were 97–198 tokens. Guidance corrected the English email placeholder but
+introduced an error on an ordinary email address, leaving total agreement unchanged.
+The source examples and machine-readable reports were retained outside Git.
+
+Two exploratory adapter experiments followed the fixed comparison. Replacing only internal
+label IDs with `yes`/`no` produced 12/24, fixing the German budget case while leaving every
+evidence/email slice at 1/4. Replacing short answer descriptions with explicit semantic
+descriptions produced 13/24, with evidence slices at 2/4 but English email presence at 0/4.
+These post-baseline design probes did not establish a universally inverted parser or a
+reliable fix. They were not production adapter changes, independent benchmarks, new
+calibration or grounds for promotion. The original checkpoint and score interface remain
+the hosted default; Decide remains an unpromoted local challenger.
+
+### Demonstration contract and training checks
+
+Runtime changes `6bd8517` and `5f68e3a` preserve old template commitments when examples
+are absent/empty and bind nonempty examples to the exact question commitment. The SDK
+golden fixture matches Python at
+`sha256:3647abb556e0a4938e06a74206a76adc54bee3867504d190b1a8fd7ec5ae2c56`.
+Tests cover label membership, strict fields, four-example/600-unit/1,600-unit bounds,
+UTF-16 emoji boundaries, control characters, complete schema token counting, denied
+cross-template permissions and refusal to reuse calibration from an earlier rubric.
+Import, training and comparison reject disclosed example text reused as dataset evidence
+after the same ECMAScript whitespace normalization; semantic near-duplicates still require
+source-group review. GLiClass fails explicitly on examples instead of dropping them.
+
+A real CPU test counted and evaluated examples with network connections blocked, preserving
+the complete two-label softmax vector. The opted-in LoRA test in `8512b19` then used six
+authored synthetic text fixtures and two separate guiding examples on native MPS, rank 8,
+one epoch, one optimizer step, batch size 1, learning rate `1e-5`, seed 42 and FP32.
+It passed in **21.13 seconds**, including optimizer execution, sampled parameter change,
+merged checkpoint save/reload within `1e-4`, weight-bound calibration, refusal to promote
+synthetic evidence and model retirement after grant revocation. The train partition alone
+entered the optimizer. Socket connections remained blocked throughout. The initial sandbox
+attempt correctly reported MPS unavailable; the explicit local GPU run succeeded outside
+that sandbox. This establishes demonstration-aware lifecycle mechanics, not beneficial
+learning, independent human evidence or a connected website training run.

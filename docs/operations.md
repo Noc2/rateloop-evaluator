@@ -30,6 +30,42 @@ One model worker serializes inference and returns 429 when busy; callers retry w
 
 The signed model registry and evaluation gates do not replace authentication of reviewers, representative sampling, customer consent, host hardening or a customer acceptance exercise. Full offline human-review UI, federated aggregation, multimodal judgments and hosted shared training are subsequent products; no private data is transferred to implement them implicitly.
 
+## Bounded guiding examples
+
+Custom English/German binary questions can include two or a few labeled examples without a training run:
+
+```python
+from rateloop_evaluator.templates import custom_text_evaluation
+
+template = custom_text_evaluation(
+    "en", "Does the text state an explicit numeric budget?", "Yes", "No",
+    examples=[
+        {"text": "The project budget is EUR 750.", "labelId": "approved"},
+        {"text": "The project has 8 stages; its budget is undecided.", "labelId": "rejected"},
+    ],
+)
+```
+
+Use the declared answer IDs, not their display wording. The portable question field is `examples` with strict `text` and `labelId` fields: at most four entries, each 1–600 UTF-16 units after trimming, at most 1,600 combined. Invalid Unicode, disallowed control characters and undeclared labels are rejected. Omitted and empty examples preserve the old serialized template and commitment. Nonempty examples, their order, wording or labels change the template commitment; retain old templates for queued work and obtain the exact current processing scope for the new template. Calibration from the old question is never transferred.
+
+Examples use the pinned GLiNER processor's existing example pairs. The same pairs feed inference and training records, preserving adapter version 1 and complete mutually exclusive softmax scores. Upstream training augmentation can omit or reorder examples; this does not authorize changing the immutable source rubric. Input, evidence, question, labels and examples all count toward the existing 512-token custom-task budget. A combined input above the limit is rejected or abstains; it is never silently shortened. GLiClass comparison explicitly rejects questions with examples instead of ignoring them.
+
+Keep demonstrations separate from data used to measure performance. Dataset import, training and frozen comparison reject a dataset text that repeats an example after whitespace normalization, including older snapshots checked at comparison time. This catches exact normalized text, not paraphrases or related sources; review those and keep their source groups together. Try the changed rubric against held-out examples before adopting it: [the recorded bilingual experiment](verification.md#bilingual-diagnostics-and-guiding-examples--27-september-2026) found no overall improvement from two examples and one email-case regression.
+
+## Compare the pinned Decide challenger
+
+Decide is an experimental local checkpoint option. It is **not the hosted default**, a training-base replacement or a promotion recommendation. Provision explicitly into a new empty directory in an online process, then compare in a separate offline process:
+
+```sh
+rateloop-evaluator provision --checkpoint decide --model-dir /private/models/gliner25-decide
+rateloop-evaluator diagnose --model-dir /private/models/gliner25-decide --device cpu \
+  --output /private/reports/decide-diagnostics.json
+```
+
+This pins `fastino/GLiNER2.5-multi-Decide` to `6bc1d43d201b0691e733626389af8c57eea3ea68`, verifies its Apache-2.0 declaration and records every artifact hash. The default `provision` and hosted provisioning continue to use the existing public base. Run the base and challenger sequentially in separate processes, avoiding simultaneous resident checkpoints. Diagnostics do not import training data, create permission grants, register a bundle, activate a model or create a paid service.
+
+The current custom hosted capability and private-training recipe still require the reviewed public base. Any future supported replacement needs a distinct model identity, fresh task-specific calibration and hosted memory/latency acceptance. The [measured challenger](verification.md#bilingual-diagnostics-and-guiding-examples--27-september-2026) performed worse on the small authored suite; keep the existing model. Local Mac memory and timing measurements do not establish compliance with the hosted 2.5 GB cap or its monthly budget.
+
 ## Outbound website worker
 
 The Alpha website accepts its explicitly configured RateLoop-operated worker. That worker can run on an always-on Linux CPU service or a connected Mac. Standalone customer-local operation is supported; website admission remains controlled by the deployed application.
