@@ -26,6 +26,36 @@ def _interval(successes: int, count: int) -> dict | None:
             'confidence': .95, 'method': 'wilson', 'sample_count': count}
 
 
+def label_metrics(confusion: dict[str, dict[str, int]], expected_counts: dict[str, int]) -> dict:
+    """Per-label recall includes abstentions; missing classes never imply quality.
+
+    Keep the expected counts separately from confusion because a tie has no
+    predicted label. Balanced agreement is defined only when every label occurs.
+    These are descriptive metrics over declared reference labels, not confidence.
+    """
+    labels = set(expected_counts)
+    if not labels or set(confusion) != labels:
+        raise ValueError('Metrics require the exact declared label set')
+    for label, row in confusion.items():
+        if (set(row) != labels or type(expected_counts[label]) is not int or expected_counts[label] < 0
+                or any(type(count) is not int or count < 0 for count in row.values())
+                or sum(row.values()) > expected_counts[label]):
+            raise ValueError('Invalid label counts')
+    per_label = {}
+    for label, support in expected_counts.items():
+        correct = confusion[label][label]
+        predicted = sum(row[label] for row in confusion.values())
+        per_label[label] = {'support': support, 'correct': correct, 'predicted': predicted,
+            'abstentions': support-sum(confusion[label].values()),
+            'recall': correct/support if support else None,
+            'precision': correct/predicted if predicted else None}
+    recalls = [row['recall'] for row in per_label.values()]
+    return {'per_label': per_label,
+        'balanced_agreement': sum(recalls)/len(recalls) if all(value is not None for value in recalls) else None,
+        'majority_label_agreement': max(expected_counts.values())/sum(expected_counts.values())
+            if sum(expected_counts.values()) else None}
+
+
 @serialized_training
 def compare_snapshot(store: LearningStore, snapshot_id: str, workspace_id: str,
                      models: dict[str, Any], *, now: float | None = None) -> dict:
@@ -55,6 +85,7 @@ def compare_snapshot(store: LearningStore, snapshot_id: str, workspace_id: str,
     for model_id, backend in models.items():
         question_stats = {q['id']: {'labels': [label['id'] for label in q['labels']],
             'correct': 0, 'count': 0, 'abstentions': 0, 'false_approvals': 0, 'false_rejections': 0,
+            'expected_label_counts': {label['id']: 0 for label in q['labels']},
             'confusion': {label['id']: {predicted['id']: 0 for predicted in q['labels']} for label in q['labels']}}
             for q in rows[0]['template']['questions']}
         exact_agreements, durations = 0, []
@@ -87,6 +118,7 @@ def compare_snapshot(store: LearningStore, snapshot_id: str, workspace_id: str,
                 winners = [key for key, value in distribution.items() if value == top]
                 expected = row['labels'][qid]
                 stats['count'] += 1
+                stats['expected_label_counts'][expected] += 1
                 if len(winners) != 1:
                     stats['abstentions'] += 1
                     all_correct = False
@@ -107,6 +139,7 @@ def compare_snapshot(store: LearningStore, snapshot_id: str, workspace_id: str,
             'trained': bool(manifest.get('training')),
             'agreement': _interval(exact_agreements, len(rows)),
             'criteria': {qid: {**stats, 'agreement': _interval(stats['correct'], stats['count']),
+                              **label_metrics(stats['confusion'], stats['expected_label_counts']),
                               'label_coverage': (stats['count']-stats['abstentions'])/stats['count']}
                          for qid, stats in question_stats.items()},
             'mean_prediction_ms': sum(durations)/len(durations)}

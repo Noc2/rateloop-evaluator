@@ -1,7 +1,7 @@
 from copy import deepcopy
 import pytest
 
-from rateloop_evaluator.comparison import compare_snapshot
+from rateloop_evaluator.comparison import compare_snapshot, label_metrics
 from test_datasets import store, authorize, upload
 
 
@@ -82,3 +82,30 @@ def test_tied_scores_are_abstentions_not_forced_decisions(store):
     assert criterion['abstentions'] == criterion['count']
     assert criterion['label_coverage'] == 0
     assert criterion['false_approvals'] == criterion['false_rejections'] == 0
+    assert sum(criterion['expected_label_counts'].values()) == criterion['count']
+    assert sum(label['abstentions'] for label in criterion['per_label'].values()) == criterion['count']
+    assert all(label['recall'] in (0, None) for label in criterion['per_label'].values())
+
+
+def test_majority_only_predictions_do_not_hide_minority_failure():
+    result = label_metrics({'yes': {'yes': 90, 'no': 0}, 'no': {'yes': 10, 'no': 0}}, {'yes': 90, 'no': 10})
+    assert result['majority_label_agreement'] == .9
+    assert result['balanced_agreement'] == .5
+    assert result['per_label']['no'] == {'support': 10, 'correct': 0, 'predicted': 0,
+        'abstentions': 0, 'recall': 0, 'precision': None}
+
+
+def test_missing_label_and_abstentions_are_visible_in_metrics():
+    result = label_metrics({'yes': {'yes': 2, 'no': 0}, 'no': {'yes': 0, 'no': 0}}, {'yes': 4, 'no': 0})
+    assert result['balanced_agreement'] is None
+    assert result['per_label']['no']['recall'] is None
+    assert result['per_label']['yes']['recall'] == .5
+    assert result['per_label']['yes']['abstentions'] == 2
+
+
+@pytest.mark.parametrize('confusion,counts', [({}, {}), ({'yes': {'yes': 2}}, {'yes': 1}),
+    ({'yes': {'yes': True}}, {'yes': 1}), ({'yes': {'yes': 1}}, {'no': 1}),
+    ({'yes': {'no': 0}}, {'yes': 1})])
+def test_invalid_metric_counts_are_rejected(confusion, counts):
+    with pytest.raises(ValueError):
+        label_metrics(confusion, counts)
