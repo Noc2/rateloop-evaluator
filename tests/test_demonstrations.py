@@ -81,6 +81,7 @@ def test_normalized_demonstrations_bind_all_consumers_and_template_identity(sche
     [{"text": "x" * 401, "labelId": "approved"}] * 4,
     [{"text": "Bad\u202etext", "labelId": "approved"}],
     [{"text": "Bad\x00text", "labelId": "approved"}],
+    [{"text": "Bad\x7ftext", "labelId": "approved"}],
     [{"text": "Bad\ud800text", "labelId": "approved"}],
     [{"text": 123, "labelId": "approved"}],
     None,

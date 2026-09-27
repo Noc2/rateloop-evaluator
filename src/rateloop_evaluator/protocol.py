@@ -34,7 +34,7 @@ class Demonstration(WireModel):
             raise ValueError("Demonstration text must be a string")
         # ECMAScript trim and UTF-16 lengths match the portable website contract.
         value = value.strip("\u0009\u000a\u000b\u000c\u000d\u0020\u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000\ufeff")
-        if re.search(r"[\x00-\x08\x0b\x0c\x0e-\x1f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069\ud800-\udfff]", value):
+        if re.search(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069\ud800-\udfff]", value):
             raise ValueError("Demonstrations must contain valid visible text")
         if not 1 <= len(value.encode("utf-16-le")) // 2 <= 600:
             raise ValueError("Demonstration text must contain 1–600 UTF-16 units")
