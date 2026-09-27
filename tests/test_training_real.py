@@ -38,6 +38,10 @@ def test_real_train_optimizer_save_reload_and_revocation(tmp_path, monkeypatch, 
                 "questions": [{"id": "tone", "text": "Is the customer reply polite?", "labels": [
                     {"id": "yes", "description": "Polite and courteous"},
                     {"id": "no", "description": "Rude or hostile"}], "passLabels": ["yes"]}]}
+    if method == "lora":
+        template["questions"][0]["examples"] = [
+            {"text": "We are happy to explain the available options.", "labelId": "yes"},
+            {"text": "Your question is ridiculous.", "labelId": "no"}]
     fixtures = [("Thank you for contacting support. We will help.", "yes"),
                 ("We appreciate your patience and will investigate.", "yes"),
                 ("Please send your order number so we can assist.", "yes"),
