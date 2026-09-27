@@ -124,6 +124,24 @@ def test_changed_deployment_cannot_replay_cached_result(setup):
     assert backend.calls == 1
 
 
+def test_added_demonstrations_do_not_reuse_old_calibration(setup):
+    _, body, store, runtime, backend, _ = setup
+    original = EvaluationRequest.model_validate(body)
+    q = body["template"]["questions"][0]
+    q["examples"] = [{"text": "A courteous response.", "labelId": q["labels"][0]["id"]}]
+    changed = EvaluationRequest.model_validate(body)
+    assert changed.template_commitment() != original.template_commitment()
+    bundle = {"id": changed.modelBundleId, "languages": ["en"], "max_tokens": 512,
+        "template_commitments": [original.template_commitment(), changed.template_commitment()],
+        "calibrations": [{"question_id": q["id"], "template_commitment": original.template_commitment(), "language": "en"}]}
+    client = TestClient(create_app(backend=backend, bundle=bundle, learning=store, runtime=runtime,
+        tokens={hashlib.sha256(TOKEN.encode()).hexdigest(): Principal(changed.workspaceId, frozenset({"evaluate"}))}))
+    client.headers["Authorization"] = "Bearer " + TOKEN
+    result = client.post("/v1/evaluate", json=changed.model_dump()).json()
+    assert result["abstainReason"] == "uncalibrated"
+    assert all(row["probabilities"] is None and row["calibrationId"] is None for row in result["criteria"])
+
+
 def test_case_erasure_clears_runtime_and_prevents_inflight_reinsertion(setup):
     client,body,store,runtime,_,_ = setup
     result = client.post("/v1/evaluate",json=body).json()

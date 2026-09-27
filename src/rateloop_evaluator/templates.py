@@ -18,7 +18,8 @@ def overall_approval(language: str = "en") -> Template:
             {"id":"rejected","description":negative}],"passLabels":["approved"]}]})
 
 
-def custom_text_evaluation(language: str, prompt: str, positive_label: str, negative_label: str) -> Template:
+def custom_text_evaluation(language: str, prompt: str, positive_label: str, negative_label: str,
+                           examples: list[dict] | None = None) -> Template:
     """One user-defined text judgment; instructions are not training data."""
     values = (prompt, positive_label, negative_label)
     if any(not isinstance(value, str) for value in values):
@@ -36,7 +37,7 @@ def custom_text_evaluation(language: str, prompt: str, positive_label: str, nega
     return Template.model_validate({"id": "custom-text-evaluation", "version": 1, "language": language, "maxTokens": 512,
         "questions": [{"id": "judgment", "text": prompt, "labels": [
             {"id": "approved", "description": positive_label}, {"id": "rejected", "description": negative_label}],
-            "passLabels": ["approved"]}]})
+            "passLabels": ["approved"], **({"examples": examples} if examples else {})}]})
 
 
 def custom_text_seed(language: str) -> Template:
@@ -54,7 +55,8 @@ def is_custom_text_template(template: Template) -> bool:
     try:
         question = template.questions[0]
         expected = custom_text_evaluation(template.language, question.text,
-                                          question.labels[0].description, question.labels[1].description)
+                                          question.labels[0].description, question.labels[1].description,
+                                          [example.model_dump() for example in question.examples])
         return template == expected
     except (ValueError, IndexError):
         return False

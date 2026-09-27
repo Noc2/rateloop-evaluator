@@ -12,6 +12,7 @@ from typing import Any
 from .backends import render_input
 from .execution import serialized_training
 from .learning import LearningStore, is_independent_reference, _digest
+from .protocol import validate_no_demonstration_overlap
 
 
 def _interval(successes: int, count: int) -> dict | None:
@@ -92,6 +93,7 @@ def compare_snapshot(store: LearningStore, snapshot_id: str, workspace_id: str,
         for row in rows:
             store.load_snapshot(snapshot_id, workspace_id, now=now)
             questions = row['template']['questions']
+            validate_no_demonstration_overlap(row['input']['text'], questions)
             text = render_input(row['input'])
             if backend.count_tokens(text, questions) > row['template']['maxTokens']:
                 raise ValueError('Comparison input exceeds the template token limit')

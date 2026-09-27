@@ -2,7 +2,7 @@
 // Portable evaluator v1 contract. Keep parity with protocol.py and golden fixtures.
 import { createHash } from "node:crypto";
 
-export type Question = { id: string; text: string; labels: { id: string; description: string }[]; passLabels: string[] };
+export type Question = { id: string; text: string; labels: { id: string; description: string }[]; passLabels: string[]; examples?: {text: string; labelId: string}[] };
 export type Template = { id: string; version: number; language: "en" | "de"; questions: Question[]; maxTokens: number };
 export type EvaluationRequest = {
   schemaVersion: "rateloop.evaluator.request.v1"; workspaceId: string; caseId: string; idempotencyKey: string;

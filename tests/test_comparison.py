@@ -109,3 +109,20 @@ def test_missing_label_and_abstentions_are_visible_in_metrics():
 def test_invalid_metric_counts_are_rejected(confusion, counts):
     with pytest.raises(ValueError):
         label_metrics(confusion, counts)
+
+
+def test_existing_snapshot_cannot_score_demonstrations_as_unseen_examples(store, monkeypatch):
+    _, snapshot = prepared(store)
+    original_load = store.load_snapshot
+    def old_snapshot(*args, **kwargs):
+        value = deepcopy(original_load(*args, **kwargs))
+        for row in value['test']:
+            row['template']['questions'][0]['examples'] = [
+                {'text': '\u00a0' + row['input']['text'].replace(' ', '\t') + '\ufeff', 'labelId': row['labels']['faithful']}]
+        return value
+    monkeypatch.setattr(store, 'load_snapshot', old_snapshot)
+    class MustNotScore(Backend):
+        def predict(self, text, questions):
+            pytest.fail('A demonstration must never contribute to held-out agreement')
+    with pytest.raises(ValueError, match='demonstration|example'):
+        compare_snapshot(store, snapshot['id'], 'workspace-a', {'base': MustNotScore()})

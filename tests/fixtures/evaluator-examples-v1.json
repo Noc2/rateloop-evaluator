@@ -1,0 +1,38 @@
+{
+  "template": {
+    "id": "custom-text-evaluation",
+    "version": 1,
+    "language": "en",
+    "maxTokens": 512,
+    "questions": [
+      {
+        "id": "judgment",
+        "text": "Does this content meet the stated requirements?",
+        "labels": [
+          {
+            "id": "approved",
+            "description": "Yes"
+          },
+          {
+            "id": "rejected",
+            "description": "No"
+          }
+        ],
+        "passLabels": [
+          "approved"
+        ],
+        "examples": [
+          {
+            "text": "The event budget is €2,000.",
+            "labelId": "approved"
+          },
+          {
+            "text": "There are 24 talks, but no budget is stated.",
+            "labelId": "rejected"
+          }
+        ]
+      }
+    ]
+  },
+  "templateCommitment": "sha256:3647abb556e0a4938e06a74206a76adc54bee3867504d190b1a8fd7ec5ae2c56"
+}

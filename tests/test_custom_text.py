@@ -29,13 +29,15 @@ def register_custom(state, model_dir, tmp_path, capsys, bundle="base-custom", la
 
 
 @pytest.mark.parametrize("language",["en","de"])
-def test_task_contract_is_shared_by_registration_worker_and_runtime(initialized,tmp_path,capsys,monkeypatch,language):
+@pytest.mark.parametrize("with_examples",[False,True])
+def test_task_contract_is_shared_by_registration_worker_and_runtime(initialized,tmp_path,capsys,monkeypatch,language,with_examples):
     model=model_files(tmp_path)
     seed,path=register_custom(initialized,model,tmp_path,capsys,language=language)
     root,local,store,registry=cli.state(SimpleNamespace(state_dir=initialized))
     manifest=registry.get(seed.modelBundleId,seed.workspaceId)["manifest"]
     request=seed.model_copy(deep=True)
-    request.template=custom_text_evaluation(language,"Is this summary faithful to the source?","Faithful","Not faithful")
+    examples = [{"text":"A summary only uses the supplied facts.","labelId":"approved"}] if with_examples else None
+    request.template=custom_text_evaluation(language,"Is this summary faithful to the source?","Faithful","Not faithful",examples)
     assert request.template_commitment()!=seed.template_commitment()
     assert website_binary_question(request.template).id=="judgment"
     assert bundle_supports_template(manifest,request.template)

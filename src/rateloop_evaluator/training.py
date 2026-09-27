@@ -10,9 +10,10 @@ import math
 from pathlib import Path
 from typing import Any
 from .execution import serialized_training
+from .protocol import validate_no_demonstration_overlap
 
 from .backends import (GLiNERBackend, MODEL_ID, MODEL_REVISION, offline_environment,
-                       question_schema, render_input, validate_scores, write_model_manifest, model_token_limit, file_hash, MANIFEST_NAME, validate_local_model)
+                       question_schema, question_examples, render_input, validate_scores, write_model_manifest, model_token_limit, file_hash, MANIFEST_NAME, validate_local_model)
 
 
 REVIEWED_BASE_WEIGHTS_SHA256 = "c1ff4ec0bc00031c15530b8f3c33d3677f27949e6a0cb52e1247a6224b6c5395"
@@ -63,6 +64,7 @@ def training_records(examples: list[dict[str, Any]]) -> list[dict[str, Any]]:
     records = []
     for example in examples:
         questions = example["template"]["questions"]
+        validate_no_demonstration_overlap(example["input"]["text"], questions)
         if set(example["labels"]) != {question["id"] for question in questions}:
             raise ValueError("Training example lacks a complete declared judgment")
         classifications = []
@@ -75,6 +77,7 @@ def training_records(examples: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "task": question["id"], "labels": list(labels),
                 "true_label": [label], "multi_label": False,
                 "prompt": question["text"], "label_descriptions": labels,
+                **question_examples(question),
             })
         records.append({"input": render_input(example["input"]),
                         "output": {"classifications": classifications}})

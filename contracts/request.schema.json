@@ -28,6 +28,28 @@
       "title": "CaseInput",
       "type": "object"
     },
+    "Demonstration": {
+      "additionalProperties": false,
+      "properties": {
+        "text": {
+          "maxLength": 600,
+          "minLength": 1,
+          "title": "Text",
+          "type": "string"
+        },
+        "labelId": {
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$",
+          "title": "Labelid",
+          "type": "string"
+        }
+      },
+      "required": [
+        "text",
+        "labelId"
+      ],
+      "title": "Demonstration",
+      "type": "object"
+    },
     "Label": {
       "additionalProperties": false,
       "properties": {
@@ -80,6 +102,14 @@
           },
           "maxItems": 12,
           "title": "Passlabels",
+          "type": "array"
+        },
+        "examples": {
+          "items": {
+            "$ref": "#/$defs/Demonstration"
+          },
+          "maxItems": 4,
+          "title": "Examples",
           "type": "array"
         }
       },

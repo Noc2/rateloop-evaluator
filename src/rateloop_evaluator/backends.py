@@ -141,6 +141,14 @@ def provision_model(destination: str | Path, *, revision: str = MODEL_REVISION) 
     return manifest
 
 
+def question_examples(question: dict[str, Any]) -> dict[str, Any]:
+    """The same validated upstream demonstration pairs for inference and training."""
+    from .protocol import Question
+    validated = Question.model_validate(question)
+    return ({"examples": [[example.text, example.labelId] for example in validated.examples]}
+            if validated.examples else {})
+
+
 def question_schema(questions: list[dict[str, Any]]) -> Any:
     from gliner2 import Schema
     schema = Schema()
@@ -156,7 +164,8 @@ def question_schema(questions: list[dict[str, Any]]) -> Any:
         # multi_label requests every score from upstream's decoder. Explicit
         # softmax preserves mutually-exclusive semantics and the training loss.
         schema.classification(qid, labels, prompt=question["text"],
-                              multi_label=True, class_act="softmax", cls_threshold=0.0)
+                              multi_label=True, class_act="softmax", cls_threshold=0.0,
+                              **question_examples(question))
     return schema
 
 
@@ -347,6 +356,8 @@ class GLiClassBackend:
         pipe = self.pipeline.pipe
         counts = []
         for question in questions:
+            if question.get("examples"):
+                raise ValueError("GLiClass comparison does not support rubric demonstrations")
             encoded = pipe.prepare_input(text, self._labels(question), prompt=question["text"])
             counts.append(len(pipe.tokenizer(encoded, truncation=False)["input_ids"]))
         return counts
