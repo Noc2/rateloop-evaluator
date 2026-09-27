@@ -11,6 +11,8 @@ from typing import Any
 
 MODEL_ID = "fastino/gliner2.5-multi-v1"
 MODEL_REVISION = "235cf92d6d4318da9bfca0d08975c8fa7250d13b"
+DECIDE_MODEL_ID = "fastino/GLiNER2.5-multi-Decide"
+DECIDE_MODEL_REVISION = "6bc1d43d201b0691e733626389af8c57eea3ea68"
 MODEL_FILES = (
     "config.json", "encoder_config/config.json", "model.safetensors",
     "tokenizer.json", "tokenizer_config.json", "README.md",
@@ -115,14 +117,22 @@ def verify_checkpoint_license(directory: Path) -> None:
         raise ValueError("Checkpoint license differs from the reviewed Apache-2.0 release")
 
 
-def provision_model(destination: str | Path, *, revision: str = MODEL_REVISION) -> dict[str, Any]:
+def provision_model(destination: str | Path, *, revision: str | None = None,
+                    checkpoint: str = "base") -> dict[str, Any]:
     """Download the reviewed upstream checkpoint only during this explicit step.
 
     A full commit SHA is required; floating branches/tags are rejected. This
     function must run in a separate CLI process before offline workers start.
     """
+    reviewed = {"base": (MODEL_ID, MODEL_REVISION), "decide": (DECIDE_MODEL_ID, DECIDE_MODEL_REVISION)}
+    if checkpoint not in reviewed:
+        raise ValueError("Checkpoint must be base or decide")
+    repository, pinned_revision = reviewed[checkpoint]
+    revision = revision or pinned_revision
     if not re.fullmatch(r"[a-f0-9]{40}", revision):
         raise ValueError("Provisioning requires a full upstream commit SHA")
+    if checkpoint == "decide" and revision != pinned_revision:
+        raise ValueError("Decide comparison requires the reviewed pinned revision")
     destination = Path(destination).expanduser().resolve()
     if destination.exists() and any(destination.iterdir()):
         raise ValueError("Provisioning destination must be empty")
@@ -130,11 +140,11 @@ def provision_model(destination: str | Path, *, revision: str = MODEL_REVISION) 
         raise RuntimeError("Provision in a separate online process, then start offline workers")
     from huggingface_hub import snapshot_download
     destination.mkdir(parents=True, exist_ok=True, mode=0o700)
-    snapshot_download(MODEL_ID, revision=revision, local_dir=str(destination),
+    snapshot_download(repository, revision=revision, local_dir=str(destination),
                       allow_patterns=list(MODEL_FILES), token=False)
     verify_checkpoint_license(destination)
     manifest = write_model_manifest(destination, source={
-        "repository": MODEL_ID, "revision": revision, "license": "Apache-2.0",
+        "repository": repository, "revision": revision, "license": "Apache-2.0",
         "library": "gliner2==2.0.0",
     })
     validate_local_model(destination)

@@ -1,6 +1,8 @@
 import json
 import os
 from pathlib import Path
+import sys
+from types import SimpleNamespace
 
 import pytest
 
@@ -53,6 +55,31 @@ def test_loading_rejects_remote_code(tmp_path):
 def test_provisioning_rejects_floating_revision_before_network(tmp_path):
     with pytest.raises(ValueError, match="commit SHA"):
         provision_model(tmp_path, revision="main")
+
+
+def test_decide_requires_explicit_selection_and_preserves_separate_pinned_identity(tmp_path, monkeypatch):
+    from rateloop_evaluator.backends import MODEL_ID, DECIDE_MODEL_ID, DECIDE_MODEL_REVISION
+    calls = []
+    def download(repository, *, revision, local_dir, allow_patterns, token):
+        calls.append((repository, revision, token))
+        root = Path(local_dir)
+        for relative in MODEL_FILES:
+            path = root / relative; path.parent.mkdir(exist_ok=True)
+            path.write_text("---\nlicense: apache-2.0\n---\n" if relative == "README.md" else
+                json.dumps({"architecture": "boundary"}) if relative.endswith(".json") else "weights")
+    monkeypatch.setitem(sys.modules, "huggingface_hub", SimpleNamespace(snapshot_download=download))
+    monkeypatch.delenv("HF_HUB_OFFLINE", raising=False)
+    base = provision_model(tmp_path / "base")
+    candidate = provision_model(tmp_path / "decide", checkpoint="decide")
+    assert calls == [(MODEL_ID, MODEL_REVISION, False), (DECIDE_MODEL_ID, DECIDE_MODEL_REVISION, False)]
+    assert base["source"]["repository"] != candidate["source"]["repository"]
+    from rateloop_evaluator.training import assert_public_training_base
+    with pytest.raises(PermissionError, match="reviewed public"):
+        assert_public_training_base(candidate)
+    with pytest.raises(ValueError, match="reviewed pinned revision"):
+        provision_model(tmp_path / "wrong-revision", checkpoint="decide", revision="0" * 40)
+    with pytest.raises(ValueError, match="base or decide"):
+        provision_model(tmp_path / "unknown", checkpoint="unknown")
 
 
 @pytest.mark.parametrize("rows", [
