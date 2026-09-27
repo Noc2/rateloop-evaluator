@@ -15,7 +15,7 @@ from typing import Any, Literal
 from pydantic import TypeAdapter
 
 from .learning import LearningStore, _digest, _json
-from .protocol import CaseInput, Identifier, Template, commitment
+from .protocol import CaseInput, Identifier, Template, commitment, validate_no_demonstration_overlap
 
 MAX_BYTES = 2 * 1024 * 1024
 MAX_ROWS = 2_000
@@ -106,6 +106,7 @@ def preview_dataset(*, template: Template | dict, content: bytes | str,
             payload = CaseInput.model_validate({key: source.get(mapping[key], '') for key in ('text', 'context', 'evidence') if key in mapping})
             if not payload.text.strip():
                 raise ValueError('Material to evaluate cannot be blank')
+            validate_no_demonstration_overlap(payload.text, [question.model_dump() for question in template.questions])
             labels = {qid: source[column] for qid, column in mapping['labels'].items()}
             if any(not isinstance(label, str) or label not in counts[qid] for qid, label in labels.items()):
                 raise ValueError('Labels must exactly match the supplied template')

@@ -42,6 +42,7 @@ def main(argv=None):
     init = commands.add_parser("init"); init.add_argument("--workspace",required=True)
     reviewer = commands.add_parser("issue-reviewer-token"); reviewer.add_argument("--reviewer-id",required=True); reviewer.add_argument("--output",required=True)
     provision = commands.add_parser("provision"); provision.add_argument("--model-dir",required=True); provision.add_argument("--revision"); provision.add_argument("--backend",choices=["gliner","gliclass"],default="gliner")
+    provision.add_argument("--checkpoint",choices=["base","decide"],default="base",help="Pinned GLiNER base or experimental Decide challenger")
     grant = commands.add_parser("grant"); grant.add_argument("--right",action="append",required=True,choices=["ai_use","private_training","shared_contribution","public_weight_distribution"])
     grant.add_argument("--field",action="append",choices=["input.text","input.context","input.evidence","human_labels","imported_labels"],help="Explicit fields, including imported_labels for user datasets")
     grant.add_argument("--template",action="append",required=True); grant.add_argument("--hours",type=float,default=24); grant.add_argument("--evidence",required=True)
@@ -71,6 +72,19 @@ def main(argv=None):
             dataset.add_argument("--provenance",required=True,choices=["owner","ai_assisted","synthetic"])
             dataset.add_argument("--evidence",required=True,help="Owner authorization evidence for these examples")
             dataset.add_argument("--model-bundle-id",help="Required when the training grant is scoped to a model")
+    public=commands.add_parser("prepare-public-dataset",help="Convert an explicitly obtained, pinned local JSONL sample")
+    public.add_argument("--dataset",required=True,choices=["helpsteer2","helpsteer3-principle","openpii1m"])
+    public.add_argument("--file",required=True); public.add_argument("--revision",required=True)
+    public.add_argument("--source-sha256",required=True); public.add_argument("--source-split",required=True,choices=["train"])
+    public.add_argument("--language",required=True,choices=["en","de"]); public.add_argument("--output-dir",required=True)
+    public.add_argument("--max-rows",type=int,default=2000)
+    public.add_argument("--score",choices=["helpfulness","correctness","coherence"])
+    public.add_argument("--positive-min",type=int); public.add_argument("--negative-max",type=int)
+    public.add_argument("--principle",help="One exact source principle, never a mixture")
+    public.add_argument("--entity",help="One OpenPII1M annotation type, for example EMAIL")
+    diagnose=commands.add_parser("diagnose",help="Run the synthetic EN/DE regression suite on one local model")
+    diagnose.add_argument("--model-dir",required=True); diagnose.add_argument("--device",choices=["cpu","mps","cuda"],default="cpu")
+    diagnose.add_argument("--output",required=True)
     compare=commands.add_parser("compare")
     compare.add_argument("--snapshot-id",required=True)
     compare.add_argument("--model",action="append",required=True,help="NAME=/absolute/local/model/path (one to three)")
@@ -134,8 +148,23 @@ def run(args):
     if args.command == "provision":
         from .backends import MODEL_REVISION, GLICLASS_MODEL_REVISION, provision_model, provision_gliclass_model
         if args.backend == "gliclass":
+            if args.checkpoint != "base": raise ValueError("Decide is a GLiNER checkpoint")
             return provision_gliclass_model(args.model_dir,revision=args.revision or GLICLASS_MODEL_REVISION)
-        return provision_model(args.model_dir,revision=args.revision or MODEL_REVISION)
+        return provision_model(args.model_dir,revision=args.revision,checkpoint=args.checkpoint)
+    if args.command == "prepare-public-dataset":
+        from .public_datasets import prepare_public_dataset, write_prepared
+        prepared=prepare_public_dataset(file=args.file,dataset=args.dataset,revision=args.revision,
+            source_sha256=args.source_sha256,source_split=args.source_split,language=args.language,
+            max_rows=args.max_rows,score=args.score,positive_min=args.positive_min,negative_max=args.negative_max,
+            principle=args.principle,entity=args.entity)
+        return write_prepared(args.output_dir,prepared)
+    if args.command == "diagnose":
+        from .backends import GLiNERBackend
+        from .diagnostics import run_diagnostics
+        report=run_diagnostics(GLiNERBackend(args.model_dir,args.device))
+        write_private(args.output,report)
+        return {"report":str(Path(args.output).resolve()),"caseCount":report["case_count"],
+                "qualityClaim":False,"activationChanged":False}
     if args.command == "benchmark":
         from .backends import GLiNERBackend, GLiClassBackend
         from .benchmark import benchmark_backend
