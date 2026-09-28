@@ -11,6 +11,7 @@ from contextlib import contextmanager
 from copy import deepcopy
 import hashlib
 import json
+import math
 from pathlib import Path
 import threading
 import time
@@ -351,11 +352,26 @@ class TrainingWorker:
             options=training_options(content.get("recipe"),self.device)
             directory=self.root/"training-candidates"/job["jobId"]
             artifact=directory/"model"
+            verified=False
             if artifact.joinpath(MANIFEST_NAME).is_file():
                 model=validate_local_model(artifact)
-                if (model.get("training",{}).get("bundleId"),model.get("training",{}).get("snapshotId"))!=(candidate_id,snapshot["id"]):
+                training=model.get("training",{})
+                if (training.get("bundleId"),training.get("snapshotId"),training.get("workspaceId"))!=(
+                        candidate_id,snapshot["id"],self.connector.workspace_id):
                     raise ValueError("Saved training artifact identity mismatch")
-            else:
+                reload_error=training.get("reloadMaxAbsoluteError")
+                verified=type(reload_error) in (int,float) and math.isfinite(reload_error) and 0<=reload_error<=1e-4
+                if verified:
+                    try: self.connector.learning.assert_model_usable(candidate_id,self.connector.workspace_id)
+                    except KeyError:
+                        # The verified manifest is durable before lineage is
+                        # finalized. Recheck live snapshot rights to finish it.
+                        self.connector.learning.register_model_lineage(candidate_id,snapshot["id"],self.connector.workspace_id)
+                else:
+                    with self.connector.learning.transaction() as database:
+                        if candidate_id in database["lineage"]:
+                            raise PermissionError("Unverified artifact already has immutable lineage")
+            if not verified:
                 if directory.exists() and any(directory.iterdir()):
                     if directory.is_symlink() or not directory.is_dir() or directory.resolve()!=directory:
                         raise PermissionError("Unsafe interrupted training output")

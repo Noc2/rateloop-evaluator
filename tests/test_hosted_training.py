@@ -189,3 +189,19 @@ def test_exhausted_budget_still_acknowledges_already_computed_result(runner):
     assert original._saved() is None
     assert 'child_start' not in events
     assert behavior['train_calls']==1
+
+
+def test_resource_failure_reconciles_child_acknowledged_activation_before_switch(runner,monkeypatch):
+    original,behavior,_,job,template,store,registry,changed,calls=runner
+    assert original.run_once()['state']=='training_completed'
+    next_job(behavior,job,'activate')
+    apply=original._apply_switch
+    monkeypatch.setattr(original,'_apply_switch',lambda *_:(_ for _ in ()).throw(RuntimeError('Synthetic late child kill')))
+    with pytest.raises(ConnectorUnavailable): original.run_once()
+    saved=original._saved()
+    assert saved['serverAcknowledged'] is True
+    worker,events,_=isolated(runner)
+    assert worker._resource_failure({**job,'action':'activate'},'training_resource_limit')['state']=='training_completed'
+    assert worker._saved() is None
+    assert registry.active('workspace-test',job['templateCommitment'],'en')['bundle_id']=='candidate'
+    assert not behavior['failed'] and changed[-1]==['base','candidate']

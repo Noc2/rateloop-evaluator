@@ -101,7 +101,7 @@ def runner(initialized,tmp_path,capsys,monkeypatch):
         shutil.copytree(source,destination)
         destination.joinpath("model.safetensors").write_bytes(b"Changed synthetic optimizer weights")
         source_manifest=validate_local_model(source)
-        metadata={"bundleId":bundle_id,"workspaceId":workspace,"snapshotId":snapshot_id,
+        metadata={"bundleId":bundle_id,"workspaceId":workspace,"snapshotId":snapshot_id,"reloadMaxAbsoluteError":0.0,
             "trainingGroupIds":[r["group_id"] for r in snapshot["train"]],"trainingExampleIds":[r["evaluation_id"] for r in snapshot["train"]]}
         source_metadata={**source_manifest["source"],"baseWeightsSha256":source_manifest["files"]["model.safetensors"]}
         write_model_manifest(destination,source=source_metadata,training=metadata)
@@ -393,3 +393,27 @@ def test_interrupted_unsigned_checkpoint_retries_same_job_without_overwriting_ar
     candidate=registry.get('candidate','workspace-test')
     assert candidate['artifact_root']==str(worker.root/'training-candidates'/job['jobId']/'model')
     assert candidate['manifest']['snapshot_id']==behavior['completed'][0]['snapshotId']
+
+
+@pytest.mark.parametrize('reload_verified',[False,True])
+def test_restart_distinguishes_initial_manifest_from_reload_verified_finalization(runner,monkeypatch,reload_verified):
+    worker,behavior,_,job,template,store,registry,*_=runner
+    train=training_worker.train_snapshot
+    interrupted=[False]
+    def partial(*args,**kwargs):
+        report=train(*args,**kwargs)
+        if not interrupted[0]:
+            interrupted[0]=True
+            # Recreate the exact boundaries before durable lineage exists.
+            with store.transaction() as database: database['lineage'].pop('candidate')
+            if not reload_verified:
+                model=validate_local_model(report['modelDir'])
+                model['training'].pop('reloadMaxAbsoluteError')
+                write_model_manifest(report['modelDir'],source=model['source'],training=model['training'])
+            raise ConnectorUnavailable('Synthetic process interruption before finalization')
+        return report
+    monkeypatch.setattr(training_worker,'train_snapshot',partial)
+    with pytest.raises(ConnectorUnavailable): worker.run_once()
+    assert worker.run_once()['state']=='training_completed'
+    assert behavior['train_calls']==(1 if reload_verified else 2)
+    assert registry.get('candidate','workspace-test')['manifest']['snapshot_id']==behavior['completed'][0]['snapshotId']

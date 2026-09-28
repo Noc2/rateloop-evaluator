@@ -12,8 +12,8 @@ from pathlib import Path
 from typing import Any
 from .execution import serialized_training
 from .protocol import validate_no_demonstration_overlap
-from .quality import (balanced_optimizer_examples, group_representatives, score_predictions,
-                      validation_improved, validation_partition)
+from .quality import (balanced_optimizer_examples, freeze_validation_partition, group_representatives, score_predictions,
+                      validation_improved)
 
 from .backends import (GLiNERBackend, MODEL_ID, MODEL_REVISION, offline_environment,
                        question_schema, question_examples, render_input, validate_scores, write_model_manifest, model_token_limit, file_hash, MANIFEST_NAME, validate_local_model, artifact_inventory, tokenizer_commitment)
@@ -67,7 +67,7 @@ class TrainOptions:
         if not math.isfinite(self.learning_rate) or not 0 < self.learning_rate < 1:
             raise ValueError("Invalid learning rate")
         if self.validation_fraction:
-            if (self.method != "lora" or not .1 <= self.validation_fraction <= .3
+            if (self.method != "lora" or self.validation_fraction != .2
                     or not 1 <= self.max_steps <= 2000
                     or not 1 <= self.validation_interval <= self.max_steps
                     or not 1 <= self.early_stopping_patience <= 10
@@ -285,8 +285,8 @@ def train_snapshot(store: Any, snapshot_id: str, workspace_id: str,
     validation_examples = []
     examples = snapshot["train"]
     if options.validation_fraction:
-        examples, validation_examples = validation_partition(snapshot,
-            fraction=options.validation_fraction, minimum_per_label=options.min_validation_per_label)
+        examples, validation_examples = freeze_validation_partition(store, snapshot,
+            minimum_per_label=options.min_validation_per_label)
         examples = group_representatives(examples)
     optimizer_examples = balanced_optimizer_examples(examples) if validation_examples else examples
     records = training_records(optimizer_examples)

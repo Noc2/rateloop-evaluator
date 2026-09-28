@@ -108,6 +108,10 @@ class IsolatedHostedTrainingWorker(TrainingWorker):
 
     def _resource_failure(self, job, code):
         saved=self._saved() or job
+        if "result" in saved:
+            # A child may persist completion while the parent is observing its
+            # exit. Preserve the receipt/switch intent even after a late kill.
+            return super().execute_pending(saved)
         saved["failureCode"]=code
         self._save(saved)
         return self._fail(saved)
