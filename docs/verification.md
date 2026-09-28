@@ -485,8 +485,8 @@ The helpfulness run stopped at 125 updates; correctness stopped at 150. Neither
 produced a checkpoint with greater validation balanced agreement and no per-class
 recall regression against the baseline. Both returned `ValidationQualityError`
 and wrote a content-free selection report. No model artifact or model lineage was
-published, and candidate final-test scoring was skipped. This is the intended
-rejection path, not a training-infrastructure failure or evidence of improvement.
+published, and candidate final-test scoring was skipped. This demonstrates
+rejection of those actual candidates, not evidence of effective training.
 The new final cohort remains unused for selecting a later candidate.
 
 Separate temperature fits on the 40 calibration groups improved the base's score
@@ -618,3 +618,36 @@ opaque-code and public-data training attempts used the affected preprocessing;
 their failures remain recorded but cannot isolate intrinsic model limits from
 that defect. The separate hosted budget test also uses a different namespace's
 frozen split, so local results do not substitute for its deployment verification.
+
+### Post-correction public regression attempts
+
+One fixed-code attempt per HelpSteer2 criterion used implementation `7bc6dd4`
+(the correctness run's checkout was documentation-only successor `051a802`).
+Both reused their existing encrypted snapshots, persisted validation roles and
+unchanged strict recipe: rank-8 LoRA, FP32, seed 42, batch size 2, learning rate
+`1e-4`, cap 200, interval 25 and patience 3. Before training, reconstructed
+development and reserved final cohorts were required to match the historical
+commitments byte for byte. The pinned base's exact file inventory also matched;
+its prior final scores were reused without fitting or selecting against them.
+The two attempts were prescribed before inspecting their outcomes.
+
+| Validation criterion | Base balanced agreement | Highest observed balanced agreement | False approvals at that checkpoint, base → trained | False rejections, base → trained | Result |
+| --- | ---: | ---: | ---: | ---: | --- |
+| Helpfulness / 63 groups | 46.57% | 47.30% at step 50 | 10 → 11 | 12 → 7 | Rejected at step 125 |
+| Correctness / 65 groups | 46.36% | 54.09% at step 75 | 8 → 5 | 15 → 23 | Rejected at step 150 |
+
+The helpfulness checkpoint decreased negative-label recall from 2/12 to 1/12.
+The correctness checkpoint increased negative-label recall from 2/10 to 5/10
+but decreased positive-label recall from 40/55 to 32/55. Neither satisfies the
+unchanged no-class-regression gate. Neither attempt published an artifact or
+scored a candidate on the reserved 200-group final cohort. Full content-free
+selection histories remain outside Git at
+`/private/tmp/rateloop-public-helpfulness-schema-fixed-20260928/report.json` and
+`/private/tmp/rateloop-public-correctness-schema-fixed-20260928/report.json`.
+
+These results show that fixing label corruption is necessary but insufficient
+for this bounded recipe to improve these broad public rubrics. They do not
+justify replacing the base evaluator, loosening the gate, claiming general
+accuracy improvement or concluding that further task-specific learning cannot
+work. New quality work needs independently chosen representative tasks and
+evaluation evidence, rather than repeated tuning of these observed holdouts.
