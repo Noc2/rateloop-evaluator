@@ -230,7 +230,7 @@ Twelve synthetic, explicitly labeled source groups were imported under **private
 `input.text`, `input.evidence` and `imported_labels` scopes. No inference, shared-contribution or public-weight right
 was inferred from import. The immutable snapshot contained eight train, one calibration and three final-test groups.
 
-The baseline was compared before training. A single real LoRA optimizer step used FP32/MPS, one epoch, batch size 1,
+The baseline was compared before training. A single real LoRA optimizer step used FP32/MPS, `epochs=1`, `max_steps=1`, batch size 1,
 learning rate `1e-5`, rank 8 and seed 42. The training command took 9.73 seconds including checkpoint saving/reload;
 trainable parameters changed, and the merged checkpoint's prediction reload difference was **0.0** (required maximum
 `1e-4`). The manifest retained the imported dataset version and `synthetic: 8` training-label provenance. No test or
@@ -355,7 +355,7 @@ source-group review. GLiClass fails explicitly on examples instead of dropping t
 A real CPU test counted and evaluated examples with network connections blocked, preserving
 the complete two-label softmax vector. The opted-in LoRA test in `8512b19` then used six
 authored synthetic text fixtures and two separate guiding examples on native MPS, rank 8,
-one epoch, one optimizer step, batch size 1, learning rate `1e-5`, seed 42 and FP32.
+`epochs=1`, `max_steps=1`, one optimizer step, batch size 1, learning rate `1e-5`, seed 42 and FP32.
 It passed in **21.13 seconds**, including optimizer execution, sampled parameter change,
 merged checkpoint save/reload within `1e-4`, weight-bound calibration, refusal to promote
 synthetic evidence and model retirement after grant revocation. The train partition alone
@@ -406,3 +406,18 @@ quality or completion of the subsequent website rehearsal. Re-run that journey o
 the updated operator runtime and a new candidate ID; preserve the rejected signed
 candidate's immutable identity. The hosted base, score interface, service resources
 and paid infrastructure allocation are unchanged.
+
+
+The final retry guard `189201e435815554eb1dc9f425a81d93cd9342e9` also preserves a
+failure intent when the server later reclaims that operation under a new lease.
+All 468 tests passed with five optional skips in a single final run (8.06 seconds),
+including 29 training-worker tests. No neural-training code changed after the real
+MPS check above.
+
+The website recipe is bounded by at most 20 optimizer steps; the independent
+operator capability ceiling is 200. Upstream GLiNER derives the number of data
+passes from a positive `max_steps`, overriding `num_epochs`. The 20-step connected
+attempt traversed its small train partition across three passes. Historical
+one-step checks above record the requested epoch setting, not a guarantee that
+every training row was consumed exactly once. This detail does not expand the
+step budget, data permission or held-out partitions.
