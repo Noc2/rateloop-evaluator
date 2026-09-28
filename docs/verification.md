@@ -504,3 +504,55 @@ history. Their SHA256 commitments are:
 - Initial correctness: `ebbf68988aefe79465667d950e8bac60f908340f9babaa51574757b41e58c1b0`.
 - Final helpfulness rejection: `a784ddb4c789722f35eebda2bc3f609ae296c6772b0498baad067fb0d47ab808`.
 - Final correctness rejection: `b760effdb4ca8f82bf5dd7e3d49f051560354f76ba452786ed06b457f43af0e1`.
+
+## Hosted private-model CPU capacity — 28 September 2026
+
+The isolated hosted runtime and one-resident-checkpoint cache were checked with
+an existing pinned `linux/amd64` CPU image, the current evaluator source mounted
+read-only, networking disabled, one CPU, an 8 GiB memory ceiling and
+`--memory-swap 8g` (zero permitted swap). This is an emulated amd64 Docker run on
+Apple hardware, not a Railway latency SLA or a customer-quality benchmark.
+
+The sizing script used 160 authored synthetic examples, each verified at exactly
+512 tokens including the same rubric/context delimiters as live inference. Its
+explicit fixed-budget capacity recipe ran 25 LoRA optimizer steps, saved and
+reloaded the merged checkpoint, and compared the base/candidate on 24 frozen
+source groups. Training plus comparison took 294.89 seconds. Container memory
+peaked at 7,688,486,912 bytes (7.16 GiB), with no OOM events or swap. Subsequent
+candidate/base/candidate switches took 9.91, 10.08 and 9.90 seconds. Three minutes
+of idle observation showed that file cache could retain both checkpoints even
+though only one tensor model was resident: total cgroup memory stayed at about
+4.494 GB, of which 2.394 GB was file cache; working set was about 3.825 GB.
+
+An earlier preliminary 5 GiB run used approximately 1 GB of swap and therefore
+does **not** establish that 5 GiB is enough. The 8 GiB no-swap measurement is the
+capacity evidence. Neither synthetic run is an improvement claim: both models
+matched every label in the small authored capacity holdout. The production
+validation-selected recipe is separately tested and still rejects candidates
+that do not improve validation without class regression.
+
+Runtime `c086afa` adds a read-only `POSIX_FADV_DONTNEED` hint for only the known
+checkpoint file after load/unload. It does not delete files, alter model bytes,
+flush global caches, or change predictions. The first before/after experiment
+reduced cgroup memory from 4.720 GB to 2.421 GB and working set from 4.563 GB to
+2.264 GB; candidate predictions remained exactly equal after the hint. A second
+run exercised the committed automatic load/unload path through four actual
+base/private switches: total memory was already about 2.068 GB and working set
+2.036 GB before any additional manual hint; repeating the hint changed neither.
+Both runs had zero swap. The final private checkpoint was produced by the
+separate authorized synthetic budget experiment, not copied from a customer's
+private model.
+
+`scripts/measure_hosted_training.py` is the reproducible capacity harness. It
+uses explicitly synthetic provenance, private temporary storage, a local pinned
+public checkpoint, a fixed-budget training recipe, exact checkpoint switching,
+cgroup/working-set/swap counters and three minutes of post-training idle
+observation. It never authorizes a website dataset or activates a model. Public
+and private inference remain serialized; training/comparison pause inference.
+The hosted service additionally enforces a durable aggregate one-hour
+training/comparison allowance per UTC day, a per-operation ceiling and at least
+3 GiB of free disk before training; activation, rollback, permission revocation
+and already-computed result reconciliation are not blocked by that compute
+budget. The cap and measurements support a small pilot cost estimate, not an
+unlimited-throughput or fixed-price promise; Railway's live measurements and
+retained volume usage must be checked after deployment.
