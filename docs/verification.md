@@ -363,3 +363,46 @@ entered the optimizer. Socket connections remained blocked throughout. The initi
 attempt correctly reported MPS unavailable; the explicit local GPU run succeeded outside
 that sandbox. This establishes demonstration-aware lifecycle mechanics, not beneficial
 learning, independent human evidence or a connected website training run.
+
+
+## Connected-training export regression — 28 September 2026
+
+The authorized website rehearsal against runtime
+`e9a7980ad0b5d91e5a6c524d78e5f4b925994f35` completed all 20 optimizer steps and
+saved a 5.2 MB LoRA adapter, but the website rejected the candidate receipt. The
+upstream checkpoint export reserialized `tokenizer.json` and
+`tokenizer_config.json`, changing the registered tokenizer commitment from the
+permitted base. The strict server correctly rejected that identity mismatch.
+The worker then sent an unsupported `retryable` field in its training failure
+report, which was also rejected, leaving the website job appearing to run while
+the worker had returned to polling. Encrypted operation history and local
+artifacts survived; no candidate was activated.
+
+Runtime `e0d04d4` fixes the failure contract and preserves failure intent until a
+matching acknowledgement or an explicit lost-lease response. Its 28 training-worker
+tests cover strict fields, rejected/unavailable/ambiguous failure acknowledgements,
+404/409/410 fencing, durable completion, cancellation, revocation and model-switch
+reconciliation. Runtime `98047ff` preserves exact source tokenizer assets, removes
+new export sidecars absent from that source, and checks the loaded fast tokenizer
+semantics before training, after training and after reload. Training and registration
+share the existing tokenizer commitment function; the wire hash has not changed.
+
+Verification on `98047ff`:
+
+- 467 tests passed and five optional model/hardware tests were skipped. One localhost
+  health-server test initially lacked sandbox binding permission; that same test
+  passed with local binding enabled, without a code change.
+- The focused training, worker, CLI and registry set passed 57 tests.
+- The explicit real MPS LoRA test passed in 31.97 seconds with the already provisioned
+  pinned base, six authored synthetic cases and two separate guiding examples, one
+  optimizer step, rank 8, batch size 1, FP32, seed 42 and learning rate `1e-5`.
+  Socket connections were denied throughout. It verified changed trainable parameters,
+  full tokenizer semantics, exact source/checkpoint/export tokenizer commitments,
+  prediction reload error below `1e-4`, weight-bound calibration, synthetic promotion
+  rejection and grant revocation. Only the train split entered the optimizer.
+
+These checks establish the corrected training/export mechanics, not improved model
+quality or completion of the subsequent website rehearsal. Re-run that journey on
+the updated operator runtime and a new candidate ID; preserve the rejected signed
+candidate's immutable identity. The hosted base, score interface, service resources
+and paid infrastructure allocation are unchanged.
