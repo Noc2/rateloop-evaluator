@@ -207,7 +207,7 @@ class RateLoopConnector:
         try:
             with self.client.stream(method,_API+endpoint,**kwargs) as response:
                 if response.status_code in (401,403):
-                    self._revoke_mirrors("remote_credential_rejected")
+                    self._suspend_mirrors("remote_credential_rejected")
                     raise PermissionError("RateLoop credential or scope is no longer authorized")
                 if response.status_code >= 500 or response.status_code == 429:
                     raise ConnectorUnavailable("RateLoop temporarily unavailable; retry the persisted receipt",
@@ -230,6 +230,30 @@ class RateLoopConnector:
         if not isinstance(value,dict):
             raise ValueError("RateLoop response must be an object")
         return value
+
+    def _suspend_mirrors(self, reason: str) -> None:
+        """An HTTP auth failure stops execution, not the owner's durable consent.
+
+        One credential may serve independent inference and training endpoints.
+        A rejected scope is not an authenticated consent-withdrawal tombstone.
+        Every affected renewable lease needs its own fresh validated response;
+        unrelated connectors and explicitly revoked lineage stay untouched.
+        Legacy immutable grants have no renewable lease and remain fail-closed
+        through permanent revocation, requiring a new owner-issued grant.
+        """
+        with self.learning.transaction() as database:
+            state=self._state(database)
+            ids={r["local_id"] for r in [*state["grants"].values(),*state.get("consents",{}).values()]}
+            for worker in state.get("training_worker",{}).values():
+                ids.update(r["localId"] for r in worker.get("permissions",{}).values())
+            renewable={identity for identity in ids
+                if database["grants"].get(identity,{}).get("authorization_until") is not None}
+            current=time.time()
+            for grant_id in sorted(renewable):
+                self.learning._suspend_authorization(database,grant_id,self.workspace_id,current)
+            state.update(last_failure=reason,mode="paused",authorization_lease=None)
+        for grant_id in sorted(ids-renewable):
+            self.learning.revoke_grant(grant_id,self.workspace_id)
 
     def _revoke_mirrors(self, reason: str) -> None:
         with self.learning.transaction() as database:

@@ -186,11 +186,16 @@ class LearningStore:
         """
         current=time.time() if now is None else now
         with self.transaction() as state:
-            grant=state["grants"].get(grant_id)
-            if not grant or grant["workspace_id"]!=workspace_id or grant.get("authorization_until") is None:
-                raise PermissionError("Durable consent is unavailable for suspension")
-            if grant["revoked_at"] is None:
-                grant["authorization_until"]=min(grant["authorization_until"],current)
+            self._suspend_authorization(state,grant_id,workspace_id,current)
+
+    @staticmethod
+    def _suspend_authorization(state: dict, grant_id: str, workspace_id: str, now: float) -> None:
+        """Shared lease-only transition, also used for atomic connector suspension."""
+        grant=state["grants"].get(grant_id)
+        if not grant or grant["workspace_id"]!=workspace_id or grant.get("authorization_until") is None:
+            raise PermissionError("Durable consent is unavailable for suspension")
+        if grant["revoked_at"] is None:
+            grant["authorization_until"]=min(grant["authorization_until"],now)
 
     @staticmethod
     def _matching_grants(state: dict, *, workspace_id: str, right: str, case_id: str,
