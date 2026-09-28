@@ -99,9 +99,10 @@ def compare_snapshot(store: LearningStore, snapshot_id: str, workspace_id: str,
                 if backend.count_tokens(text, questions) > row['template']['maxTokens']:
                     raise ValueError('Comparison input exceeds the template token limit')
                 training = (getattr(backend, 'manifest', None) or {}).get('training') or {}
-                if held_out & set(training.get('trainingGroupIds', [])):
+                selection = training.get('selection') or {}
+                if held_out & set(training.get('trainingGroupIds', []) + selection.get('validationGroupIds', [])):
                     raise ValueError('A compared model was trained on the held-out source groups')
-                if {example['evaluation_id'] for example in rows} & set(training.get('trainingExampleIds', [])):
+                if {example['evaluation_id'] for example in rows} & set(training.get('trainingExampleIds', []) + selection.get('validationExampleIds', [])):
                     raise ValueError('A compared model was trained on the held-out examples')
                 started = time.perf_counter()
                 scores = backend.predict(text, questions)

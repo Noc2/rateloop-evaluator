@@ -148,3 +148,12 @@ def test_comparison_releases_each_checkpoint_before_next_model_even_on_failure(s
     else:
         compare_snapshot(store,snapshot['id'],'workspace-a',models)
     assert not resident
+
+
+@pytest.mark.parametrize('field,value_key',[('validationGroupIds','group_id'),('validationExampleIds','evaluation_id')])
+def test_validation_selected_examples_cannot_be_reused_as_final_test(store,field,value_key):
+    _,snapshot=prepared(store)
+    backend=Backend()
+    backend.manifest={'training':{'selection':{field:[snapshot['test'][0][value_key]]}}}
+    with pytest.raises(ValueError,match='held-out'):
+        compare_snapshot(store,snapshot['id'],'workspace-a',{'contaminated':backend})
