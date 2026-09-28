@@ -96,6 +96,12 @@ before making a release-quality claim. Retraining starts from the pinned public 
 
 Use at least three distinct source groups for a mechanical smoke test; useful quality qualification needs far more, representative of deployment. Grouped splits and immutable snapshots are enforced by the store.
 
+The website's version-2 training recipe uses a bounded validation run. It reserves a fixed 20% of the existing training source groups for checkpoint selection, keeping calibration and final-test partitions separate. Each optimizer and validation partition needs at least five source groups for every declared label; sparse data fails with a request for more examples. This is a minimum for running the procedure, not evidence that a dataset is representative. Plan several hundred carefully labeled examples for an initial task pilot, then inspect class and source coverage.
+
+The optimizer balances source-group label combinations, uses a fixed learning rate policy, evaluates every 25 steps, stops after three checks without improved balanced agreement, and never exceeds the advertised step cap. Checkpoint selection requires higher balanced agreement than the untrained base with no observed per-class recall regression. If none qualifies, training returns `validation_not_improved`, preserves the original evaluator and publishes no candidate. The private selection report records the baseline, all checkpoint metrics, and rejection reason. An accepted candidate is still experimental: separate final-test comparison and explicit owner activation remain necessary.
+
+For local CLI training, add `--max-steps 200 --learning-rate .0001 --validation-fraction .2`. The Python primitive is `TrainOptions(max_steps=200, learning_rate=1e-4, validation_fraction=.2, validation_interval=25, early_stopping_patience=3, min_validation_per_label=5)`. Its selected step, optimizer sampling policy, actual training IDs and validation-only IDs are committed in the model's training manifest. A zero validation fraction retains the older fixed-budget mechanical path and is labeled `fixed_budget_smoke`; it cannot establish an improvement. No optimizer step or validation prediction bypasses current snapshot authorization.
+
 ```sh
 rateloop-evaluator snapshot --template summary-faithfulness --version 1
 rateloop-evaluator train --snapshot-id SNAPSHOT --model-dir /private/models/public-gliner --output /private/models/candidate-v1 --bundle-id summary-candidate-v1 --device mps --method lora

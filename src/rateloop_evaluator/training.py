@@ -12,12 +12,18 @@ from pathlib import Path
 from typing import Any
 from .execution import serialized_training
 from .protocol import validate_no_demonstration_overlap
+from .quality import (balanced_optimizer_examples, group_representatives, score_predictions,
+                      validation_improved, validation_partition)
 
 from .backends import (GLiNERBackend, MODEL_ID, MODEL_REVISION, offline_environment,
                        question_schema, question_examples, render_input, validate_scores, write_model_manifest, model_token_limit, file_hash, MANIFEST_NAME, validate_local_model, artifact_inventory, tokenizer_commitment)
 
 
 REVIEWED_BASE_WEIGHTS_SHA256 = "c1ff4ec0bc00031c15530b8f3c33d3677f27949e6a0cb52e1247a6224b6c5395"
+
+
+class ValidationQualityError(ValueError):
+    """A functional optimizer run did not establish an acceptable validation gain."""
 
 
 def assert_public_training_base(manifest: dict[str, Any]) -> None:
@@ -44,6 +50,10 @@ class TrainOptions:
     learning_rate: float = 1e-5
     lora_rank: int = 8
     seed: int = 42
+    validation_fraction: float = 0
+    validation_interval: int = 25
+    early_stopping_patience: int = 3
+    min_validation_per_label: int = 5
 
     def validate(self) -> None:
         if self.method not in {"full", "lora"}:
@@ -56,6 +66,13 @@ class TrainOptions:
             raise ValueError("max_steps must be -1 or a positive number")
         if not math.isfinite(self.learning_rate) or not 0 < self.learning_rate < 1:
             raise ValueError("Invalid learning rate")
+        if self.validation_fraction:
+            if (self.method != "lora" or not .1 <= self.validation_fraction <= .3
+                    or not 1 <= self.max_steps <= 2000
+                    or not 1 <= self.validation_interval <= self.max_steps
+                    or not 1 <= self.early_stopping_patience <= 10
+                    or not 2 <= self.min_validation_per_label <= 100):
+                raise ValueError("Validation training needs LoRA, bounded steps, and valid validation limits")
 
 
 def training_records(examples: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -85,7 +102,8 @@ def training_records(examples: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return records
 
 
-def make_trainer(model: Any, output_dir: Path, options: TrainOptions) -> Any:
+def make_trainer(model: Any, output_dir: Path, options: TrainOptions,
+                 validation_examples: list[dict] | None = None) -> Any:
     """Upstream trainer with explicit device selection and conservative FP32.
 
     Upstream 2.0.0 selects CUDA/CPU automatically and does not select MPS.
@@ -96,10 +114,64 @@ def make_trainer(model: Any, output_dir: Path, options: TrainOptions) -> Any:
     from gliner2.training.trainer import GLiNER2Trainer, TrainingConfig
 
     class LocalDeviceTrainer(GLiNER2Trainer):
+        selection_history: list[dict]
+        selected_parameters: dict | None = None
+        selected_step: int = 0
+
         def _optimizer_step(self) -> bool:
             if getattr(self,"authorization_check",None):
                 self.authorization_check()
             return super()._optimizer_step()
+
+        def _evaluate(self, eval_dataset: Any) -> dict:
+            if not validation_examples:
+                return super()._evaluate(eval_dataset)
+            self.model.eval()
+            self.processor.change_mode(is_training=False)
+            rows = group_representatives(validation_examples)
+            predictions = []
+            with torch.no_grad():
+                for row in rows:
+                    if getattr(self, "authorization_check", None):
+                        self.authorization_check()
+                    questions = row['template']['questions']
+                    predictions.append(validate_scores(self.model.extract(render_input(row['input']),
+                        question_schema(questions), include_confidence=True), questions))
+            report = score_predictions(rows, predictions)
+            score = report['balanced_agreement']
+            if score is None:
+                raise ValueError('Validation requires support for every declared label')
+            self.selection_history.append({'step': self.global_step, **report})
+            metrics = {'eval_loss': report['mean_brier_score'],
+                'eval_balanced_agreement': score, 'step': self.global_step, 'epoch': self.epoch}
+            self.eval_metrics_history.append(metrics)
+            # Earliest checkpoint wins a tie; no test result influences selection.
+            eligible = not getattr(self, 'baseline_validation', None) or validation_improved(self.baseline_validation, report)
+            if score > self.best_metric and eligible:
+                self.best_metric = score
+                self.selected_step = self.global_step
+                self.selected_parameters = {name: parameter.detach().cpu().clone()
+                    for name, parameter in self.model.named_parameters() if parameter.requires_grad}
+            return metrics
+
+        def _save_checkpoint(self, checkpoint_name: str) -> None:
+            # The selected LoRA parameters fit in memory. train_snapshot writes
+            # and verifies the one portable final artifact, avoiding full copies
+            # of a checkpoint on every validation interval.
+            if not validation_examples:
+                return super()._save_checkpoint(checkpoint_name)
+
+        def _check_early_stopping(self, metrics: dict, prev_best: float | None = None) -> bool:
+            if not validation_examples:
+                return super()._check_early_stopping(metrics, prev_best)
+            score = metrics['eval_balanced_agreement']
+            best = getattr(self, 'validation_progress', self.baseline_validation['balanced_agreement'])
+            if score > best:
+                self.validation_progress = score
+                self.patience_counter = 0
+            else:
+                self.patience_counter += 1
+            return self.patience_counter >= options.early_stopping_patience
 
         def _setup_device(self) -> None:
             if options.device == "mps" and not torch.backends.mps.is_available():
@@ -116,7 +188,11 @@ def make_trainer(model: Any, output_dir: Path, options: TrainOptions) -> Any:
         batch_size=options.batch_size, eval_batch_size=options.batch_size,
         encoder_lr=options.learning_rate, task_lr=options.learning_rate,
         fp16=False, bf16=False, num_workers=0, pin_memory=False,
-        fused_optimizer=False, report_to_wandb=False, eval_strategy="no",
+        fused_optimizer=False, report_to_wandb=False,
+        eval_strategy="steps" if validation_examples else "no",
+        eval_steps=options.validation_interval,
+        metric_for_best="eval_balanced_agreement", greater_is_better=True,
+        early_stopping=bool(validation_examples), early_stopping_patience=options.early_stopping_patience,
         save_best=False, save_total_limit=1, seed=options.seed,
         use_lora=options.method == "lora", lora_r=options.lora_rank,
         lora_alpha=2.0 * options.lora_rank,
@@ -124,7 +200,9 @@ def make_trainer(model: Any, output_dir: Path, options: TrainOptions) -> Any:
         logging_steps=1, strict_training=True, skip_step_errors=False,
         ignore_nonfinite_losses=False,
     )
-    return LocalDeviceTrainer(model, config)
+    trainer = LocalDeviceTrainer(model, config)
+    trainer.selection_history = []
+    return trainer
 
 
 def parameter_fingerprint(model: Any) -> str:
@@ -204,8 +282,15 @@ def train_snapshot(store: Any, snapshot_id: str, workspace_id: str,
     options = options or TrainOptions()
     options.validate()
     snapshot = store.load_snapshot(snapshot_id, workspace_id)
+    validation_examples = []
     examples = snapshot["train"]
-    records = training_records(examples)
+    if options.validation_fraction:
+        examples, validation_examples = validation_partition(snapshot,
+            fraction=options.validation_fraction, minimum_per_label=options.min_validation_per_label)
+        examples = group_representatives(examples)
+    optimizer_examples = balanced_optimizer_examples(examples) if validation_examples else examples
+    records = training_records(optimizer_examples)
+    validation_records = training_records(validation_examples) if validation_examples else None
     output_dir = Path(output_dir).expanduser().resolve()
     if output_dir.exists() and any(output_dir.iterdir()):
         raise ValueError("Training output directory must be empty")
@@ -214,17 +299,37 @@ def train_snapshot(store: Any, snapshot_id: str, workspace_id: str,
     backend = GLiNERBackend(model_dir, options.device)
     model = backend.load()
     original_tokenizer = tokenizer_semantics(model)
-    for example, record in zip(examples, records):
+    for example, record in zip(optimizer_examples + validation_examples, records + (validation_records or [])):
         count = backend.count_tokens(record["input"], example["template"]["questions"])
         limit = min(example["template"]["maxTokens"], model_token_limit(model))
         if count > limit:
             raise ValueError("Training example exceeds the template or model token limit")
     store.load_snapshot(snapshot_id, workspace_id)
     output_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
-    trainer = make_trainer(model, output_dir / "checkpoints", options)
+    trainer = make_trainer(model, output_dir / "checkpoints", options, validation_examples)
     trainer.authorization_check = lambda: store.load_snapshot(snapshot_id,workspace_id)
     before_fingerprint = parameter_fingerprint(trainer.model)
-    result = trainer.train(train_data=records)
+    if validation_examples:
+        trainer._evaluate(None)
+        trainer.baseline_validation = trainer.selection_history[-1]
+        trainer.best_metric = float('-inf')
+        trainer.selected_parameters = None
+    result = trainer.train(train_data=records, **({'eval_data': validation_records} if validation_records else {}))
+    if validation_examples:
+        if trainer.selected_parameters is None:
+            store.load_snapshot(snapshot_id, workspace_id)
+            (output_dir / 'selection-report.json').write_text(json.dumps({
+                'kind': 'validation_rejected', 'optimizerSteps': trainer.global_step,
+                'optimizerSampling': 'balanced_source_groups', 'history': trainer.selection_history,
+                'qualityGate': False, 'registered': False,
+                'reason': 'No checkpoint improved balanced agreement without reducing any observed class recall.'},
+                indent=2, allow_nan=False) + '\n')
+            raise ValidationQualityError('Validation did not improve without class-level regressions; keep the original evaluator and add representative examples')
+        import torch
+        with torch.no_grad():
+            for name, parameter in trainer.model.named_parameters():
+                if parameter.requires_grad:
+                    parameter.copy_(trainer.selected_parameters[name].to(parameter.device))
     after_fingerprint = parameter_fingerprint(trainer.model)
     if before_fingerprint == after_fingerprint:
         raise RuntimeError("Optimizer steps did not change sampled trainable parameters")
@@ -248,6 +353,8 @@ def train_snapshot(store: Any, snapshot_id: str, workspace_id: str,
         "bundleId": bundle_id, "workspaceId": workspace_id, "snapshotId": snapshot_id,
         "trainedAt": datetime.now(timezone.utc).isoformat(), "options": asdict(options),
         "optimizerSteps": trainer.global_step, "trainExamples": len(examples),
+        "optimizerRowsPerEpoch": len(optimizer_examples),
+        "optimizerSampling": "balanced_source_groups" if validation_examples else "as_supplied",
         "trainableParametersChanged": before_fingerprint != after_fingerprint,
         "trainingGroupIds": sorted({example["group_id"] for example in examples}),
         "trainingExampleIds": sorted({example["evaluation_id"] for example in examples}),
@@ -256,6 +363,14 @@ def train_snapshot(store: Any, snapshot_id: str, workspace_id: str,
                                    for kind in sorted({example.get("label_provenance", "blind_human") for example in examples})},
         "templateId": snapshot["template_id"], "templateVersion": snapshot["template_version"],
         "metrics": sanitized_training_metrics(result),
+        "selection": {"kind": "validation_selected" if validation_examples else "fixed_budget_smoke",
+            "selectedStep": trainer.selected_step if validation_examples else trainer.global_step,
+            "validationExamples": len(validation_examples),
+            "validationGroupIds": sorted({row['group_id'] for row in validation_examples}),
+            "validationExampleIds": sorted({row['evaluation_id'] for row in validation_examples}),
+            "history": trainer.selection_history,
+            "qualityGate": False,
+            "limits": "Selection uses only frozen training groups. Calibration and final test remain untouched. Validation scores are not independent qualification."},
     }
     source = dict((backend.manifest or {}).get("source", {
         "repository": MODEL_ID, "revision": MODEL_REVISION,
@@ -283,6 +398,13 @@ def train_snapshot(store: Any, snapshot_id: str, workspace_id: str,
                     for qid, scores in expected.items() for label, score in scores.items())
     if max_error > 1e-4:
         raise RuntimeError("Trained checkpoint prediction round trip failed")
+    reloaded._model = None
+    del reloaded
+    gc.collect()
+    if options.device == "mps":
+        torch.mps.empty_cache()
+    elif options.device == "cuda":
+        torch.cuda.empty_cache()
     metadata["reloadMaxAbsoluteError"] = max_error
     store.register_model_lineage(bundle_id, snapshot_id, workspace_id)
     # Record only after current rights are checked by lineage registration.

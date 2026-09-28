@@ -92,6 +92,12 @@ def main(argv=None):
     compare.add_argument("--output",required=True)
     train = commands.add_parser("train"); train.add_argument("--snapshot-id",required=True); train.add_argument("--model-dir",required=True); train.add_argument("--output",required=True); train.add_argument("--bundle-id",required=True)
     train.add_argument("--device",choices=["cpu","mps","cuda"],default="cpu"); train.add_argument("--method",choices=["full","lora"],default="lora"); train.add_argument("--epochs",type=int,default=3); train.add_argument("--max-steps",type=int,default=-1)
+    train.add_argument("--learning-rate", type=float, default=1e-5)
+    train.add_argument("--validation-fraction", type=float, default=0,
+                       help="Reserve 0.1–0.3 of frozen training groups; 0 is a mechanical smoke run")
+    train.add_argument("--validation-interval", type=int, default=25)
+    train.add_argument("--early-stopping-patience", type=int, default=3)
+    train.add_argument("--min-validation-per-label", type=int, default=5)
     calibrate = commands.add_parser("calibrate"); calibrate.add_argument("--snapshot-id",required=True); calibrate.add_argument("--model-dir",required=True); calibrate.add_argument("--bundle-id",required=True); calibrate.add_argument("--output",required=True); calibrate.add_argument("--device",choices=["cpu","mps","cuda"],default="cpu")
     score_test = commands.add_parser("score-test"); score_test.add_argument("--bundle-id",required=True); score_test.add_argument("--output",required=True); score_test.add_argument("--device",choices=["cpu","mps","cuda"],default="cpu"); score_test.add_argument("--valid-hours",type=float,default=24)
     promote = commands.add_parser("promote"); promote.add_argument("--bundle-id",required=True); promote.add_argument("--template-commitment",required=True); promote.add_argument("--language",choices=["en","de"],required=True); promote.add_argument("--mode",choices=["shadow","assisted","selective"],default="shadow"); promote.add_argument("--evidence")
@@ -306,7 +312,10 @@ def run(args):
     if args.command == "train":
         from .training import TrainOptions, train_snapshot
         report = train_snapshot(store,args.snapshot_id,workspace,args.model_dir,args.output,bundle_id=args.bundle_id,
-            options=TrainOptions(method=args.method,device=args.device,epochs=args.epochs,max_steps=args.max_steps))
+            options=TrainOptions(method=args.method,device=args.device,epochs=args.epochs,max_steps=args.max_steps,
+                learning_rate=args.learning_rate, validation_fraction=args.validation_fraction,
+                validation_interval=args.validation_interval, early_stopping_patience=args.early_stopping_patience,
+                min_validation_per_label=args.min_validation_per_label))
         return {"modelDir":report["modelDir"],"optimizerSteps":report["training"]["optimizerSteps"],"qualityClaim":False}
     if args.command == "calibrate":
         from .backends import GLiNERBackend, validate_local_model
