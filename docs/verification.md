@@ -414,10 +414,93 @@ All 468 tests passed with five optional skips in a single final run (8.06 second
 including 29 training-worker tests. No neural-training code changed after the real
 MPS check above.
 
-The website recipe is bounded by at most 20 optimizer steps; the independent
+The website recipe used in this rehearsal was bounded by at most 20 optimizer steps; the independent
 operator capability ceiling is 200. Upstream GLiNER derives the number of data
 passes from a positive `max_steps`, overriding `num_epochs`. The 20-step connected
 attempt traversed its small train partition across three passes. Historical
 one-step checks above record the requested epoch setting, not a guarantee that
 every training row was consumed exactly once. This detail does not expand the
 step budget, data permission or held-out partitions.
+
+## Public quality and validation gates — 28 September 2026
+
+Training implementation `4f9baa7` was exercised on the existing pinned public
+GLiNER2.5 model, offline on the Mac's MPS device. Source: NVIDIA HelpSteer2,
+revision `990b2711a36180dd19d9c94b8627844866f8982a`, CC-BY-4.0,
+[official attribution and data card](https://huggingface.co/datasets/nvidia/HelpSteer2).
+The `public_quality.py` source manifest pins both compressed source files by SHA256.
+No model was downloaded, private data uploaded, paid service created, website
+candidate registered or active evaluator replaced during these experiments.
+
+Each English criterion used 400 development prompt groups. Human scores 0–1 and
+3–4 were mapped to the negative and positive labels; score 2 was excluded. Exact
+token counting excluded oversized inputs without truncation. One response per
+normalized source prompt counted as one observation; duplicate answers crossing
+development/final partitions were excluded. These are deliberately bounded,
+short-input, clear-label public cohorts, not a representative sample of every
+RateLoop task. Their external human labels do not become authenticated RateLoop
+blind judgments. Unknown contamination of the public base's pretraining is an
+additional limitation.
+
+The initial diagnostic prototype reserved upstream validation as final test and
+used the natural label mixture with a maximum of 200 optimizer steps. It exposed
+an accuracy illusion that led to the final balanced recipe and baseline gate:
+
+| Criterion / 199 final prompt groups | Base agreement | Candidate agreement | Base balanced agreement | Candidate balanced agreement | False approvals, base → candidate |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Helpfulness | 72.9% | 77.4% | 61.2% | 52.4% | 27 → 42 |
+| Correctness | 73.9% | 79.9% | 63.1% | 51.9% | 22 → 38 |
+
+Both diagnostic optimizers stopped at step 125 and selected step 50 by development
+validation alone; the final results were not used for checkpoint selection.
+Their merged weights saved and reloaded correctly, but neither candidate was
+recommended. This prototype diagnosis is not an acceptance claim for the final
+recipe. Diagnostic candidate weight hashes were
+`93aba453a457cd25ba1eb50d6c51c7e1a817944dd13b01e1aa5ae225b45981d4`
+(helpfulness) and
+`e5b54f756924a34a39a00838c4e43b7845440efc994b2863add099e4dc6f4985`
+(correctness).
+
+Before testing the final balanced recipe, a fresh final set of 200 groups per
+criterion was frozen from the unused high-hash tail of upstream training prompts.
+Those prompts were excluded from development; both original 400-group development
+commitments remained identical. No prior final group was reused. The final
+recipe used rank-8 LoRA, FP32, seed 42, batch size 2, learning rate `1e-4`, at most
+200 updates, validation every 25 updates and patience 3. Fixed group-hash
+validation contained 63 groups for helpfulness (51 positive / 12 negative) and
+65 for correctness (55 / 10); 40 different groups per task were reserved for
+calibration. Label balancing resampled only optimizer source-group representatives.
+
+The helpfulness run stopped at 125 updates; correctness stopped at 150. Neither
+produced a checkpoint with greater validation balanced agreement and no per-class
+recall regression against the baseline. Both returned `ValidationQualityError`
+and wrote a content-free selection report. No model artifact or model lineage was
+published, and candidate final-test scoring was skipped. This is the intended
+rejection path, not a training-infrastructure failure or evidence of improvement.
+The new final cohort remains unused for selecting a later candidate.
+
+Separate temperature fits on the 40 calibration groups improved the base's score
+calibration on the new final cohorts, without changing its predicted labels:
+
+| Criterion / 200 final groups | Balanced agreement | Raw → fitted Brier score | Raw → fitted ECE (10 bins) | Fitted temperature |
+| --- | ---: | ---: | ---: | ---: |
+| Helpfulness | 60.34% | 0.4037 → 0.3544 | 0.1713 → 0.0751 | 2.8500 |
+| Correctness | 60.42% | 0.4001 → 0.3683 | 0.1545 → 0.0836 | 5.0751 |
+
+Brier uses the summed squared error across both labels. ECE is descriptive and
+depends on the selected bins and sample. These fitted values are task-specific
+public-label evidence; they were not imported into customer workspaces and do
+not authorize displaying a universal correctness probability. Forty calibration
+groups remain a small pilot. The base's modest discrimination supports retaining
+human review or task-specific deterministic/reference checks for consequential
+decisions; it does not support a general accuracy claim.
+
+The public benchmark and CLI/training/quality tests passed 40 focused tests.
+Private local reports contain source/filter counts, frozen cohort commitments,
+confusion matrices, class recall, calibration bins, manifests and the selection
+history. Their SHA256 commitments are:
+
+- Initial helpfulness: `ea3064fa4a2c8d768250130edfa76c902c7d3529b909ee05102fa6461f4b8e7f`.
+- Initial correctness: `ebbf68988aefe79465667d950e8bac60f908340f9babaa51574757b41e58c1b0`.
+- Final helpfulness rejection: `a784ddb4c789722f35eebda2bc3f609ae296c6772b0498baad067fb0d47ab808`.
+- Final correctness rejection: `b760effdb4ca8f82bf5dd7e3d49f051560354f76ba452786ed06b457f43af0e1`.

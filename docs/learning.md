@@ -126,6 +126,18 @@ Registration creates an inactive candidate by default. Exporting its metadata do
 
 Local selective results are still advisory when sent to the initial RateLoop integration. Mandatory human rules and accepted human work remain in force. Test German and English separately, then relevant domains, schema changes, missing evidence, negation and adversarial cases. Large-model comparisons and customer pilot outcomes remain independent experiments, not prerequisites installed into the fast path.
 
+## Reproducible public quality experiments
+
+`scripts/run_public_quality.py` prepares and runs a bounded, offline HelpSteer2 experiment using a previously provisioned model. Obtain the public NVIDIA `train.jsonl.gz` and `validation.jsonl.gz` files explicitly from revision `990b2711a36180dd19d9c94b8627844866f8982a`; the tool refuses bytes that differ from the checked-in hashes. NVIDIA publishes these human reference labels under CC-BY-4.0: retain [the source attribution](https://huggingface.co/datasets/nvidia/HelpSteer2) and identify the filtering/binary conversion when sharing results. Raw source text, private stores, keys and checkpoint files stay outside Git.
+
+```sh
+python scripts/run_public_quality.py --train /private/HelpSteer2/train.jsonl.gz --test /private/HelpSteer2/validation.jsonl.gz --model-dir /private/models/public-gliner --criterion helpfulness --device mps --output /private/quality-helpfulness
+```
+
+Run `--criterion correctness` separately. Defaults freeze 400 development prompt groups and up to 200 final groups before prediction. Scores 0–1 and 3–4 become the two labels; ambiguous score 2, duplicate prompts, repeated normalized answers and inputs beyond the exact token budget are excluded and counted. Development snapshots reserve separate optimizer, validation and calibration groups. The official validation split is used only for final testing. A temperature fit uses the calibration partition only; final Brier score and calibration error remain descriptive external-label measurements, not calibrated production-confidence claims.
+
+If an earlier experiment already exposed that final set, `--previous-experiment /private/quality-helpfulness` reserves a new high-hash tail of upstream training prompts, excludes it from development, and requires the original development commitment to remain identical. Its report explicitly identifies that alternative final source. Do not repeatedly tune against either final set. A rejected validation run exports no candidate and skips candidate final-test scoring. Public-data experiments never change website activation or qualify a workspace for autonomous decisions. See the [measured outcomes](verification.md#public-quality-and-validation-gates--28-september-2026).
+
 ## Retirement and recovery
 
 `revoke --grant-id GRANT` invalidates dependent snapshots and retires managed derived models. `delete-case --case-id CASE` removes controlled learning records and retires affected lineage. Deployment rechecks grants and bundle validity before and after inference, including on cached requests. `rollback --template-commitment DIGEST --language en` restores only a still-authorized, unexpired prior deployment.
