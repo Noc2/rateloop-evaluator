@@ -378,3 +378,18 @@ def test_validation_regression_never_becomes_generic_failure_or_candidate(runner
     assert worker.run_once()['state']=='training_failed'
     assert behavior['failed'][0]['errorCode']=='validation_not_improved'
     assert not behavior['completed']
+
+
+def test_interrupted_unsigned_checkpoint_retries_same_job_without_overwriting_artifact(runner):
+    worker,behavior,_,job,template,store,registry,*_=runner
+    incomplete=worker.root/'training-candidates'/job['jobId']/'checkpoints'
+    incomplete.mkdir(parents=True)
+    partial=incomplete/'partial-adapter.bin'
+    partial.write_bytes(b'Private interrupted training checkpoint')
+    assert worker.run_once()['state']=='training_completed'
+    assert behavior['train_calls']==1
+    preserved=list((worker.root/'training-interrupted'/job['jobId']).glob('attempt-*/checkpoints/partial-adapter.bin'))
+    assert len(preserved)==1 and preserved[0].read_bytes()==b'Private interrupted training checkpoint'
+    candidate=registry.get('candidate','workspace-test')
+    assert candidate['artifact_root']==str(worker.root/'training-candidates'/job['jobId']/'model')
+    assert candidate['manifest']['snapshot_id']==behavior['completed'][0]['snapshotId']

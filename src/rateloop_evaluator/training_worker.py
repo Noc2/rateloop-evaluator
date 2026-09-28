@@ -14,6 +14,7 @@ import json
 from pathlib import Path
 import threading
 import time
+import uuid
 
 from . import cli
 from .backends import GLiNERBackend, MODEL_ID, MODEL_REVISION, MANIFEST_NAME, validate_local_model
@@ -355,6 +356,15 @@ class TrainingWorker:
                 if (model.get("training",{}).get("bundleId"),model.get("training",{}).get("snapshotId"))!=(candidate_id,snapshot["id"]):
                     raise ValueError("Saved training artifact identity mismatch")
             else:
+                if directory.exists() and any(directory.iterdir()):
+                    if directory.is_symlink() or not directory.is_dir() or directory.resolve()!=directory:
+                        raise PermissionError("Unsafe interrupted training output")
+                    # A killed optimizer can leave checkpoints before the final
+                    # signed-model manifest exists. Preserve that private output
+                    # and retry in an empty job directory under the same lock.
+                    interrupted=self.root/"training-interrupted"/job["jobId"]
+                    interrupted.mkdir(parents=True,exist_ok=True,mode=0o700)
+                    directory.rename(interrupted/("attempt-"+uuid.uuid4().hex))
                 report=train_snapshot(checked_store,snapshot["id"],self.connector.workspace_id,self.model_dir,directory,
                     bundle_id=candidate_id,options=options)
                 artifact=Path(report["modelDir"])
