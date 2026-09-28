@@ -45,7 +45,7 @@ def runner(initialized,tmp_path,capsys,monkeypatch):
         "leaseToken":"training-job-fencing-token","leaseExpiresAt":iso(time.time()+120)}
     authorization.update(datasetVersionId=job["datasetVersionId"],datasetCommitment=job["datasetCommitment"])
     behavior={"pending":deepcopy(job),"claimed":False,"completed":[],"failed":[],"permission":True,"cancelled":False,"offline_complete":False,
-        "train_calls":0,"cancel_during_train":False,"complete_status":200,"ambiguous_complete":False,"content_mutator":lambda value:None}
+        "train_calls":0,"cancel_during_train":False,"complete_status":200,"ambiguous_complete":False,"fail_status":200,"ambiguous_fail":False,"content_mutator":lambda value:None}
     calls=[]
     def transport(req):
         calls.append(req)
@@ -77,8 +77,11 @@ def runner(initialized,tmp_path,capsys,monkeypatch):
             behavior["completed"].append(body["result"])
             return httpx.Response(200,json={"status":"completed","jobId":"wrong-job" if behavior["ambiguous_complete"] else behavior["pending"]["jobId"]})
         if path.endswith("/fail"):
+            assert set(body) == {"workerId", "leaseToken", "errorCode"}
+            if behavior["fail_status"] != 200:
+                return httpx.Response(behavior["fail_status"], json={"code": "synthetic_failure"})
             behavior["failed"].append(body)
-            return httpx.Response(200,json={"state":"failed"})
+            return httpx.Response(200,json={"status":"failed","jobId":"wrong-job" if behavior["ambiguous_fail"] else behavior["pending"]["jobId"]})
         raise AssertionError(path)
     connector=RateLoopConnector(base_url="https://rateloop.example",api_key="scoped-operator-api-key",api_key_id="api-1",
         workspace_id="workspace-test",agent_id="agent-1",agent_version_id="version-1",learning=store,
@@ -298,3 +301,34 @@ def test_ambiguous_completion_never_applies_switch_and_retries_exact_result(runn
     behavior["ambiguous_complete"]=False
     assert worker.run_once()["state"]=="training_completed"
     assert behavior["completed"][-1]==saved and changed==[["base","candidate"]]
+
+
+@pytest.mark.parametrize("failure", ["rejected", "unavailable", "ambiguous"])
+def test_failure_report_is_durable_until_matching_acknowledgment(runner, failure):
+    worker, behavior, _, _, _, _, _, _, calls = runner
+    behavior["complete_status"] = 400
+    behavior["fail_status"] = {"rejected": 400, "unavailable": 503, "ambiguous": 200}[failure]
+    behavior["ambiguous_fail"] = failure == "ambiguous"
+    with pytest.raises(ConnectorUnavailable):
+        worker.run_once()
+    saved = worker._saved()
+    assert saved["failureCode"] == "local_training_validation_failed"
+    assert "result" in saved
+    completed_calls = len([r for r in calls if r.url.path.endswith("/complete")])
+    behavior["fail_status"] = 200
+    behavior["ambiguous_fail"] = False
+    assert worker.run_once()["state"] == "training_failed"
+    assert worker._saved() is None
+    assert behavior["train_calls"] == 1
+    assert len([r for r in calls if r.url.path.endswith("/complete")]) == completed_calls
+    assert set(behavior["failed"][-1]) == {"workerId", "leaseToken", "errorCode"}
+
+
+@pytest.mark.parametrize("status", [404, 409, 410])
+def test_fenced_failure_intent_releases_local_job_without_retraining(runner, status):
+    worker, behavior, _, _, _, _, _, _, _ = runner
+    behavior["complete_status"] = 400
+    behavior["fail_status"] = status
+    assert worker.run_once()["state"] == "training_lease_lost"
+    assert worker._saved() is None
+    assert behavior["train_calls"] == 1

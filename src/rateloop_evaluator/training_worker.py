@@ -407,9 +407,24 @@ class TrainingWorker:
         self._save(None)
         return {"state":"training_completed","jobId":job["jobId"],"action":job["action"]}
 
+    def _fail(self, job):
+        """Retain terminal intent until the server acknowledges or fences it."""
+        try:
+            response = self._post(job, "fail", errorCode=job["failureCode"])
+        except ConnectorRejected as error:
+            if error.status in (404, 409, 410):
+                self._save(None)
+                return {"state": "training_lease_lost", "jobId": job["jobId"]}
+            raise ConnectorUnavailable("Training failure report was rejected; retry the persisted intent") from None
+        if response.get("jobId") != job["jobId"] or response.get("status") != "failed":
+            raise ConnectorUnavailable("Training failure acknowledgment is ambiguous")
+        self._save(None)
+        return {"state": "training_failed", "jobId": job["jobId"]}
+
     def run_once(self):
         self.sync_permissions()
         job=self._saved()
+        if job and "failureCode" in job: return self._fail(job)
         if job and job.get("serverAcknowledged") and not self._has_dataset_permission(job):
             # A fresh server response proved the source was withdrawn after
             # acknowledgement. Retirement denies use; do not install its switch.
@@ -447,10 +462,9 @@ class TrainingWorker:
                 # Keep the intent for reconciliation; never start inference
                 # using the old default while the server has selected another.
                 raise ConnectorUnavailable("Acknowledged model switch requires local reconciliation") from None
-            try: self._post(job,"fail",errorCode="local_training_validation_failed",retryable=False)
-            except (ConnectorUnavailable,ConnectorRejected,PermissionError): pass
-            self._save(None)
-            return {"state":"training_failed","jobId":job["jobId"]}
+            job["failureCode"] = "local_training_validation_failed"
+            self._save(job)
+            return self._fail(job)
         finally:
             try: self.sync_permissions("ready")
             except (ConnectorUnavailable,ConnectorRejected,PermissionError,ValueError): pass
