@@ -441,6 +441,7 @@ class TrainingWorker:
                 "modelBundleIds":self.base_bundle_ids,"capability":dict(CAPABILITY)}).get("job")
             if job is None: return {"state":"idle"}
             self._validate_claim(job); job=self._restore_progress(job); self._save(job)
+        if "failureCode" in job: return self._fail(job)
         try:
             with model_execution(self.connector.learning):
                 self.sync_permissions("training")

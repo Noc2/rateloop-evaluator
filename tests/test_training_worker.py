@@ -332,3 +332,19 @@ def test_fenced_failure_intent_releases_local_job_without_retraining(runner, sta
     assert worker.run_once()["state"] == "training_lease_lost"
     assert worker._saved() is None
     assert behavior["train_calls"] == 1
+
+
+def test_reclaimed_failed_operation_retains_terminal_intent(runner):
+    worker, behavior, _, _, _, _, _, _, calls = runner
+    behavior["complete_status"] = 400
+    behavior["fail_status"] = 409
+    assert worker.run_once()["state"] == "training_lease_lost"
+    completion_count = len([r for r in calls if r.url.path.endswith("/complete")])
+    behavior["claimed"] = False
+    behavior["complete_status"] = 200
+    behavior["fail_status"] = 200
+    assert worker.run_once()["state"] == "training_failed"
+    assert worker._saved() is None
+    assert behavior["train_calls"] == 1
+    assert not behavior["completed"]
+    assert len([r for r in calls if r.url.path.endswith("/complete")]) == completion_count
