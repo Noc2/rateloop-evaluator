@@ -73,6 +73,7 @@ def test_real_train_optimizer_save_reload_and_revocation(tmp_path, monkeypatch, 
         tmp_path / "training", bundle_id=f"smoke-{method}", options=TrainOptions(method=method,
         device=os.environ.get("RATELOOP_TEST_DEVICE", "cpu"), max_steps=1, epochs=1))
     assert result["training"]["optimizerSteps"] == 1
+    assert result["training"]["classificationSchemaPolicy"] == "immutable-inference-schema-v1"
     base_manifest = validate_local_model(os.environ["RATELOOP_TEST_MODEL_DIR"])
     assert tokenizer_commitment(result["manifest"]) == tokenizer_commitment(base_manifest)
     assert len(authorizations)>=3  # Startup, pre-training and actual optimizer authorization.

@@ -180,7 +180,8 @@ def question_schema(questions: list[dict[str, Any]]) -> Any:
         if len(labels) != len(question["labels"]) or len(labels) < 2:
             raise ValueError("Questions require at least two distinct labels")
         # multi_label requests every score from upstream's decoder. Explicit
-        # softmax preserves mutually-exclusive semantics and the training loss.
+        # softmax provides a complete mutually-exclusive score distribution;
+        # the upstream classification loss itself uses binary cross entropy.
         schema.classification(qid, labels, prompt=question["text"],
                               multi_label=True, class_act="softmax", cls_threshold=0.0,
                               **question_examples(question))

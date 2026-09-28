@@ -94,6 +94,8 @@ before making a release-quality claim. Retraining starts from the pinned public 
 
 ## Train, calibrate and evaluate
 
+Training preserves exactly the inference question order, label IDs, descriptions and guiding examples. The pinned upstream trainer's synthetic-label augmentation is disabled: it could reinsert an original correct label as a negative option after aliasing it. Classification targets also bind to the complete schema, avoiding an upstream prefix-ID match that could attach another question's labels. This changes preprocessing only; the optimizer loss, authorization checks and validation gate remain unchanged. Manifests identify this policy as `immutable-inference-schema-v1`.
+
 Use at least three distinct source groups for a mechanical smoke test; useful quality qualification needs far more, representative of deployment. Grouped splits and immutable snapshots are enforced by the store.
 
 The website's version-2 training recipe uses a bounded validation run. It reserves a fixed 20% of the existing training source groups for checkpoint selection, keeping calibration and final-test partitions separate. The encrypted store freezes these validation assignments across dataset versions and worker restarts; a later source relationship joining optimizer and validation groups fails closed instead of changing either role. Each optimizer and validation partition needs at least five source groups for every declared label; sparse data fails with a request for more examples. This is a minimum for running the procedure, not evidence that a dataset is representative. Plan several hundred carefully labeled examples for an initial task pilot, then inspect class and source coverage.

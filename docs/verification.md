@@ -424,6 +424,16 @@ step budget, data permission or held-out partitions.
 
 ## Public quality and validation gates — 28 September 2026
 
+**Interpretation update:** these experiments preceded the immutable-schema
+preprocessing correction. The pinned upstream trainer could alias labels and
+then reinsert the original correct label with a negative target, and could drop
+the rubric's descriptions/examples. Preserve the measurements below as evidence
+of the affected implementation; they cannot distinguish inherent model limits
+from this preprocessing defect. The validation rejection remains valid for the
+actual candidates tested. Corrected-code regression runs are separate evidence,
+with unchanged frozen datasets, recipe and gates; no historical result is
+silently replaced or upgraded into a quality claim.
+
 Training implementation `4f9baa7` was exercised on the existing pinned public
 GLiNER2.5 model, offline on the Mac's MPS device. Source: NVIDIA HelpSteer2,
 revision `990b2711a36180dd19d9c94b8627844866f8982a`, CC-BY-4.0,

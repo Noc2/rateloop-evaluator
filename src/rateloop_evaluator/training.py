@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+from copy import copy
 from datetime import datetime, timezone
 import gc
 import hashlib
@@ -10,6 +11,7 @@ import math
 import shutil
 from pathlib import Path
 from typing import Any
+from types import MethodType
 from .execution import serialized_training
 from .protocol import validate_no_demonstration_overlap
 from .quality import (balanced_optimizer_examples, freeze_validation_partition, group_representatives, score_predictions,
@@ -100,6 +102,66 @@ def training_records(examples: list[dict[str, Any]]) -> list[dict[str, Any]]:
         records.append({"input": render_input(example["input"]),
                         "output": {"classifications": classifications}})
     return records
+
+
+def exact_classification_processor(processor: Any) -> Any:
+    """Keep optimizer classification inputs identical to the immutable rubric.
+
+    Upstream 2.0.0's default augmentation can replace declared label IDs with
+    aliases and then reinsert the original true ID as a *negative* choice. It
+    can also omit the descriptions/examples that define the question. Neither
+    transformation is valid for a workspace's fixed evaluation contract.
+
+    Copy only the processor shell: the immutable tokenizer remains shared. The
+    model's inference processor is not patched. Training collation and boundary
+    target construction retain their normal upstream training behavior, with
+    exact task binding instead of upstream's ambiguous task-ID prefix lookup.
+    """
+    frozen = copy(processor)
+    infer = type(processor)._infer_from_json
+    transform = type(processor)._transform_schema
+    build = type(processor)._build_outputs
+
+    def immutable_schema(self, schema):
+        was_training = self.is_training
+        self.is_training = False
+        try:
+            # Evaluation-mode classification transformation retains the exact
+            # IDs, question, ordered descriptions and demonstrations, while the
+            # original true_label remains available for supervised targets.
+            return infer(self, schema)
+        finally:
+            self.is_training = was_training
+
+    def exact_outputs(self, processed, schema, text_tokens, len_prefix):
+        # Upstream startswith(task) can bind `quality` to `q` and silently
+        # apply the wrong one-hot targets. Match the complete immutable schema
+        # before handing each group to the original target builder.
+        was_training = self.is_training
+        self.is_training = False
+        try:
+            tasks = {tuple(transform(self, item['task'], item['labels'], self.L_TOKEN,
+                prompt=item.get('prompt'), examples=item.get('examples', []),
+                label_descriptions=item.get('label_descriptions', {}))): item
+                for item in schema.get('classifications', [])}
+        finally:
+            self.is_training = was_training
+        outputs = []
+        for tokens, kind, labels in zip(processed['schemas'], processed['task_types'],
+                                        processed['structure_labels']):
+            selected = schema
+            if kind == 'classifications':
+                item = tasks.get(tuple(tokens))
+                if item is None:
+                    raise ValueError('Training classification differs from the immutable rubric')
+                selected = {**schema, 'classifications': [item]}
+            outputs.extend(build(self, {'schemas': [tokens], 'task_types': [kind],
+                'structure_labels': [labels]}, selected, text_tokens, len_prefix))
+        return outputs
+
+    frozen._infer_from_json = MethodType(immutable_schema, frozen)
+    frozen._build_outputs = MethodType(exact_outputs, frozen)
+    return frozen
 
 
 def make_trainer(model: Any, output_dir: Path, options: TrainOptions,
@@ -200,7 +262,7 @@ def make_trainer(model: Any, output_dir: Path, options: TrainOptions,
         logging_steps=1, strict_training=True, skip_step_errors=False,
         ignore_nonfinite_losses=False,
     )
-    trainer = LocalDeviceTrainer(model, config)
+    trainer = LocalDeviceTrainer(model, config, processor=exact_classification_processor(model.processor))
     trainer.selection_history = []
     return trainer
 
@@ -355,6 +417,7 @@ def train_snapshot(store: Any, snapshot_id: str, workspace_id: str,
         "optimizerSteps": trainer.global_step, "trainExamples": len(examples),
         "optimizerRowsPerEpoch": len(optimizer_examples),
         "optimizerSampling": "balanced_source_groups" if validation_examples else "as_supplied",
+        "classificationSchemaPolicy": "immutable-inference-schema-v1",
         "trainableParametersChanged": before_fingerprint != after_fingerprint,
         "trainingGroupIds": sorted({example["group_id"] for example in examples}),
         "trainingExampleIds": sorted({example["evaluation_id"] for example in examples}),
