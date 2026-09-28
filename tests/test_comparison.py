@@ -126,3 +126,25 @@ def test_existing_snapshot_cannot_score_demonstrations_as_unseen_examples(store,
             pytest.fail('A demonstration must never contribute to held-out agreement')
     with pytest.raises(ValueError, match='demonstration|example'):
         compare_snapshot(store, snapshot['id'], 'workspace-a', {'base': MustNotScore()})
+
+
+@pytest.mark.parametrize('fail', [False, True])
+def test_comparison_releases_each_checkpoint_before_next_model_even_on_failure(store, fail):
+    _, snapshot = prepared(store)
+    resident=set()
+    class Releasing(Backend):
+        def __init__(self,name): self.name=name
+        def count_tokens(self,*args):
+            resident.add(self.name)
+            assert len(resident)==1
+            return super().count_tokens(*args)
+        def predict(self,*args):
+            if fail: raise ValueError('Synthetic prediction error')
+            return super().predict(*args)
+        def unload(self): resident.discard(self.name)
+    models={name:Releasing(name) for name in ('base','candidate')}
+    if fail:
+        with pytest.raises(ValueError,match='Synthetic'): compare_snapshot(store,snapshot['id'],'workspace-a',models)
+    else:
+        compare_snapshot(store,snapshot['id'],'workspace-a',models)
+    assert not resident

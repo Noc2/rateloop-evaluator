@@ -84,67 +84,72 @@ def compare_snapshot(store: LearningStore, snapshot_id: str, workspace_id: str,
         raise ValueError('Comparison needs frozen held-out examples')
     results = {}
     for model_id, backend in models.items():
-        question_stats = {q['id']: {'labels': [label['id'] for label in q['labels']],
-            'correct': 0, 'count': 0, 'abstentions': 0, 'false_approvals': 0, 'false_rejections': 0,
-            'expected_label_counts': {label['id']: 0 for label in q['labels']},
-            'confusion': {label['id']: {predicted['id']: 0 for predicted in q['labels']} for label in q['labels']}}
-            for q in rows[0]['template']['questions']}
-        exact_agreements, durations = 0, []
-        for row in rows:
+        try:
+            question_stats = {q['id']: {'labels': [label['id'] for label in q['labels']],
+                'correct': 0, 'count': 0, 'abstentions': 0, 'false_approvals': 0, 'false_rejections': 0,
+                'expected_label_counts': {label['id']: 0 for label in q['labels']},
+                'confusion': {label['id']: {predicted['id']: 0 for predicted in q['labels']} for label in q['labels']}}
+                for q in rows[0]['template']['questions']}
+            exact_agreements, durations = 0, []
+            for row in rows:
+                store.load_snapshot(snapshot_id, workspace_id, now=now)
+                questions = row['template']['questions']
+                validate_no_demonstration_overlap(row['input']['text'], questions)
+                text = render_input(row['input'])
+                if backend.count_tokens(text, questions) > row['template']['maxTokens']:
+                    raise ValueError('Comparison input exceeds the template token limit')
+                training = (getattr(backend, 'manifest', None) or {}).get('training') or {}
+                if held_out & set(training.get('trainingGroupIds', [])):
+                    raise ValueError('A compared model was trained on the held-out source groups')
+                if {example['evaluation_id'] for example in rows} & set(training.get('trainingExampleIds', [])):
+                    raise ValueError('A compared model was trained on the held-out examples')
+                started = time.perf_counter()
+                scores = backend.predict(text, questions)
+                durations.append((time.perf_counter()-started)*1000)
+                if set(scores) != set(question_stats):
+                    raise ValueError('Model scores do not cover the exact criteria')
+                all_correct = True
+                for question in questions:
+                    qid = question['id']
+                    stats = question_stats[qid]
+                    distribution = scores[qid]
+                    if (set(distribution) != set(stats['labels'])
+                            or any(isinstance(value, bool) or not isinstance(value, (int, float))
+                                   or not math.isfinite(value) or not 0 <= value <= 1 for value in distribution.values())):
+                        raise ValueError('Model returned invalid raw label scores')
+                    top = max(distribution.values())
+                    winners = [key for key, value in distribution.items() if value == top]
+                    expected = row['labels'][qid]
+                    stats['count'] += 1
+                    stats['expected_label_counts'][expected] += 1
+                    if len(winners) != 1:
+                        stats['abstentions'] += 1
+                        all_correct = False
+                        continue
+                    predicted = winners[0]
+                    correct = predicted == expected
+                    stats['correct'] += int(correct)
+                    all_correct = all_correct and correct
+                    stats['confusion'][expected][predicted] += 1
+                    passing = set(question.get('passLabels', []))
+                    stats['false_approvals'] += int(predicted in passing and expected not in passing)
+                    stats['false_rejections'] += int(predicted not in passing and expected in passing)
+                exact_agreements += int(all_correct)
+            # A revoked permission never produces a usable comparison report.
             store.load_snapshot(snapshot_id, workspace_id, now=now)
-            questions = row['template']['questions']
-            validate_no_demonstration_overlap(row['input']['text'], questions)
-            text = render_input(row['input'])
-            if backend.count_tokens(text, questions) > row['template']['maxTokens']:
-                raise ValueError('Comparison input exceeds the template token limit')
-            training = (getattr(backend, 'manifest', None) or {}).get('training') or {}
-            if held_out & set(training.get('trainingGroupIds', [])):
-                raise ValueError('A compared model was trained on the held-out source groups')
-            if {example['evaluation_id'] for example in rows} & set(training.get('trainingExampleIds', [])):
-                raise ValueError('A compared model was trained on the held-out examples')
-            started = time.perf_counter()
-            scores = backend.predict(text, questions)
-            durations.append((time.perf_counter()-started)*1000)
-            if set(scores) != set(question_stats):
-                raise ValueError('Model scores do not cover the exact criteria')
-            all_correct = True
-            for question in questions:
-                qid = question['id']
-                stats = question_stats[qid]
-                distribution = scores[qid]
-                if (set(distribution) != set(stats['labels'])
-                        or any(isinstance(value, bool) or not isinstance(value, (int, float))
-                               or not math.isfinite(value) or not 0 <= value <= 1 for value in distribution.values())):
-                    raise ValueError('Model returned invalid raw label scores')
-                top = max(distribution.values())
-                winners = [key for key, value in distribution.items() if value == top]
-                expected = row['labels'][qid]
-                stats['count'] += 1
-                stats['expected_label_counts'][expected] += 1
-                if len(winners) != 1:
-                    stats['abstentions'] += 1
-                    all_correct = False
-                    continue
-                predicted = winners[0]
-                correct = predicted == expected
-                stats['correct'] += int(correct)
-                all_correct = all_correct and correct
-                stats['confusion'][expected][predicted] += 1
-                passing = set(question.get('passLabels', []))
-                stats['false_approvals'] += int(predicted in passing and expected not in passing)
-                stats['false_rejections'] += int(predicted not in passing and expected in passing)
-            exact_agreements += int(all_correct)
-        # A revoked permission never produces a usable comparison report.
-        store.load_snapshot(snapshot_id, workspace_id, now=now)
-        manifest = getattr(backend, 'manifest', None) or {}
-        results[model_id] = {'model_manifest_digest': _digest(manifest) if manifest else None,
-            'trained': bool(manifest.get('training')),
-            'agreement': _interval(exact_agreements, len(rows)),
-            'criteria': {qid: {**stats, 'agreement': _interval(stats['correct'], stats['count']),
-                              **label_metrics(stats['confusion'], stats['expected_label_counts']),
-                              'label_coverage': (stats['count']-stats['abstentions'])/stats['count']}
-                         for qid, stats in question_stats.items()},
-            'mean_prediction_ms': sum(durations)/len(durations)}
+            manifest = getattr(backend, 'manifest', None) or {}
+            results[model_id] = {'model_manifest_digest': _digest(manifest) if manifest else None,
+                'trained': bool(manifest.get('training')),
+                'agreement': _interval(exact_agreements, len(rows)),
+                'criteria': {qid: {**stats, 'agreement': _interval(stats['correct'], stats['count']),
+                                  **label_metrics(stats['confusion'], stats['expected_label_counts']),
+                                  'label_coverage': (stats['count']-stats['abstentions'])/stats['count']}
+                             for qid, stats in question_stats.items()},
+                'mean_prediction_ms': sum(durations)/len(durations)}
+        finally:
+            # Comparing candidates must not retain multiple full checkpoints.
+            if hasattr(backend, "unload"):
+                backend.unload()
     provenance = {}
     for row in rows:
         kind = 'independent_human' if is_independent_reference(row) else row.get('label_provenance', 'unverified')

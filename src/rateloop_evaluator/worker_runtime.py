@@ -9,8 +9,8 @@ from .templates import overall_approval
 from .protocol import Template
 
 
-class _PrivateCheckpointCache:
-    """Keep one private checkpoint resident; signed IDs remain independently routable."""
+class _CheckpointCache:
+    """Keep one checkpoint resident, including public bases and private candidates."""
     def __init__(self, device):
         self.device=device; self.key=None; self.backend=None; self.lock=RLock()
 
@@ -24,13 +24,18 @@ class _PrivateCheckpointCache:
             if key!=self.key:
                 self.close()
                 backend=GLiNERBackend(path,self.device)
-                backend.load()
+                loaded=backend.load()
                 self.backend=backend; self.key=key
+                if operation == "load": return loaded
             return getattr(self.backend,operation)(*args)
 
 
-class _PrivateBackend:
+class _CachedBackend:
     def __init__(self, cache, key, path): self.cache,self.key,self.path=cache,key,path
+    @property
+    def manifest(self):
+        with self.cache.lock:
+            return self.cache.backend.manifest if self.cache.key == self.key and self.cache.backend else None
     def load(self): return self.cache.invoke(self.key,self.path,"load")
     def count_tokens(self,text,questions): return self.cache.invoke(self.key,self.path,"count_tokens",text,questions)
     def predict(self,text,questions): return self.cache.invoke(self.key,self.path,"predict",text,questions)
@@ -39,21 +44,20 @@ class _PrivateBackend:
 def prepare_evaluator(connector, registry, bundle_ids: list[str], *, device: str = "cpu"):
     """Validate and warm every bundle before any presence heartbeat is possible.
 
-    Language-specific registrations share identical artifacts. Private models
+    Language-specific registrations share identical artifacts. All models
     warm serially in a one-checkpoint cache and reload on demand for exact queued
     bundle IDs. No downloads, grants, customer content or training are involved.
     """
     workspace=connector.workspace_id
     identity=Principal(workspace,frozenset({"evaluate"}))
-    apps={}; backends={}; private_cache=_PrivateCheckpointCache(device)
+    apps={}; backends={}; cache=_CheckpointCache(device)
     for bundle_id in bundle_ids:
         record=registry.get(bundle_id,workspace)
         manifest=record["manifest"]
         # Registry verification binds the complete immutable artifact inventory.
         key=(record["artifact_root"],tuple(sorted(manifest["files"].items())))
         if key not in backends:
-            backend=(_PrivateBackend(private_cache,key,record["artifact_root"]) if manifest.get("snapshot_id")
-                else GLiNERBackend(record["artifact_root"],device))
+            backend=_CachedBackend(cache,key,record["artifact_root"])
             backend.load()
             backends[key]=backend
         backend=backends[key]
@@ -71,8 +75,6 @@ def prepare_evaluator(connector, registry, bundle_ids: list[str], *, device: str
         if request.modelBundleId not in apps: raise PermissionError("Unconfigured worker bundle")
         return apps[request.modelBundleId].state.evaluate(request,identity)
     def close():
-        private_cache.close()
-        for backend in backends.values():
-            if not isinstance(backend,_PrivateBackend): backend.unload()
+        cache.close()
     evaluate.close=close
     return evaluate
