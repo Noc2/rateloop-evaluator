@@ -64,6 +64,24 @@ def test_init_accepts_existing_empty_directory_and_does_not_grant_training(tmp_p
     invoke(capsys, state, "init", "--workspace", "workspace-test", expected=1)
 
 
+def test_cli_forwards_bounded_validation_recipe_to_shared_trainer(initialized, tmp_path, capsys, monkeypatch):
+    from rateloop_evaluator import training
+    captured = []
+    def train_double(*args, options, **kwargs):
+        options.validate()
+        captured.append(options)
+        return {'modelDir': str(tmp_path/'candidate'), 'training': {'optimizerSteps': 75}}
+    monkeypatch.setattr(training, 'train_snapshot', train_double)
+    result = invoke(capsys, initialized, 'train', '--snapshot-id', 'snapshot',
+        '--model-dir', tmp_path/'base', '--output', tmp_path/'output', '--bundle-id', 'candidate',
+        '--max-steps', '200', '--learning-rate', '.0001', '--validation-fraction', '.2',
+        '--validation-interval', '25', '--early-stopping-patience', '3', '--min-validation-per-label', '5')
+    options = captured[0]
+    assert (options.max_steps, options.learning_rate, options.validation_fraction,
+            options.validation_interval, options.early_stopping_patience, options.min_validation_per_label) == (200, .0001, .2, 25, 3, 5)
+    assert result['qualityClaim'] is False
+
+
 def test_cli_register_serve_review_snapshot_train_and_revoke(initialized, tmp_path, capsys, monkeypatch):
     state = initialized
     model_dir = model_files(tmp_path)

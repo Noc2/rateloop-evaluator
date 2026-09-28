@@ -94,7 +94,7 @@ def main(argv=None):
     train.add_argument("--device",choices=["cpu","mps","cuda"],default="cpu"); train.add_argument("--method",choices=["full","lora"],default="lora"); train.add_argument("--epochs",type=int,default=3); train.add_argument("--max-steps",type=int,default=-1)
     train.add_argument("--learning-rate", type=float, default=1e-5)
     train.add_argument("--validation-fraction", type=float, default=0,
-                       help="Reserve 0.1–0.3 of frozen training groups; 0 is a mechanical smoke run")
+                       help="Use the fixed 0.2 validation split; 0 is a mechanical smoke run")
     train.add_argument("--validation-interval", type=int, default=25)
     train.add_argument("--early-stopping-patience", type=int, default=3)
     train.add_argument("--min-validation-per-label", type=int, default=5)

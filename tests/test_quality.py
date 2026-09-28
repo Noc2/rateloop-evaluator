@@ -54,6 +54,28 @@ def test_small_or_missing_class_cannot_silently_select_on_test_labels():
         validation_partition({'train': [row(1)], 'calibration': [row(2)], 'test': [row(3)]})
 
 
+def test_persistent_validation_aliases_preserve_roles_and_reject_later_family_merge():
+    source, ledger = snapshot(), {}
+    train, validation = validation_partition(source, assignments=ledger)
+    selected = validation[0]
+    # A new identifier must not silently reassign an already observed source.
+    previous_role_ids = {r['evaluation_id'] for r in validation}
+    selected['group_id'] = 'new-merged-group'
+    assert {r['evaluation_id'] for r in validation_partition(source, assignments=ledger)[1]} == previous_role_ids
+    # A relationship between old optimizer and validation material is unsafe.
+    train[0]['group_id'] = selected['group_id']
+    saved = dict(ledger)
+    with pytest.raises(ValueError, match='bridges frozen'):
+        validation_partition(source, assignments=ledger)
+    assert ledger == saved
+
+
+@pytest.mark.parametrize('fraction', [.1, .3, float('nan')])
+def test_validation_fraction_cannot_move_historical_holdouts(fraction):
+    with pytest.raises(ValueError, match='fixed 20%'):
+        validation_partition(snapshot(), fraction=fraction)
+
+
 def test_source_group_is_one_observation_and_ties_are_abstentions():
     rows = [row(1), row(2), row(3)]
     rows[2]['group_id'] = rows[0]['group_id']

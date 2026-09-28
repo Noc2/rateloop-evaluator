@@ -10,20 +10,21 @@ import hashlib
 import math
 
 from .comparison import _interval, label_metrics
-from .learning import _source_aliases
+from .learning import _digest, _source_aliases
 
 
 def validation_partition(snapshot: dict, *, fraction: float = .2,
-                         minimum_per_label: int = 5) -> tuple[list[dict], list[dict]]:
+                         minimum_per_label: int = 5, assignments: dict | None = None) -> tuple[list[dict], list[dict]]:
     """Use a fixed hash assignment, independent of optimizer seeds and row order.
 
     A group's role stays fixed when new examples are appended. Never rebalance
     sparse classes using calibration/test labels; request more examples instead.
     """
-    if not .1 <= fraction <= .3 or type(minimum_per_label) is not int or minimum_per_label < 2:
-        raise ValueError('Validation needs a 10–30% fraction and at least two groups per label')
+    if fraction != .2 or type(minimum_per_label) is not int or minimum_per_label < 2:
+        raise ValueError('Validation uses a fixed 20% fraction and at least two groups per label')
     seen, owners = {}, {}
     partitions = {'train': [], 'validation': []}
+    grouped = {}
     for part in ('train', 'calibration', 'test'):
         for row in snapshot[part]:
             group = row['group_id']
@@ -35,8 +36,17 @@ def validation_partition(snapshot: dict, *, fraction: float = .2,
                 if owner != (part, group):
                     raise ValueError('Related or duplicate material spans learning groups')
             if part == 'train':
-                value = int(hashlib.sha256(('rateloop.validation.v1:' + group).encode()).hexdigest(), 16) / 2**256
-                partitions['validation' if value < fraction else 'train'].append(row)
+                grouped.setdefault(group, []).append(row)
+    assigned = dict(assignments or {})
+    for group, rows in grouped.items():
+        aliases = {_digest(alias) for row in rows for alias in _source_aliases(row)}
+        known = {assigned[alias] for alias in aliases if alias in assigned}
+        if len(known) > 1 or known - {'train', 'validation'}:
+            raise ValueError('A source family bridges frozen optimizer and validation groups')
+        value = int(hashlib.sha256(('rateloop.validation.v1:' + group).encode()).hexdigest(), 16) / 2**256
+        role = next(iter(known)) if known else ('validation' if value < fraction else 'train')
+        partitions[role].extend(rows)
+        assigned.update({alias: role for alias in aliases})
     for rows in partitions.values():
         representatives = group_representatives(rows)
         if not representatives:
@@ -46,7 +56,18 @@ def validation_partition(snapshot: dict, *, fraction: float = .2,
             if any(counts[label['id']] < minimum_per_label for label in question['labels']):
                 raise ValueError('Insufficient training data: train and validation each need at least '
                                  f'{minimum_per_label} source groups for every label')
+    if assignments is not None:
+        assignments.update(assigned)
     return partitions['train'], partitions['validation']
+
+
+def freeze_validation_partition(store, snapshot: dict, *, minimum_per_label: int = 5):
+    """Persist alias roles across versions, source-family changes and restarts."""
+    scope = _digest([snapshot['workspace_id'], snapshot['template_id'],
+                     snapshot['template_version'], snapshot['purpose']])
+    with store.transaction() as state:
+        ledger = state.setdefault('validation_split_manifests', {}).setdefault(scope, {})
+        return validation_partition(snapshot, minimum_per_label=minimum_per_label, assignments=ledger)
 
 
 def group_representatives(rows: list[dict]) -> list[dict]:
