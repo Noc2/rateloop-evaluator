@@ -566,3 +566,55 @@ and already-computed result reconciliation are not blocked by that compute
 budget. The cap and measurements support a small pilot cost estimate, not an
 unlimited-throughput or fixed-price promise; Railway's live measurements and
 retained volume usage must be checked after deployment.
+
+## Immutable training schema correction — 28 September 2026
+
+Implementation `7bc6dd4` corrects two reproduced preprocessing defects in pinned
+`gliner2==2.0.0`. Default classification augmentation could replace `approved`
+with `label 1`, reinsert `approved`, then train that original correct label as a
+negative option. Separately, task lookup by `startswith` could bind `quality`
+to question `q` and assign the first question's targets. Training now preserves
+the exact inference schema and binds each target to its complete question.
+The loss, bounded recipe, validation gate and authorization checks are unchanged.
+
+The actual upstream schema/target regression suite exercised both labels,
+questions with and without demonstrations, and prefix-ID multi-question
+schemas across 64 seeds. An independent check using the pinned tokenizer and
+German questions with demonstrations compared complete training/inference
+collation across 16 seeds: identical input IDs, attention masks and class-marker
+indices, with the correct opposing one-hot targets. No weights or network were
+needed for that check. The full suite passed 547 tests, with five opt-in skips;
+the separate real MPS LoRA optimizer, save/reload, calibration, signing and
+revocation check passed in 23.76 seconds with network connections blocked.
+
+One prescribed budget-fixture regression reused the original immutable snapshot,
+all source assignments and the original rank-8 LoRA recipe: seed 42, FP32,
+batch size 1, learning rate `1e-4`, at most 200 steps, validation every 25 and
+patience 3. The authored CSV has 240 rows in 120 paired project groups; its SHA256
+is `3f5d989b5827a866fd0d537674b1bd96a0d7ebc99ca3db95540e14caa01170f0`.
+The optimizer used 64 source-group representatives (74 balanced rows per pass),
+validation used 20 groups, and calibration and final test each held 18 separate
+groups. No data, recipe or gate was changed after viewing this run's outcomes.
+
+| Frozen set | Base correct | Corrected candidate correct | False approvals, base → candidate | Positive recall, base → candidate | Negative recall, base → candidate |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Validation / 20 groups | 13/20 | 20/20 | 7 → 0 | 9/9 → 9/9 | 4/11 → 11/11 |
+| Final test / 18 groups | 13/18 | 17/18 | 5 → 1 | 9/9 → 9/9 | 4/9 → 8/9 |
+
+Selection used validation alone and chose step 125; execution stopped at the
+unchanged 200-step cap. The final test balanced agreement was 72.2% for the base
+and 94.4% for the corrected candidate. The historical affected candidate scored
+16/18 with two false approvals on this same synthetic test. The corrected
+checkpoint reload discrepancy was zero and tokenizer identity was preserved;
+its weights SHA256 is
+`7986f6bf7d491f69ddc190a833a350d82511864e740940f9dd0e20c0c2c9755a`.
+Private reports remain outside Git under
+`/private/tmp/rateloop-budget-schema-fixed-20260928`.
+
+These repeated text patterns are a mechanical code-regression fixture, not
+independent human evidence or a representative accuracy benchmark. They do not
+establish generalization or authorize automatic decisions. Prior budget,
+opaque-code and public-data training attempts used the affected preprocessing;
+their failures remain recorded but cannot isolate intrinsic model limits from
+that defect. The separate hosted budget test also uses a different namespace's
+frozen split, so local results do not substitute for its deployment verification.
