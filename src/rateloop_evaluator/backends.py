@@ -50,6 +50,13 @@ def file_hash(path: Path) -> str:
     return digest.hexdigest()
 
 
+def tokenizer_commitment(manifest: dict[str, Any]) -> str:
+    """The existing wire identity shared by registration and trained artifacts."""
+    from .protocol import commitment
+    return commitment({name: digest for name, digest in manifest["files"].items()
+                       if "tokenizer" in name}, "rateloop.tokenizer.v1")
+
+
 def artifact_inventory(directory: Path) -> dict[str, Path]:
     files = {}
     for path in sorted(directory.rglob("*")):

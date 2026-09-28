@@ -7,13 +7,14 @@ import gc
 import hashlib
 import json
 import math
+import shutil
 from pathlib import Path
 from typing import Any
 from .execution import serialized_training
 from .protocol import validate_no_demonstration_overlap
 
 from .backends import (GLiNERBackend, MODEL_ID, MODEL_REVISION, offline_environment,
-                       question_schema, question_examples, render_input, validate_scores, write_model_manifest, model_token_limit, file_hash, MANIFEST_NAME, validate_local_model)
+                       question_schema, question_examples, render_input, validate_scores, write_model_manifest, model_token_limit, file_hash, MANIFEST_NAME, validate_local_model, artifact_inventory, tokenizer_commitment)
 
 
 REVIEWED_BASE_WEIGHTS_SHA256 = "c1ff4ec0bc00031c15530b8f3c33d3677f27949e6a0cb52e1247a6224b6c5395"
@@ -153,6 +154,43 @@ def sanitized_training_metrics(result: dict[str, Any]) -> dict[str, Any]:
     return summary
 
 
+def tokenizer_semantics(model: Any) -> dict[str, Any]:
+    """Capture the complete fast tokenizer, vocabulary and special-token rules."""
+    tokenizer = model.processor.tokenizer
+    return {"backend": json.loads(tokenizer.backend_tokenizer.to_str()),
+            "specialTokens": tokenizer.special_tokens_map,
+            "modelInputs": tokenizer.model_input_names,
+            "maxLength": tokenizer.model_max_length,
+            "paddingSide": tokenizer.padding_side,
+            "truncationSide": tokenizer.truncation_side,
+            "cleanupSpaces": tokenizer.clean_up_tokenization_spaces}
+
+
+def preserve_tokenizer_assets(source_dir: Path, artifact_dir: Path, source_manifest: dict[str, Any]) -> None:
+    """Keep exact base bytes; upstream save_pretrained reserializes these files.
+
+    Remove generated tokenizer sidecars absent from the pinned source as they can
+    override its settings on reload. Loaded semantics are checked separately.
+    """
+    sidecars = {"special_tokens_map.json", "added_tokens.json", "vocab.json", "vocab.txt",
+                "merges.txt", "sentencepiece.bpe.model", "spiece.model"}
+    def tokenizer_asset(name): return "tokenizer" in name or name in sidecars
+    selected = {name: digest for name, digest in source_manifest["files"].items() if tokenizer_asset(name)}
+    if not {"tokenizer.json", "tokenizer_config.json"} <= selected.keys():
+        raise ValueError("Pinned source tokenizer assets are incomplete")
+    source_files = artifact_inventory(source_dir)
+    for name, digest in selected.items():
+        if name not in source_files or file_hash(source_files[name]) != digest:
+            raise ValueError("Pinned source tokenizer changed during training")
+    for name, path in artifact_inventory(artifact_dir).items():
+        if tokenizer_asset(name) and name not in selected:
+            path.unlink()
+    for name in selected:
+        target = artifact_dir / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(source_files[name], target)
+
+
 @serialized_training
 def train_snapshot(store: Any, snapshot_id: str, workspace_id: str,
                    model_dir: str | Path, output_dir: str | Path, *, bundle_id: str,
@@ -175,6 +213,7 @@ def train_snapshot(store: Any, snapshot_id: str, workspace_id: str,
     assert_public_training_base(validate_local_model(model_dir))
     backend = GLiNERBackend(model_dir, options.device)
     model = backend.load()
+    original_tokenizer = tokenizer_semantics(model)
     for example, record in zip(examples, records):
         count = backend.count_tokens(record["input"], example["template"]["questions"])
         limit = min(example["template"]["maxTokens"], model_token_limit(model))
@@ -195,6 +234,8 @@ def train_snapshot(store: Any, snapshot_id: str, workspace_id: str,
     if options.method == "lora":
         trained = trained.merge_and_unload()
     trained.eval()
+    if tokenizer_semantics(trained) != original_tokenizer:
+        raise RuntimeError("Training changed tokenizer semantics")
     probe = examples[0]
     text = records[0]["input"]
     questions = probe["template"]["questions"]
@@ -202,6 +243,7 @@ def train_snapshot(store: Any, snapshot_id: str, workspace_id: str,
                                               include_confidence=True), questions)
     artifact_dir = output_dir / "model"
     trained.save_pretrained(str(artifact_dir))
+    preserve_tokenizer_assets(Path(model_dir), artifact_dir, backend.manifest)
     metadata = {
         "bundleId": bundle_id, "workspaceId": workspace_id, "snapshotId": snapshot_id,
         "trainedAt": datetime.now(timezone.utc).isoformat(), "options": asdict(options),
@@ -221,6 +263,8 @@ def train_snapshot(store: Any, snapshot_id: str, workspace_id: str,
     source.setdefault("baseWeightsSha256", (backend.manifest or {})["files"]["model.safetensors"])
     source["parentModelManifestSha256"] = file_hash(Path(model_dir) / MANIFEST_NAME)
     manifest = write_model_manifest(artifact_dir, source=source, training=metadata)
+    if tokenizer_commitment(manifest) != tokenizer_commitment(backend.manifest):
+        raise RuntimeError("Trained checkpoint changed the pinned tokenizer identity")
     # Release training state before loading the checkpoint again. This verifies
     # a portable, merged checkpoint rather than relying on a live adapter.
     del trainer, trained, model
@@ -232,6 +276,8 @@ def train_snapshot(store: Any, snapshot_id: str, workspace_id: str,
     elif options.device == "cuda":
         torch.cuda.empty_cache()
     reloaded = GLiNERBackend(artifact_dir, options.device)
+    if tokenizer_semantics(reloaded.load()) != original_tokenizer:
+        raise RuntimeError("Trained checkpoint tokenizer round trip failed")
     actual = reloaded.predict(text, questions)
     max_error = max(abs(actual[qid][label] - score)
                     for qid, scores in expected.items() for label, score in scores.items())

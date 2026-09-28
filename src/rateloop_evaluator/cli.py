@@ -387,7 +387,7 @@ def run(args):
         return {"modelBundleId":req.modelBundleId,"templateCommitment":req.template_commitment(),
                 "mode":"shadow" if getattr(args,"activate",False) else "candidate","publicKey":registry.public_key}
     if args.command == "export-registration":
-        from .backends import MANIFEST_NAME, GLINER_SCORE_CAPABILITY
+        from .backends import MANIFEST_NAME, GLINER_SCORE_CAPABILITY, tokenizer_commitment
         record = registry.get(args.bundle_id,workspace); manifest = record["manifest"]
         req = EvaluationRequest.model_validate(read_json(args.request))
         from .templates import bundle_supports_template, is_custom_text_template
@@ -414,7 +414,7 @@ def run(args):
         if manifest.get("snapshot_id"): snapshot_digest = "sha256:"+store.load_snapshot(manifest["snapshot_id"],workspace)["content_digest"]
         registration = {"modelBundleId":args.bundle_id,"templateCommitment":req.template_commitment(),"language":req.template.language,
             "baseWeightsCommitment":"sha256:"+base_hash,"adapterCommitment":commitment(model["files"],"rateloop.adaptation.v1") if model.get("training") else None,
-            "tokenizerCommitment":commitment({k:v for k,v in model["files"].items() if "tokenizer" in k},"rateloop.tokenizer.v1"),"quantization":"fp32",
+            "tokenizerCommitment":tokenizer_commitment(model),"quantization":"fp32",
             "trainingSnapshotCommitment":snapshot_digest,"evaluationReportCommitment":commitment(active,"rateloop.deployment-evidence.v1"),
             "licenseManifestCommitment":commitment({"software":"Apache-2.0","weights":model["source"].get("license","Apache-2.0"),"model":manifest["model_id"],"revision":manifest["model_revision"]},"rateloop.licenses.v1"),
             "maxTokens":manifest["max_tokens"],"criteria":criteria,"scoreCapability":dict(GLINER_SCORE_CAPABILITY)}

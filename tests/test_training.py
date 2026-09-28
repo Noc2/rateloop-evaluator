@@ -70,3 +70,24 @@ def test_retraining_requires_original_public_weights_not_private_ancestry():
         if change == "floating-revision": candidate["source"]["revision"] = "main"
         with pytest.raises(PermissionError, match="reviewed public"):
             assert_public_training_base(candidate)
+
+
+def test_checkpoint_preserves_base_tokenizer_assets_and_removes_new_sidecars(tmp_path):
+    from rateloop_evaluator.backends import tokenizer_commitment, write_model_manifest
+    from rateloop_evaluator.training import preserve_tokenizer_assets
+    source, output = tmp_path / "source", tmp_path / "saved"
+    source.mkdir(); output.mkdir()
+    for name in ("tokenizer.json", "tokenizer_config.json"):
+        (source / name).write_text('{ "source": true }\n')
+        (output / name).write_text('{"reserialized":true}')
+    (output / "special_tokens_map.json").write_text('{"new":"sidecar"}')
+    (output / "model.safetensors").write_bytes(b"updated weights")
+    manifest = write_model_manifest(source, source={})
+    preserve_tokenizer_assets(source, output, manifest)
+    saved = write_model_manifest(output, source={})
+    assert tokenizer_commitment(saved) == tokenizer_commitment(manifest)
+    assert not (output / "special_tokens_map.json").exists()
+    assert (output / "model.safetensors").read_bytes() == b"updated weights"
+    (source / "tokenizer.json").write_text('{}')
+    with pytest.raises(ValueError, match="changed during training"):
+        preserve_tokenizer_assets(source, output, manifest)

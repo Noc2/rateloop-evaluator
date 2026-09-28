@@ -13,6 +13,7 @@ from cryptography.fernet import Fernet
 import pytest
 
 from rateloop_evaluator import cli
+from rateloop_evaluator.backends import tokenizer_commitment, validate_local_model
 from rateloop_evaluator.learning import LearningStore
 from rateloop_evaluator.registry import provision_signing_key
 from rateloop_evaluator.protocol import EvaluationRequest
@@ -72,6 +73,8 @@ def test_real_train_optimizer_save_reload_and_revocation(tmp_path, monkeypatch, 
         tmp_path / "training", bundle_id=f"smoke-{method}", options=TrainOptions(method=method,
         device=os.environ.get("RATELOOP_TEST_DEVICE", "cpu"), max_steps=1, epochs=1))
     assert result["training"]["optimizerSteps"] == 1
+    base_manifest = validate_local_model(os.environ["RATELOOP_TEST_MODEL_DIR"])
+    assert tokenizer_commitment(result["manifest"]) == tokenizer_commitment(base_manifest)
     assert len(authorizations)>=3  # Startup, pre-training and actual optimizer authorization.
     assert result["training"]["trainableParametersChanged"] is True
     assert result["training"]["reloadMaxAbsoluteError"] < 1e-4
@@ -107,6 +110,12 @@ def test_real_train_optimizer_save_reload_and_revocation(tmp_path, monkeypatch, 
         registered = command("register", "--activate", "--model-dir", result["modelDir"], "--request", request_path,
             "--snapshot-id", snapshot["id"], "--calibrations", calibration_path, "--selective-policy", policy_path)
         assert registered["mode"] == "shadow"
+        registration_path = tmp_path / "website-registration.json"
+        command("export-registration", "--bundle-id", "smoke-lora", "--request", request_path,
+                "--output", registration_path)
+        exported = json.loads(registration_path.read_text())
+        assert exported["tokenizerCommitment"] == tokenizer_commitment(base_manifest)
+        assert exported["tokenizerCommitment"] == tokenizer_commitment(result["manifest"])
         evidence_path = tmp_path / "test-evidence.json"
         scored = command("score-test", "--bundle-id", "smoke-lora", "--output", evidence_path,
                          "--device", os.environ.get("RATELOOP_TEST_DEVICE", "cpu"))
