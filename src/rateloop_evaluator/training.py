@@ -406,9 +406,12 @@ def train_snapshot(store: Any, snapshot_id: str, workspace_id: str,
     elif options.device == "cuda":
         torch.cuda.empty_cache()
     metadata["reloadMaxAbsoluteError"] = max_error
-    store.register_model_lineage(bundle_id, snapshot_id, workspace_id)
-    # Record only after current rights are checked by lineage registration.
+    # Write the complete verified artifact before its immutable lineage. A
+    # restart can safely finish registration using the same authorized snapshot;
+    # an initial manifest without the reload receipt is never publishable.
+    store.load_snapshot(snapshot_id, workspace_id)
     manifest = write_model_manifest(artifact_dir, source=source, training=metadata)
     report = {"modelDir": str(artifact_dir), "manifest": manifest, "training": metadata}
     (output_dir / "training-report.json").write_text(json.dumps(report, indent=2, allow_nan=False) + "\n")
+    store.register_model_lineage(bundle_id, snapshot_id, workspace_id)
     return report
