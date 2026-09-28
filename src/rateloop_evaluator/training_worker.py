@@ -24,6 +24,7 @@ from .connector import ConnectorRejected, ConnectorUnavailable, _hash, _opaque, 
 from .datasets import import_dataset, erase_dataset_version, MAX_BYTES, MAX_ROWS
 from .execution import model_execution, ExecutionBusy
 from .protocol import EvaluationRequest, Template, commitment
+from .presence import validate_served_model_bundles
 from .templates import is_custom_text_template, overall_approval
 from .training import TrainOptions, train_snapshot
 
@@ -317,6 +318,21 @@ class TrainingWorker:
         record=self.registry.get(bundle_id,self.connector.workspace_id)
         return json.loads(output.read_text()),record["envelope"],request_file
 
+    def _bundles_after_switch(self,job):
+        # Drop only this question's previous private default, plus already
+        # unusable/retired IDs. A same-question replacement consumes no new slot.
+        current=self.configured_bundles()
+        with self.connector.learning.transaction() as database:
+            private=[bundle for bundle in current if bundle not in self.base_bundle_ids and
+                job["templateCommitment"] not in database["bundles"].get(bundle,{}).get("envelope",{}).get("manifest",{}).get("template_commitments",[])]
+        if job["candidateBundleId"] not in self.base_bundle_ids and job["candidateBundleId"] not in private:
+            private.append(job["candidateBundleId"])
+        bundles=list(dict.fromkeys([*self.base_bundle_ids,*private]))
+        try: validate_served_model_bundles(bundles)
+        except ValueError:
+            raise ValueError("Activation capacity reached; restore the original model for another question first") from None
+        return bundles
+
     def _operate(self,job,content,template,check):
         result={"schemaVersion":"rateloop.evaluator.training-result.v1","action":job["action"],"datasetVersionId":job["datasetVersionId"]}
         if job["action"] in ("activate","rollback"):
@@ -340,6 +356,7 @@ class TrainingWorker:
                     expected_bundle_id=job["candidateBundleId"],dry_run=True)
             if previous==job["candidateBundleId"]:
                 raise ValueError("Requested model is already active")
+            self._bundles_after_switch(job)
             result.update(activeModelBundleId=job["candidateBundleId"],previousModelBundleId=previous)
             check()
             return result
@@ -417,6 +434,7 @@ class TrainingWorker:
         if job["action"] not in ("activate","rollback"): return
         template=Template.model_validate(job["taskTemplate"])
         result=job["result"]
+        bundles=self._bundles_after_switch(job)
         try: active=self.registry.active(self.connector.workspace_id,job["templateCommitment"],template.language)
         except KeyError:
             if job["action"]!="activate": raise
@@ -434,11 +452,7 @@ class TrainingWorker:
         with self.connector.learning.transaction() as db:
             # Pending task evaluations were drained by the server before the
             # acknowledged switch. Preserve artifacts, not all warm checkpoints.
-            active=self._state(db)["active_bundles"]
-            active[:]=[bundle for bundle in active if job["templateCommitment"] not in
-                db["bundles"].get(bundle,{}).get("envelope",{}).get("manifest",{}).get("template_commitments",[])]
-            if job["candidateBundleId"] not in self.base_bundle_ids and job["candidateBundleId"] not in active:
-                active.append(job["candidateBundleId"])
+            self._state(db)["active_bundles"]=[bundle for bundle in bundles if bundle not in self.base_bundle_ids]
         self.on_models_changed(self.configured_bundles())
 
     def _complete(self,job):
@@ -516,7 +530,9 @@ class TrainingWorker:
                 # Keep the intent for reconciliation; never start inference
                 # using the old default while the server has selected another.
                 raise ConnectorUnavailable("Acknowledged model switch requires local reconciliation") from None
-            job["failureCode"] = ("insufficient_training_data"
+            job["failureCode"] = ("activation_capacity_reached"
+                if isinstance(error,ValueError) and str(error).startswith("Activation capacity reached")
+                else "insufficient_training_data"
                 if isinstance(error,ValueError) and str(error).startswith("Insufficient training data")
                 else "validation_not_improved"
                 if isinstance(error,ValueError) and str(error).startswith("Validation did not improve")

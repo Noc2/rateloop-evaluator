@@ -10,12 +10,20 @@ from .connector import ConnectorRejected, ConnectorUnavailable, RateLoopConnecto
 from .execution import model_execution
 
 
+MAX_SERVED_MODEL_BUNDLES = 32
+
+
+def validate_served_model_bundles(model_bundle_ids):
+    """Use one bound for presence, activation and recovered serving state."""
+    if not 1 <= len(model_bundle_ids) <= MAX_SERVED_MODEL_BUNDLES or len(set(model_bundle_ids)) != len(model_bundle_ids):
+        raise ValueError(f"Presence requires 1-{MAX_SERVED_MODEL_BUNDLES} explicit unique model bundles")
+    for bundle in model_bundle_ids: _opaque(bundle)
+
+
 class WorkerPresence:
     def __init__(self, connector: RateLoopConnector, worker_id: str, model_bundle_ids: list[str]):
         _opaque(worker_id)
-        if not 1 <= len(model_bundle_ids) <= 32 or len(set(model_bundle_ids)) != len(model_bundle_ids):
-            raise ValueError("Presence requires 1-32 explicit unique model bundles")
-        for bundle in model_bundle_ids: _opaque(bundle)
+        validate_served_model_bundles(model_bundle_ids)
         if not connector.metadata_upload_enabled:
             raise PermissionError("Worker presence requires explicit metadata upload permission")
         self.connector=connector; self.worker_id=worker_id; self.model_bundle_ids=list(model_bundle_ids)
@@ -28,6 +36,7 @@ class WorkerPresence:
             raise ValueError("Training presence requires an operation identity")
         if state == "busy" and operation_id is not None:
             raise ValueError("Busy presence cannot release a training operation")
+        validate_served_model_bundles(self.model_bundle_ids)
         body={"workerId":self.worker_id,"modelBundleIds":self.model_bundle_ids,"state":state}
         if operation_id is not None: body["operationId"]=operation_id
         # This metadata-only update is idempotent for the same operation. Do not
