@@ -7,6 +7,7 @@ import math
 import os
 from pathlib import Path
 import re
+import stat
 from typing import Any
 
 MODEL_ID = "fastino/gliner2.5-multi-v1"
@@ -219,6 +220,26 @@ def model_token_limit(model: Any) -> int:
     return min(value for value in limits if isinstance(value, int) and value > 0)
 
 
+def release_checkpoint_file_cache(model_dir: str | Path) -> None:
+    """Hint only this immutable checkpoint's read cache away on Linux.
+
+    Model tensor memory stays resident. This avoids billing both tensor memory
+    and unused public/private file copies after model switches. Unsupported
+    filesystems/platforms safely ignore the optimization; no file is modified.
+    """
+    advise=getattr(os,"posix_fadvise",None)
+    strategy=getattr(os,"POSIX_FADV_DONTNEED",None)
+    if advise is None or strategy is None: return
+    descriptor=None
+    try:
+        descriptor=os.open(Path(model_dir)/"model.safetensors",os.O_RDONLY|getattr(os,"O_NOFOLLOW",0))
+        if stat.S_ISREG(os.fstat(descriptor).st_mode): advise(descriptor,0,0,strategy)
+    except OSError:
+        pass  # Cache hints are optional; artifact validation remains mandatory.
+    finally:
+        if descriptor is not None: os.close(descriptor)
+
+
 class GLiNERBackend:
     """Lazy local model. One worker owns one instance; no implicit downloads."""
     question_execution = "joint_schema"
@@ -244,6 +265,7 @@ class GLiNERBackend:
             model = AutoExtractor.from_pretrained(str(self.model_dir), local_files_only=True)
             model.to(self.device).float().eval()
             self._model = model
+            release_checkpoint_file_cache(self.model_dir)
         return self._model
 
     def unload(self) -> None:
@@ -258,6 +280,7 @@ class GLiNERBackend:
         gc.collect()
         if self.device == "mps": torch.mps.empty_cache()
         elif self.device == "cuda": torch.cuda.empty_cache()
+        release_checkpoint_file_cache(self.model_dir)
 
     def count_tokens(self, text: str, questions: list[dict[str, Any]]) -> int:
         model = self.load()
@@ -362,6 +385,7 @@ class GLiClassBackend:
             self.pipeline.pipe.label_token = tokenizer.convert_ids_to_tokens(model.config.class_token_index)
             self.pipeline.pipe.sep_token = tokenizer.convert_ids_to_tokens(model.config.text_token_index)
             self._model = model
+            release_checkpoint_file_cache(self.model_dir)
         return self._model
 
     @staticmethod

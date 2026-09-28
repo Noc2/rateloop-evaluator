@@ -152,3 +152,25 @@ def test_provisioned_model_license_must_match_reviewed_release(tmp_path):
         verify_checkpoint_license(tmp_path)
     card.write_text("---\nlicense: apache-2.0\n---\n")
     verify_checkpoint_license(tmp_path)
+
+
+
+def test_checkpoint_cache_hint_is_read_only_scoped_and_never_follows_symlink(tmp_path,monkeypatch):
+    from rateloop_evaluator import backends
+    weights=tmp_path/'model.safetensors';weights.write_bytes(b'Immutable test weights')
+    calls=[]
+    monkeypatch.setattr(backends.os,'POSIX_FADV_DONTNEED',4,raising=False)
+    monkeypatch.setattr(backends.os,'posix_fadvise',lambda descriptor,offset,length,strategy:
+        calls.append((backends.os.read(descriptor,100),offset,length,strategy)),raising=False)
+    backends.release_checkpoint_file_cache(tmp_path)
+    assert calls==[(b'Immutable test weights',0,0,4)] and weights.read_bytes()==b'Immutable test weights'
+    weights.unlink();weights.symlink_to(tmp_path/'other')
+    (tmp_path/'other').write_bytes(b'Unrelated private file')
+    backends.release_checkpoint_file_cache(tmp_path)
+    assert len(calls)==1
+
+
+def test_unsupported_checkpoint_cache_hint_does_not_change_inference_contract(tmp_path,monkeypatch):
+    from rateloop_evaluator import backends
+    monkeypatch.setattr(backends.os,'posix_fadvise',None,raising=False)
+    backends.release_checkpoint_file_cache(tmp_path)
