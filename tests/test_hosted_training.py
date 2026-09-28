@@ -175,3 +175,17 @@ def test_low_disk_refuses_training_before_claimed_content_is_loaded(runner,monke
     assert runner[1]['failed'][0]['errorCode']=='training_resource_limit'
     assert not runner[1]['completed'] and 'child_start' not in events
     assert not any(str(call.url.path).endswith('/content') for call in runner[-1])
+
+
+def test_exhausted_budget_still_acknowledges_already_computed_result(runner):
+    original,behavior,*_=runner
+    behavior['offline_complete']=True
+    with pytest.raises(ConnectorUnavailable): original.run_once()
+    assert 'result' in original._saved()
+    worker,events,_=isolated(runner)
+    worker._reserve_budget(runner[3])
+    behavior['offline_complete']=False
+    assert worker.run_once()['state']=='training_completed'
+    assert original._saved() is None
+    assert 'child_start' not in events
+    assert behavior['train_calls']==1

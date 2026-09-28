@@ -113,6 +113,10 @@ class IsolatedHostedTrainingWorker(TrainingWorker):
         return self._fail(saved)
 
     def execute_pending(self, job):
+        if "result" in job:
+            # A completed calculation needs only receipt/switch reconciliation.
+            # A crash-reserved daily budget must never block that cleanup.
+            return super().execute_pending(job)
         if job["action"]=="train" and shutil.disk_usage(self.root).free < MIN_TRAINING_FREE_BYTES:
             return self._resource_failure(job,"training_resource_limit")
         reservation=self._reserve_budget(job)
