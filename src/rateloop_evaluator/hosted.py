@@ -28,8 +28,10 @@ from .worker_runtime import prepare_evaluator
 def read_config(path: str | Path) -> dict:
     value=json.loads(read_secret(path))
     fields={"schemaVersion","workspaceId","workerId","modelDir","stateDir","bundles","connection","pollSeconds","healthPort"}
-    if not isinstance(value,dict) or set(value)!=fields or value["schemaVersion"]!="rateloop.hosted-worker.v1":
+    if not isinstance(value,dict) or set(value)-fields-{"privateTraining"} or not fields<=set(value) or value["schemaVersion"]!="rateloop.hosted-worker.v1":
         raise ValueError("Invalid hosted worker configuration")
+    if "privateTraining" in value and type(value["privateTraining"]) is not bool:
+        raise ValueError("Hosted private training must be explicitly enabled or disabled")
     _opaque(value["workspaceId"]); _opaque(value["workerId"])
     for key in ("modelDir","stateDir"):
         path=Path(value[key])
@@ -202,12 +204,29 @@ def run_hosted(config: dict) -> None:
     try:
         with single_worker(root,config["workerId"]), health_server(health,config["healthPort"]):
             bundles=[b["modelBundleId"] for b in config["bundles"]]
+            trainer=None
+            if config.get("privateTraining") is True:
+                from .hosted_training import IsolatedHostedTrainingWorker
+                trainer=IsolatedHostedTrainingWorker(connector,registry,state_dir=root,worker_id=config["workerId"],
+                    model_dir=config["modelDir"],model_bundle_ids=bundles,device="cpu",hosted_config=config,
+                    release_inference=lambda:worker.evaluate.close(),stop=stop,on_poll=health.polled)
+                trainer.sync_permissions()
+                bundles=trainer.configured_bundles()
             evaluate=prepare_evaluator(connector,registry,bundles,device="cpu")
             health.warm=True
             worker=OutboundWorker(connector,worker_id=config["workerId"],model_bundle_ids=bundles,evaluate=evaluate,
-                poll_seconds=config["pollSeconds"],on_poll=health.polled)
+                poll_seconds=config["pollSeconds"],on_poll=health.polled,training_worker=trainer)
             worker.stop=stop
-            worker.run()
+            if trainer:
+                def reload_models(updated):
+                    worker.evaluate.close()
+                    worker.evaluate=prepare_evaluator(connector,registry,updated,device="cpu")
+                    worker.model_bundle_ids=list(updated)
+                    worker.presence.model_bundle_ids=list(updated)
+                trainer.on_models_changed=reload_models
+            try: worker.run()
+            finally:
+                if hasattr(getattr(worker,"evaluate",None),"close"): worker.evaluate.close()
     finally:
         health.stopping=True
         connector.close()

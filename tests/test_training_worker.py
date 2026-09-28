@@ -348,3 +348,33 @@ def test_reclaimed_failed_operation_retains_terminal_intent(runner):
     assert behavior["train_calls"] == 1
     assert not behavior["completed"]
     assert len([r for r in calls if r.url.path.endswith("/complete")]) == completion_count
+
+
+def test_reviewed_validation_recipe_cannot_expand_compute_or_change_selection():
+    recipe={"schemaVersion":training_worker.RECIPE_SCHEMA,"method":"lora","epochs":5,"maxSteps":200,
+        "validationFraction":.2,"validationInterval":25,"earlyStoppingPatience":3,"minValidationPerLabel":5,"learningRate":.0001}
+    options=training_worker.training_options(recipe,"cpu")
+    assert options.max_steps==200 and options.validation_fraction==.2 and options.min_validation_per_label==5
+    assert training_worker.CAPABILITY["recipeSchemaVersion"]==recipe["schemaVersion"]
+    for field,bad in (("maxSteps",201),("maxSteps",24),("maxSteps",True),("epochs",1),("validationFraction",0),
+        ("learningRate",.1),("validationInterval",1),("minValidationPerLabel",1),("schemaVersion","other")):
+        with pytest.raises(ValueError): training_worker.training_options({**recipe,field:bad},"cpu")
+    with pytest.raises(ValueError): training_worker.training_options({**recipe,"path":"/arbitrary"},"cpu")
+
+
+def test_insufficient_validation_groups_report_actionable_failure_without_private_details(runner,monkeypatch):
+    worker,behavior,*_=runner
+    def insufficient(*args,**kwargs): raise ValueError('Insufficient training data: private example must not leak')
+    monkeypatch.setattr(training_worker,'train_snapshot',insufficient)
+    assert worker.run_once()['state']=='training_failed'
+    assert behavior['failed'][0]['errorCode']=='insufficient_training_data'
+    assert 'private example' not in json.dumps(behavior['failed'])
+
+
+def test_validation_regression_never_becomes_generic_failure_or_candidate(runner,monkeypatch):
+    worker,behavior,*_=runner
+    def declined(*args,**kwargs): raise ValueError('Validation did not improve over the original evaluator')
+    monkeypatch.setattr(training_worker,'train_snapshot',declined)
+    assert worker.run_once()['state']=='training_failed'
+    assert behavior['failed'][0]['errorCode']=='validation_not_improved'
+    assert not behavior['completed']

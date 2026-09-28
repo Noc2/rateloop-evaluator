@@ -25,11 +25,35 @@ from .protocol import EvaluationRequest, Template, commitment
 from .templates import is_custom_text_template, overall_approval
 from .training import TrainOptions, train_snapshot
 
-CAPABILITY={"schemaVersion":"rateloop.evaluator.training-worker.v1","maxRows":MAX_ROWS,"maxSteps":200}
+RECIPE_SCHEMA="rateloop.evaluator.training-recipe.v2"
+CAPABILITY={"schemaVersion":"rateloop.evaluator.training-worker.v1","maxRows":MAX_ROWS,"maxSteps":200,
+    "recipeSchemaVersion":RECIPE_SCHEMA}
 _JOB_FIELDS={"jobId","action","modelBundleId","candidateBundleId","templateCommitment","datasetVersionId",
              "datasetCommitment","leaseToken","leaseExpiresAt"}
 _AUTH_FIELDS={"grantId","workspaceId","apiKeyId","workerId","rights","caseIds","templateIds","templateCommitments",
               "fields","modelBundleIds","expiresAt","authorizationUntil","datasetVersionId","datasetCommitment"}
+
+
+def training_options(recipe, device):
+    """Allow only reviewed, cost-bounded recipes; never accept arbitrary settings."""
+    if not isinstance(recipe,dict): raise ValueError("Invalid private training recipe")
+    if set(recipe)=={"method","epochs","maxSteps"}:
+        # In-flight jobs created before v2 retain their original semantics.
+        if (recipe["method"]!="lora" or type(recipe["epochs"]) is not int or recipe["epochs"]!=1
+                or type(recipe["maxSteps"]) is not int or not 1<=recipe["maxSteps"]<=CAPABILITY["maxSteps"]):
+            raise ValueError("Invalid legacy private LoRA recipe")
+        return TrainOptions(method="lora",device=device,epochs=1,max_steps=recipe["maxSteps"])
+    expected={"schemaVersion":RECIPE_SCHEMA,"method":"lora","epochs":5,"validationFraction":.2,
+        "validationInterval":25,"earlyStoppingPatience":3,"minValidationPerLabel":5,"learningRate":.0001}
+    if (set(recipe)!=set(expected)|{"maxSteps"}
+            or any(type(recipe[key]) is not type(value) or recipe[key]!=value for key,value in expected.items())
+            or type(recipe["maxSteps"]) is not int or not 25<=recipe["maxSteps"]<=CAPABILITY["maxSteps"]):
+        raise ValueError("Unsupported validation-selected private LoRA recipe")
+    options=TrainOptions(method="lora",device=device,epochs=5,max_steps=recipe["maxSteps"],
+        validation_fraction=.2,validation_interval=25,early_stopping_patience=3,min_validation_per_label=5,
+        learning_rate=.0001)
+    options.validate()
+    return options
 
 
 class _JobStore:
@@ -43,7 +67,7 @@ class _JobStore:
 
 class TrainingWorker:
     def __init__(self, connector, registry, *, state_dir, worker_id, model_dir, model_bundle_ids, device="cpu",
-                 heartbeat_seconds=15, on_models_changed=None):
+                 heartbeat_seconds=15, on_models_changed=None, on_poll=None):
         _opaque(worker_id)
         if device not in ("cpu","mps","cuda") or not 1<=heartbeat_seconds<=30:
             raise ValueError("Invalid training runner configuration")
@@ -55,6 +79,7 @@ class TrainingWorker:
         self.worker_id,self.device,self.heartbeat_seconds=worker_id,device,heartbeat_seconds
         self.base_bundle_ids=list(model_bundle_ids)
         self.on_models_changed=on_models_changed or (lambda _:None)
+        self.on_poll=on_poll or (lambda _:None)
 
     def _state(self, database):
         return self.connector._state(database).setdefault("training_worker",{}).setdefault(self.worker_id,
@@ -135,6 +160,7 @@ class TrainingWorker:
                     expires_at=expires,authorization_until=until,evidence="Owner-authorized website dataset "+grant_id,grant_id=local_id)
             mirrored[grant_id]={"localId":local_id,"digest":digest,"authorization":deepcopy(authorization)}
         with self.connector.learning.transaction() as db: self._state(db)["permissions"]=mirrored
+        self.on_poll(True)
         return response
 
     def _erase_permission(self, permission):
@@ -321,10 +347,7 @@ class TrainingWorker:
         models={"baseline":GLiNERBackend(self.model_dir,self.device)}
         candidate_id=job["candidateBundleId"]
         if job["action"]=="train":
-            recipe=content.get("recipe")
-            if (not isinstance(recipe,dict) or set(recipe)!={"method","epochs","maxSteps"} or recipe["method"]!="lora"
-                    or type(recipe["epochs"]) is not int or recipe["epochs"]!=1 or type(recipe["maxSteps"]) is not int or not 1<=recipe["maxSteps"]<=CAPABILITY["maxSteps"]):
-                raise ValueError("Only the bounded private LoRA recipe is supported")
+            options=training_options(content.get("recipe"),self.device)
             directory=self.root/"training-candidates"/job["jobId"]
             artifact=directory/"model"
             if artifact.joinpath(MANIFEST_NAME).is_file():
@@ -333,7 +356,7 @@ class TrainingWorker:
                     raise ValueError("Saved training artifact identity mismatch")
             else:
                 report=train_snapshot(checked_store,snapshot["id"],self.connector.workspace_id,self.model_dir,directory,
-                    bundle_id=candidate_id,options=TrainOptions(method="lora",device=self.device,epochs=1,max_steps=recipe["maxSteps"]))
+                    bundle_id=candidate_id,options=options)
                 artifact=Path(report["modelDir"])
             check()
             try: self.registry.get(candidate_id,self.connector.workspace_id)
@@ -442,6 +465,10 @@ class TrainingWorker:
             if job is None: return {"state":"idle"}
             self._validate_claim(job); job=self._restore_progress(job); self._save(job)
         if "failureCode" in job: return self._fail(job)
+        return self.execute_pending(job)
+
+    def execute_pending(self, job):
+        """Execute a durably claimed job; hosted runners may isolate this process."""
         try:
             with model_execution(self.connector.learning):
                 self.sync_permissions("training")
@@ -458,12 +485,16 @@ class TrainingWorker:
             raise
         except ExecutionBusy:
             return {"state":"busy","reason":"local_model_operation"}
-        except (ConnectorRejected,PermissionError,ValueError,RuntimeError,KeyError):
+        except (ConnectorRejected,PermissionError,ValueError,RuntimeError,KeyError) as error:
             if job.get("serverAcknowledged"):
                 # Keep the intent for reconciliation; never start inference
                 # using the old default while the server has selected another.
                 raise ConnectorUnavailable("Acknowledged model switch requires local reconciliation") from None
-            job["failureCode"] = "local_training_validation_failed"
+            job["failureCode"] = ("insufficient_training_data"
+                if isinstance(error,ValueError) and str(error).startswith("Insufficient training data")
+                else "validation_not_improved"
+                if isinstance(error,ValueError) and str(error).startswith("Validation did not improve")
+                else "local_training_validation_failed")
             self._save(job)
             return self._fail(job)
         finally:

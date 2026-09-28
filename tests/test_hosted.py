@@ -149,3 +149,15 @@ def test_explicit_registration_export_matches_volume_without_secrets(config,caps
 def test_ordinary_bootstrap_does_not_log_registration_metadata(config,capsys):
     hosted.bootstrap(config)
     assert capsys.readouterr().out==""
+
+
+def test_hosted_private_training_is_explicit_and_remains_workspace_scoped(config,tmp_path):
+    path=tmp_path/'hosted.json'
+    for enabled in (False,True):
+        cli.write_private(path,{**config,'privateTraining':enabled})
+        assert hosted.read_config(path)['privateTraining'] is enabled
+    for enabled in (1,'true',None):
+        cli.write_private(path,{**config,'privateTraining':enabled})
+        with pytest.raises(ValueError): hosted.read_config(path)
+    hosted.bootstrap({**config,'privateTraining':True})
+    with pytest.raises(PermissionError): hosted.bootstrap({**config,'privateTraining':True,'workspaceId':'foreign'})

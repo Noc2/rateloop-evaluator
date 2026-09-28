@@ -31,6 +31,7 @@ class _CheckpointCache:
 
 
 class _CachedBackend:
+    question_execution = "joint_schema"
     def __init__(self, cache, key, path): self.cache,self.key,self.path=cache,key,path
     @property
     def manifest(self):
