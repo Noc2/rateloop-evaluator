@@ -42,3 +42,38 @@ def test_both_queues_preserve_original_receipt_and_lease_until_explicit_completi
             assert worker.pending is None and backend.calls==1
         finally: worker.close()
     assert len(completions)==2 and completions[0]==completions[1]
+
+
+@pytest.mark.parametrize("consumer", ["native", "retained"])
+@pytest.mark.parametrize("invalid", [b"{", b"[]", b"null", b"\xff", b" " * 10_000_001])
+def test_unreadable_completion_retries_the_same_receipt_without_failing_or_reinferring(consumer, invalid, website):
+    if consumer == "retained":
+        worker, _request, backend, _remote, behavior, calls = website
+        behavior["complete_content"] = invalid
+        with pytest.raises(ConnectorUnavailable): worker.run_once()
+        assert worker._saved() is not None and backend.calls == 1
+        assert "failed" not in behavior
+        del behavior["complete_content"]
+        assert worker.run_once()["state"] == "completed"
+        assert worker._saved() is None and backend.calls == 1
+        completions = [json.loads(request.content) for request in calls if request.url.path.endswith("/complete")]
+    else:
+        job = fixture(); backend = Backend(); completions = []
+        def transport(request):
+            body = json.loads(request.content); action = body["action"]
+            if action == "claim": return httpx.Response(200, json={"job": job})
+            if action == "heartbeat_job": return httpx.Response(200, json={"leaseExpiresAt": job["leaseExpiresAt"]})
+            if action == "complete":
+                completions.append(body)
+                return (httpx.Response(200, content=invalid) if len(completions) == 1
+                        else httpx.Response(200, json={"completed": True, "replayed": True}))
+            raise AssertionError("An unreadable completion must not send a failure or reclaim")
+        worker = NativeChatPool(secret="s" * 32, base_url="https://www.rateloop.ai",
+            bundles=[job["baseRegistration"]], backend=backend, transport=httpx.MockTransport(transport))
+        try:
+            with pytest.raises(ConnectorUnavailable): worker.run_once()
+            assert worker.pending is not None and backend.calls == 1
+            assert worker.run_once() == {"state": "completed"}
+            assert worker.pending is None and backend.calls == 1
+        finally: worker.close()
+    assert len(completions) == 2 and completions[0] == completions[1]

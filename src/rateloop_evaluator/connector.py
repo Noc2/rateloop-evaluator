@@ -43,6 +43,27 @@ class ConnectorUnavailable(RuntimeError):
         super().__init__(message)
 
 
+def bounded_response_object(response: httpx.Response, *, max_bytes: int) -> dict:
+    """An unreadable success response is unknown delivery, never a rejected job."""
+    try:
+        declared = response.headers.get("content-length")
+        if declared is not None and (not declared.isdigit() or int(declared) > max_bytes):
+            raise ValueError("Response limit")
+        payload = bytearray()
+        # Count decompressed bytes and stop before buffering an oversized body.
+        for chunk in response.iter_bytes(chunk_size=min(4096, max_bytes)):
+            if len(payload) + len(chunk) > max_bytes:
+                raise ValueError("Response limit")
+            payload.extend(chunk)
+        value = json.loads(payload)
+        if not isinstance(value, dict):
+            raise ValueError("Response object required")
+        return value
+    except (ValueError, UnicodeError, RecursionError):
+        # Never disclose remote response text through a JSON parser exception.
+        raise ConnectorUnavailable("RateLoop response is invalid or exceeds the bounded metadata limit; retry the same operation") from None
+
+
 def require_completion_acknowledgment(value: dict) -> None:
     """A 2xx response alone cannot release a saved fenced job or receipt."""
     if not isinstance(value,dict) or value.get("completed") is not True:
@@ -220,22 +241,9 @@ class RateLoopConnector:
                         coordination_busy=_coordination_busy(response))
                 if not 200 <= response.status_code < 300:
                     raise ConnectorRejected(response.status_code)
-                declared=response.headers.get("content-length")
-                if declared is not None and (not declared.isdigit() or int(declared)>10_000_000):
-                    raise ValueError("RateLoop response exceeds the bounded metadata limit")
-                payload=bytearray()
-                # iter_bytes counts decompressed data too, bounding compressed
-                # responses before they can become an unbounded JSON document.
-                for chunk in response.iter_bytes(chunk_size=65536):
-                    if len(payload)+len(chunk)>10_000_000:
-                        raise ValueError("RateLoop response exceeds the bounded metadata limit")
-                    payload.extend(chunk)
-                value=json.loads(payload)
+                return bounded_response_object(response, max_bytes=10_000_000)
         except httpx.TransportError as exc:
             raise ConnectorUnavailable("RateLoop is unavailable; no fresh audit or revocation claim is available") from exc
-        if not isinstance(value,dict):
-            raise ValueError("RateLoop response must be an object")
-        return value
 
     def _suspend_mirrors(self, reason: str) -> None:
         """An HTTP auth failure stops execution, not the owner's durable consent.

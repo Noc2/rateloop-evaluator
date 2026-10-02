@@ -293,7 +293,7 @@ def test_oversized_stream_is_bounded_before_download_completes(setup):
                 yield b"x"*65536
     transport=httpx.MockTransport(lambda request:httpx.Response(200,stream=LargeStream()))
     connector=RateLoopConnector(**{**kwargs,"transport":transport})
-    with pytest.raises(ValueError,match="bounded metadata limit"):
+    with pytest.raises(ConnectorUnavailable,match="bounded metadata limit"):
         connector.sync_grants()
     assert len(consumed)<200
 

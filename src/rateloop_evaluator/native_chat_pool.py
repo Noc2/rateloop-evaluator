@@ -7,7 +7,6 @@ Existing local service inference and score semantics are reused unchanged.
 from __future__ import annotations
 
 from copy import deepcopy
-import json
 from pathlib import Path
 import tempfile
 import time
@@ -16,7 +15,7 @@ import httpx
 from fastapi import HTTPException
 
 from .backends import GLINER_SCORE_CAPABILITY, tokenizer_commitment
-from .connector import ConnectorRejected, ConnectorUnavailable, _hash, _opaque, _timestamp, require_completion_acknowledgment
+from .connector import ConnectorRejected, ConnectorUnavailable, bounded_response_object, _hash, _opaque, _timestamp, require_completion_acknowledgment
 from .hosted import validate_pinned_model
 from .learning import LearningStore, provision_key
 from .protocol import EvaluationRequest, EvaluationResult
@@ -108,13 +107,7 @@ class NativeChatPool:
                     raise ConnectorUnavailable("Native Chat queue is temporarily unavailable")
                 if not 200 <= response.status_code < 300:
                     raise ConnectorRejected(response.status_code)
-                payload = bytearray()
-                for chunk in response.iter_bytes(chunk_size=4096):
-                    if len(payload)+len(chunk) > 128_000: raise ValueError("Native Chat response exceeds the bounded limit")
-                    payload.extend(chunk)
-                value = json.loads(payload)
-                if not isinstance(value, dict): raise ValueError("Native Chat response must be an object")
-                return value
+                return bounded_response_object(response, max_bytes=128_000)
         except httpx.TransportError as error:
             raise ConnectorUnavailable("Native Chat queue is unreachable") from error
 
