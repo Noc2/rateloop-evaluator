@@ -57,7 +57,7 @@ def website(setup):
         if path.endswith("/complete"):
             assert payload["receiptId"]=="aev_"+"1"*40
             behavior["completed"]=True
-            return httpx.Response(behavior["complete_status"],json={"state":"completed" if job.get("reviewMode")=="ai" else "awaiting_human_review"})
+            return httpx.Response(behavior["complete_status"],json=behavior.get("complete_body",{"completed":True,"replayed":False}))
         if path.endswith("/fail"):
             behavior["failed"]=payload
             return httpx.Response(200,json={"state":"failed"})

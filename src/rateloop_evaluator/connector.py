@@ -43,6 +43,12 @@ class ConnectorUnavailable(RuntimeError):
         super().__init__(message)
 
 
+def require_completion_acknowledgment(value: dict) -> None:
+    """A 2xx response alone cannot release a saved fenced job or receipt."""
+    if not isinstance(value,dict) or value.get("completed") is not True:
+        raise ConnectorUnavailable("RateLoop completion acknowledgment is unavailable; retry the same receipt")
+
+
 class AuthorizationLeaseRejected(PermissionError):
     """Fixed diagnostic category; no remote values, identifiers or content."""
 

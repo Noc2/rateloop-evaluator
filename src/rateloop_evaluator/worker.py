@@ -14,7 +14,7 @@ from typing import Callable
 
 from fastapi import HTTPException
 
-from .connector import ConnectorRejected, ConnectorUnavailable, ReceiptRejected, RateLoopConnector, _audit_selection, _hash, _opaque, _timestamp
+from .connector import ConnectorRejected, ConnectorUnavailable, ReceiptRejected, RateLoopConnector, _audit_selection, _hash, _opaque, _timestamp, require_completion_acknowledgment
 from .protocol import EvaluationRequest, EvaluationResult
 from .templates import website_binary_question
 from .execution import ExecutionBusy, model_execution
@@ -225,7 +225,7 @@ class OutboundWorker:
         if acknowledgment is None:
             self.connector.assert_receipt_retryable(receipt_key)
             raise ConnectorUnavailable("Result remains in the encrypted outbox")
-        self._post(job,"complete",receiptId=acknowledgment["receiptId"])
+        require_completion_acknowledgment(self._post(job,"complete",receiptId=acknowledgment["receiptId"]))
         self._save(None)
         return {"state":"completed","jobId":job["jobId"],"modelBundleId":job["modelBundleId"],
             "humanReviewRequired":review_mode=="ai_and_human"}

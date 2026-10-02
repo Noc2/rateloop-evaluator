@@ -189,6 +189,9 @@ and a transient receipt retry retains only its receipt and fencing metadata unti
 the original lease expires. A permanent receipt rejection discards the result and
 reports a content-free terminal failure; temporary failure-report outages retain
 only that bounded failure intent. Other tenants can then continue processing.
+Both inference queues release saved completion progress only after the application
+explicitly acknowledges `completed: true`; malformed success responses retry the
+original receipt and fencing token without another inference.
 Process restarts recover through the durable application lease and bounded
 attempt count, rather than a second hidden inference queue.
 

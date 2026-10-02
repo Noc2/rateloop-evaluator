@@ -15,7 +15,7 @@ import time
 import httpx
 
 from .backends import GLINER_SCORE_CAPABILITY, tokenizer_commitment
-from .connector import ConnectorRejected, ConnectorUnavailable, _hash, _opaque, _timestamp
+from .connector import ConnectorRejected, ConnectorUnavailable, _hash, _opaque, _timestamp, require_completion_acknowledgment
 from .hosted import validate_pinned_model
 from .learning import LearningStore, provision_key
 from .protocol import EvaluationRequest, EvaluationResult
@@ -128,7 +128,8 @@ class NativeChatPool:
             "jobId":job["jobId"],"leaseToken":job["leaseToken"]}
         body.update({"retryable":False,"errorCode":job["failureCode"]} if failing else {"result":result})
         try:
-            self._request(body)
+            response=self._request(body)
+            if not failing: require_completion_acknowledgment(response)
         except ConnectorRejected as error:
             if failing or error.status in (401,403,404,409,410):
                 self.pending=None
