@@ -133,7 +133,7 @@ On 2026-09-17, commit `7ed241ad314f69da9a784f47f2a4d0642995db05` passed actual m
 
 Build the default `hosted` stage of `deploy/Dockerfile` for `linux/amd64`. Python, CPU PyTorch and dependencies are pinned in the image and `deploy/constraints-cpu.txt`. The image contains software only: public weights are explicitly provisioned onto a private persistent volume and raw content, credentials, private weights and keys must never enter Git or image layers.
 
-Use one replica, one workspace, one private volume mounted at `/data`, and one CPU. The initial base-model pilot uses a **2,500,000,000-byte RAM cap**; budget and workload must be checked before deployment. CPU time and input length determine throughput. This is a serialized pilot. Optional private training requires the explicit configuration and separately authorized destination described below, plus a measured burst-memory limit; the initial inference cap is not a training capacity claim. Keep public networking disabled: the only listener is a metadata-only `/healthz` for the platform's private health check on port 8080. It has no inference, administration or credentials endpoint.
+Use one replica, one existing workspace connector, one private volume mounted at `/data`, and one CPU. An optional native Chat pool uses separate case-specific tenant grants as described below. The initial base-model pilot uses a **2,500,000,000-byte RAM cap**; budget and workload must be checked before deployment. CPU time and input length determine throughput. This is a serialized pilot. Optional private training requires the explicit configuration and separately authorized destination described below, plus a measured burst-memory limit; the initial inference cap is not a training capacity claim. Keep public networking disabled: the only listener is a metadata-only `/healthz` for the platform's private health check on port 8080. It has no inference, administration or credentials endpoint.
 
 Set private service variable `RATELOOP_HOSTED_CONFIG_JSON` to this JSON shape, replacing all example identities and the credential:
 
@@ -166,6 +166,53 @@ The entrypoint changes only `/data` ownership when the platform mounts it as roo
 For first installation, explicitly set `RATELOOP_PROVISION_MODEL=1`. The entrypoint runs **a separate provisioning process** pinned to the reviewed `MODEL_REVISION`, then starts a new offline runtime process. Existing model files are validated and reused; malformed or tampered files fail startup rather than downloading replacements. Clear the provisioning flag after successful installation. Alternatively provision the same pinned weights onto the volume beforehand and omit the flag. Inference and training never perform provisioning.
 
 The standalone lifecycle commands are `python -m rateloop_evaluator.hosted prepare|bootstrap|run --config /private/hosted.json`. `prepare` is the only command that can download a model. `bootstrap` validates local weights, preserves existing keys and registrations, and writes app-registration metadata to `/data/state/registrations/en.json` and `de.json`. Bootstrap does not authorize AI processing or learning. Import the matching registrations and configure the workspace-bound server credential before enabling AI use.
+
+### Native Chat case pool
+
+The retained hosted process can also poll the application's dedicated native Chat queue.
+Add `nativeChatPool` to its private configuration with the canonical `baseUrl`
+`https://www.rateloop.ai` and a distinct server-only `secret` of at least 32 random
+characters. Configure the same secret and the two actual public custom-text
+registrations in the application. Keep the existing connector, keys, bundle IDs,
+volume and destinations intact. Never reuse a customer workspace credential as
+the pool transport secret.
+
+The pool receives only jobs joined to persisted native Chat mappings and exact
+tenant/agent/version/key/model destinations. The application checks current
+AI-use consent and processing state on claim, content release, renewed lease and
+receipt. A separate persisted rating allowance is reserved before plaintext is
+released. The worker validates the frozen case commitments and actual pinned
+public artifacts; it grants one case AI use until its lease expires, with no
+training or sharing rights. Raw answer/context remains in memory only. The
+ephemeral encrypted case metadata/result cache is destroyed after inference,
+and a transient receipt retry retains only its receipt and fencing metadata.
+Process restarts recover through the durable application lease and bounded
+attempt count, rather than a second hidden inference queue.
+
+Both queues execute serially through the existing one-checkpoint cache. No second
+listener, model download, private-model export, inferred calibration or paid model
+fallback is added. The retained workspace health check stays independent of
+the native queue during application releases; native availability expires with
+its separate application heartbeat. A warm pool advertises availability only,
+and does not authorize first-send processing. Short English/German outputs may
+produce an experimental binary classifier label and raw score. Longer inputs
+abstain at the existing 512-token limit. These results are not calibrated
+correctness probabilities or permission to replace independent human review.
+
+On 2026-10-02, the implementation in `757e08b` passed 560 repository tests
+(five optional checks skipped). An offline check using the exact public
+`fastino/gliner2.5-multi-v1` revision
+`235cf92d6d4318da9bfca0d08975c8fa7250d13b` exercised the default English and
+German relevance questions through the native case-grant inference path with
+network connection attempts denied. All four short synthetic cases returned
+valid uncalibrated receipts, with 40–73 ms warm inference on the operator's CPU.
+The two intentionally irrelevant answers were incorrectly labelled approved;
+their raw scores were also high. This is evidence of transport and rubric
+compatibility, and a concrete reason to keep the default classifier
+experimental. It establishes neither general relevance accuracy nor correctness,
+confidence calibration or hosted latency. No synthetic input or credential is
+retained in this repository. Live release acceptance must additionally verify a
+persisted native case on the retained hosted worker.
 
 For an explicit first-installation handoff, set server-only `RATELOOP_HOSTED_EXPORT_REGISTRATIONS=1`. After bootstrap, the entrypoint writes one `RATELOOP_HOSTED_REGISTRATION_V1 ` log line per language, followed by the exact registration JSON stored on that volume. These contain registration metadata only; no credential, workspace configuration, input or private weights are printed. Retrieve those actual cloud registrations from private provider logs and import them before enabling AI use, then clear the export flag. Ordinary startup emits none. A placeholder credential may be used for this isolated bootstrap; replacing it does not rewrite the actual model activation evidence. Workspace, worker, agent/version and bundle identities must already be final. Health remains unavailable until a valid scoped credential connects successfully.
 
