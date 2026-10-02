@@ -62,7 +62,7 @@ def website(setup):
             return httpx.Response(behavior["complete_status"],json=behavior.get("complete_body",{"completed":True,"replayed":False}))
         if path.endswith("/fail"):
             behavior["failed"]=payload
-            return httpx.Response(200,json={"state":"failed"})
+            return httpx.Response(behavior.get("fail_status",200),json=behavior.get("fail_body",{"retrying":False}))
         raise AssertionError(path)
     connector=RateLoopConnector(**{**kwargs,"transport":httpx.MockTransport(handle)},metadata_upload_enabled=True)
     class Backend:

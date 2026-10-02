@@ -191,7 +191,11 @@ reports a content-free terminal failure; temporary failure-report outages retain
 only that bounded failure intent. Other tenants can then continue processing.
 Both inference queues release saved completion progress only after the application
 explicitly acknowledges `completed: true`; malformed success responses retry the
-original receipt and fencing token without another inference.
+original receipt and fencing token without another inference. Both queues retain
+a nonretryable failure intent until the application returns literal `retrying: false`
+or the original lease is lost. Missing or ambiguous acknowledgments retry only
+content-free failure metadata, without renewing the lease or rerunning inference.
+The retained worker persists this intent across restarts and case deletion purges it.
 Inference-core errors use the same terminal failure route immediately, with a
 fixed error category. Backend exception details and customer text are never sent;
 ephemeral case files are destroyed even when inference fails.

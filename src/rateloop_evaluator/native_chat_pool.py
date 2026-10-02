@@ -15,7 +15,7 @@ import httpx
 from fastapi import HTTPException
 
 from .backends import GLINER_SCORE_CAPABILITY, tokenizer_commitment
-from .connector import ConnectorRejected, ConnectorUnavailable, bounded_response_object, _hash, _opaque, _timestamp, require_completion_acknowledgment
+from .connector import ConnectorRejected, ConnectorUnavailable, bounded_response_object, _hash, _opaque, _timestamp, require_completion_acknowledgment, require_failure_acknowledgment
 from .hosted import validate_pinned_model
 from .learning import LearningStore, provision_key
 from .protocol import EvaluationRequest, EvaluationResult
@@ -123,7 +123,8 @@ class NativeChatPool:
         body.update({"retryable":False,"errorCode":job["failureCode"]} if failing else {"result":result})
         try:
             response=self._request(body)
-            if not failing: require_completion_acknowledgment(response)
+            if failing: require_failure_acknowledgment(response)
+            else: require_completion_acknowledgment(response)
         except ConnectorRejected as error:
             if failing or error.status in (401,403,404,409,410):
                 self.pending=None
@@ -163,6 +164,5 @@ class NativeChatPool:
             self.pending=({**binding,"leaseExpiresAt":job["leaseExpiresAt"],"failureCode":"native_inference_failed"},None)
             return self._submit_pending()
         except (ValueError, PermissionError):
-            try: self._request({"action": "fail", **binding, "retryable": False, "errorCode": "native_validation_failed"})
-            except (ConnectorUnavailable,ConnectorRejected): pass
-            return {"state": "failed"}
+            self.pending=({**binding,"leaseExpiresAt":job["leaseExpiresAt"],"failureCode":"native_validation_failed"},None)
+            return self._submit_pending()

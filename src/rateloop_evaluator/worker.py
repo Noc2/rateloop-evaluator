@@ -14,7 +14,7 @@ from typing import Callable
 
 from fastapi import HTTPException
 
-from .connector import ConnectorRejected, ConnectorUnavailable, ReceiptRejected, RateLoopConnector, _audit_selection, _hash, _opaque, _timestamp, require_completion_acknowledgment
+from .connector import ConnectorRejected, ConnectorUnavailable, ReceiptRejected, RateLoopConnector, _audit_selection, _hash, _opaque, _timestamp, require_completion_acknowledgment, require_failure_acknowledgment
 from .protocol import EvaluationRequest, EvaluationResult
 from .templates import website_binary_question
 from .execution import ExecutionBusy, model_execution
@@ -251,8 +251,32 @@ class OutboundWorker:
             self.presence.report("busy")
             return {"state":"busy","reason":"local_model_operation"}
 
+    def _submit_failure(self, job: dict) -> dict:
+        # Failure retries cannot renew case access or repeat rejected inference.
+        if _timestamp(job["leaseExpiresAt"]) <= time.time():
+            self._save(None)
+            return {"state":"lease_lost","jobId":job["jobId"]}
+        try:
+            response=self._post(job,"fail",retryable=False,errorCode=job["failureCode"])
+            require_failure_acknowledgment(response)
+        except (ConnectorRejected,PermissionError):
+            self._save(None)
+            return {"state":"lease_lost","jobId":job["jobId"]}
+        self._save(None)
+        return {"state":"failed","jobId":job["jobId"],"errorCode":job["failureCode"]}
+
+    def _fail(self, job: dict, code: str) -> dict:
+        failure={key:job[key] for key in ("jobId","leaseToken","leaseExpiresAt")}
+        # Preserve deletion lookup without retaining input, scores or receipt data.
+        if job.get("caseId") is not None: failure["caseId"]=job["caseId"]
+        failure["failureCode"]=code
+        self._save(failure)
+        return self._submit_failure(failure)
+
     def _run_available(self) -> dict:
         job=self._saved()
+        if job and job.get("failureCode") is not None:
+            return self._submit_failure(job)
         if job:
             try:
                 self._heartbeat(job)
@@ -270,20 +294,14 @@ class OutboundWorker:
         except ConnectorUnavailable:
             raise  # Keep the fencing token for recovery; never duplicate a review.
         except ReceiptRejected as error:
-            try: self._post(job,"fail",retryable=False,errorCode=error.code)
-            except (ConnectorUnavailable,ConnectorRejected,PermissionError): pass
-            self._save(None)
-            return {"state":"failed","jobId":job["jobId"],"errorCode":error.code}
+            return self._fail(job,error.code)
         except ConnectorRejected as error:
             if error.status in (404,409,410):
                 self._save(None)
                 return {"state":"lease_lost","jobId":job["jobId"]}
             raise
         except (ValueError,PermissionError,HTTPException):
-            try: self._post(job,"fail",retryable=False,errorCode="local_validation_failed")
-            except (ConnectorUnavailable,ConnectorRejected,PermissionError): pass
-            self._save(None)
-            return {"state":"failed","jobId":job["jobId"],"errorCode":"local_validation_failed"}
+            return self._fail(job,"local_validation_failed")
 
     def run(self) -> None:
         failures=0

@@ -70,6 +70,12 @@ def require_completion_acknowledgment(value: dict) -> None:
         raise ConnectorUnavailable("RateLoop completion acknowledgment is unavailable; retry the same receipt")
 
 
+def require_failure_acknowledgment(value: dict) -> None:
+    """Only the literal terminal response releases a nonretryable failure intent."""
+    if not isinstance(value, dict) or value.get("retrying") is not False:
+        raise ConnectorUnavailable("RateLoop failure acknowledgment is unavailable; retry the same failure")
+
+
 class AuthorizationLeaseRejected(PermissionError):
     """Fixed diagnostic category; no remote values, identifiers or content."""
 
