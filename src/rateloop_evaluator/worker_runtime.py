@@ -51,7 +51,7 @@ def prepare_evaluator(connector, registry, bundle_ids: list[str], *, device: str
     """
     workspace=connector.workspace_id
     identity=Principal(workspace,frozenset({"evaluate"}))
-    apps={}; backends={}; cache=_CheckpointCache(device)
+    apps={}; backends={}; cache=_CheckpointCache(device); public_backend=None
     for bundle_id in bundle_ids:
         record=registry.get(bundle_id,workspace)
         manifest=record["manifest"]
@@ -62,6 +62,8 @@ def prepare_evaluator(connector, registry, bundle_ids: list[str], *, device: str
             backend.load()
             backends[key]=backend
         backend=backends[key]
+        if not manifest.get("snapshot_id") and manifest.get("task_capability"):
+            public_backend=backend
         for language in manifest["languages"]:
             template=Template.model_validate(manifest["template"]) if manifest.get("template") else overall_approval(language)
             backend.predict("Ready.",[question.model_dump() for question in template.questions])
@@ -78,4 +80,7 @@ def prepare_evaluator(connector, registry, bundle_ids: list[str], *, device: str
     def close():
         cache.close()
     evaluate.close=close
+    # The native Chat pool runs serially beside the existing workspace worker and
+    # shares its one-checkpoint cache. Private candidates are never selected here.
+    evaluate.native_backend=public_backend
     return evaluate

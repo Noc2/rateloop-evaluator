@@ -28,10 +28,16 @@ from .worker_runtime import prepare_evaluator
 def read_config(path: str | Path) -> dict:
     value=json.loads(read_secret(path))
     fields={"schemaVersion","workspaceId","workerId","modelDir","stateDir","bundles","connection","pollSeconds","healthPort"}
-    if not isinstance(value,dict) or set(value)-fields-{"privateTraining"} or not fields<=set(value) or value["schemaVersion"]!="rateloop.hosted-worker.v1":
+    if not isinstance(value,dict) or set(value)-fields-{"privateTraining","nativeChatPool"} or not fields<=set(value) or value["schemaVersion"]!="rateloop.hosted-worker.v1":
         raise ValueError("Invalid hosted worker configuration")
     if "privateTraining" in value and type(value["privateTraining"]) is not bool:
         raise ValueError("Hosted private training must be explicitly enabled or disabled")
+    if "nativeChatPool" in value:
+        pool=value["nativeChatPool"]
+        if (not isinstance(pool,dict) or set(pool)!={"baseUrl","secret"} or pool["baseUrl"]!="https://www.rateloop.ai"
+                or not isinstance(pool["secret"],str) or not 32<=len(pool["secret"])<=256
+                or any(c in pool["secret"] for c in "\r\n")):
+            raise ValueError("Invalid native Chat pool configuration")
     _opaque(value["workspaceId"]); _opaque(value["workerId"])
     for key in ("modelDir","stateDir"):
         path=Path(value[key])
@@ -224,8 +230,42 @@ def run_hosted(config: dict) -> None:
                     worker.model_bundle_ids=list(updated)
                     worker.presence.model_bundle_ids=list(updated)
                 trainer.on_models_changed=reload_models
-            try: worker.run()
+            native=None
+            if config.get("nativeChatPool"):
+                from .native_chat_pool import NativeChatPool, validate_registrations
+                registrations=[]
+                for configured in config["bundles"]:
+                    if configured.get("taskCapability"):
+                        registrations.append(json.loads(read_secret(root/"registrations"/("bundle-"+configured["modelBundleId"]+".json"))))
+                registrations=validate_registrations(registrations,config["modelDir"])
+                class SharedBackend:
+                    def count_tokens(self,*args):
+                        if worker.evaluate.native_backend is None: raise PermissionError("Public native model unavailable")
+                        return worker.evaluate.native_backend.count_tokens(*args)
+                    def predict(self,*args):
+                        if worker.evaluate.native_backend is None: raise PermissionError("Public native model unavailable")
+                        return worker.evaluate.native_backend.predict(*args)
+                native=NativeChatPool(secret=config["nativeChatPool"]["secret"],base_url=config["nativeChatPool"]["baseUrl"],
+                    bundles=registrations,backend=SharedBackend())
+            try:
+                if native is None: worker.run()
+                else:
+                    while not stop.is_set():
+                        # No parallel model inference/training: both queues share one serial runtime.
+                        try:
+                            result=worker.run_once(); health.polled(True)
+                            if result["state"] != "paused" and time.monotonic()-worker.last_label_sync>=60:
+                                worker.sync_labels()
+                        except Exception: health.polled(False)
+                        # Native readiness is its separately bounded app heartbeat.
+                        # Adding the endpoint cannot take the retained worker offline during deployment.
+                        try:
+                            from .execution import model_execution
+                            with model_execution(connector.learning): native.run_once()
+                        except Exception: pass
+                        stop.wait(config["pollSeconds"])
             finally:
+                if native is not None: native.close()
                 if hasattr(getattr(worker,"evaluate",None),"close"): worker.evaluate.close()
     finally:
         health.stopping=True
