@@ -158,6 +158,82 @@ def test_rejected_receipt_retries_only_content_free_terminal_failure_within_its_
     pool.close()
 
 
+@pytest.mark.parametrize("operation",["count_tokens","predict"])
+def test_core_inference_exceptions_fail_promptly_without_retaining_or_disclosing_input(operation,tmp_path,monkeypatch,capsys):
+    monkeypatch.setattr("tempfile.tempdir",str(tmp_path))
+    job=fixture(); backend=Backend(); events=[]; claimed=[False]
+    def failed_inference(*args): raise RuntimeError(job["content"]["request"]["input"]["text"])
+    setattr(backend,operation,failed_inference)
+    def transport(request):
+        body=json.loads(request.content); action=body["action"]; events.append(action)
+        if action=="claim":
+            value=None if claimed[0] else job; claimed[0]=True
+            return httpx.Response(200,json={"job":value})
+        if action=="heartbeat_job": return httpx.Response(200,json={"leaseExpiresAt":job["leaseExpiresAt"]})
+        if action=="fail":
+            assert body=={"action":"fail","workspaceId":job["workspaceId"],"jobId":job["jobId"],
+                "leaseToken":job["leaseToken"],"retryable":False,"errorCode":"native_inference_failed"}
+            return httpx.Response(200,json={"retrying":False})
+        raise AssertionError(action)
+    pool=NativeChatPool(secret="s"*32,base_url="https://www.rateloop.ai",bundles=[job["baseRegistration"]],backend=backend,
+        transport=httpx.MockTransport(transport))
+    assert pool.run_once()=={"state":"failed"}
+    assert pool.pending is None and pool.run_once()=={"state":"idle"}
+    assert events==["claim","heartbeat_job","fail","claim"] and not list(tmp_path.iterdir())
+    captured=capsys.readouterr()
+    assert not captured.out and not captured.err
+    pool.close()
+
+
+def test_core_failure_retries_only_failure_metadata_when_reporting_is_temporarily_unavailable():
+    from rateloop_evaluator.connector import ConnectorUnavailable
+    job=fixture(); backend=Backend(); events=[]; failures=[]; predictions=[0]
+    def failed_inference(*args): predictions[0]+=1; raise RuntimeError("private inference detail")
+    backend.predict=failed_inference
+    def transport(request):
+        body=json.loads(request.content); action=body["action"]; events.append(action)
+        if action=="claim": return httpx.Response(200,json={"job":job})
+        if action=="heartbeat_job": return httpx.Response(200,json={"leaseExpiresAt":job["leaseExpiresAt"]})
+        if action=="fail":
+            failures.append(body)
+            return httpx.Response(503 if len(failures)==1 else 200,json={"retrying":False})
+        raise AssertionError(action)
+    pool=NativeChatPool(secret="s"*32,base_url="https://www.rateloop.ai",bundles=[job["baseRegistration"]],backend=backend,
+        transport=httpx.MockTransport(transport))
+    with pytest.raises(ConnectorUnavailable): pool.run_once()
+    assert pool.pending is not None and pool.pending[1] is None
+    assert "private inference detail" not in json.dumps(pool.pending)
+    assert job["content"]["request"]["input"]["text"] not in json.dumps(pool.pending)
+    assert pool.run_once()=={"state":"failed"}
+    assert failures[0]==failures[1] and predictions==[1] and pool.pending is None
+    assert events==["claim","heartbeat_job","fail","fail"]
+    pool.close()
+
+
+def test_grant_expiring_during_inference_releases_no_receipt_or_private_case_files(tmp_path,monkeypatch):
+    from rateloop_evaluator.connector import _timestamp
+    monkeypatch.setattr("tempfile.tempdir",str(tmp_path))
+    job=fixture(); backend=Backend(); events=[]; now=[time.time()]
+    monkeypatch.setattr("rateloop_evaluator.native_chat_pool.time.time",lambda:now[0])
+    original_predict=backend.predict
+    def expire_during_prediction(*args):
+        result=original_predict(*args)
+        now[0]=_timestamp(job["leaseExpiresAt"])
+        return result
+    backend.predict=expire_during_prediction
+    def transport(request):
+        action=json.loads(request.content)["action"]; events.append(action)
+        if action=="claim": return httpx.Response(200,json={"job":job})
+        if action=="heartbeat_job": return httpx.Response(200,json={"leaseExpiresAt":job["leaseExpiresAt"]})
+        raise AssertionError("Expired grant must release no completion or failure content")
+    pool=NativeChatPool(secret="s"*32,base_url="https://www.rateloop.ai",bundles=[job["baseRegistration"]],backend=backend,
+        transport=httpx.MockTransport(transport))
+    assert pool.run_once()=={"state":"lease_lost"}
+    assert backend.calls==1 and pool.pending is None and events==["claim","heartbeat_job"]
+    assert not list(tmp_path.iterdir())
+    pool.close()
+
+
 def test_revocation_before_inference_does_not_score():
     job = fixture(); backend = Backend()
     def transport(request):

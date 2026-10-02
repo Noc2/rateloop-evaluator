@@ -192,6 +192,9 @@ only that bounded failure intent. Other tenants can then continue processing.
 Both inference queues release saved completion progress only after the application
 explicitly acknowledges `completed: true`; malformed success responses retry the
 original receipt and fencing token without another inference.
+Inference-core errors use the same terminal failure route immediately, with a
+fixed error category. Backend exception details and customer text are never sent;
+ephemeral case files are destroyed even when inference fails.
 Process restarts recover through the durable application lease and bounded
 attempt count, rather than a second hidden inference queue.
 

@@ -13,6 +13,7 @@ import tempfile
 import time
 
 import httpx
+from fastapi import HTTPException
 
 from .backends import GLINER_SCORE_CAPABILITY, tokenizer_commitment
 from .connector import ConnectorRejected, ConnectorUnavailable, _hash, _opaque, _timestamp, require_completion_acknowledgment
@@ -163,6 +164,11 @@ class NativeChatPool:
         except ConnectorRejected as error:
             if error.status not in (401,403,404,409,410): raise
             return {"state": "lease_lost"}
+        except HTTPException:
+            # The shared inference core converts backend/authorization failures
+            # into HTTPException. Report only a fixed category, never its detail.
+            self.pending=({**binding,"leaseExpiresAt":job["leaseExpiresAt"],"failureCode":"native_inference_failed"},None)
+            return self._submit_pending()
         except (ValueError, PermissionError):
             try: self._request({"action": "fail", **binding, "retryable": False, "errorCode": "native_validation_failed"})
             except (ConnectorUnavailable,ConnectorRejected): pass
