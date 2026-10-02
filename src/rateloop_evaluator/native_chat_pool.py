@@ -103,7 +103,7 @@ class NativeChatPool:
     def _request(self, body: dict) -> dict:
         try:
             with self.client.stream("POST", ENDPOINT, json=body) as response:
-                if response.status_code >= 500 or response.status_code == 429:
+                if response.status_code >= 500 or response.status_code in (408,425,429):
                     raise ConnectorUnavailable("Native Chat queue is temporarily unavailable")
                 if not 200 <= response.status_code < 300:
                     raise ConnectorRejected(response.status_code)
@@ -117,20 +117,33 @@ class NativeChatPool:
         except httpx.TransportError as error:
             raise ConnectorUnavailable("Native Chat queue is unreachable") from error
 
+    def _submit_pending(self):
+        job,result=self.pending
+        # Offline receipt/failure retries never extend the original case grant.
+        if _timestamp(job["leaseExpiresAt"]) <= time.time():
+            self.pending=None
+            return {"state":"lease_lost"}
+        failing=job.get("failureCode") is not None
+        body={"action":"fail" if failing else "complete","workspaceId":job["workspaceId"],
+            "jobId":job["jobId"],"leaseToken":job["leaseToken"]}
+        body.update({"retryable":False,"errorCode":job["failureCode"]} if failing else {"result":result})
+        try:
+            self._request(body)
+        except ConnectorRejected as error:
+            if failing or error.status in (401,403,404,409,410):
+                self.pending=None
+                return {"state":"lease_lost"}
+            # A rejected receipt must not block every other tenant. Discard its
+            # result and retry only the content-free failure intent if offline.
+            self.pending=({**job,"failureCode":"native_receipt_rejected"},None)
+            return self._submit_pending()
+        self.pending=None
+        return {"state":"failed" if failing else "completed"}
+
     def run_once(self):
-        # Keep a completed receipt in memory while a transient submission fails.
-        # A process restart lets the durable server lease expire and bounded retry recover it.
-        if self.pending:
-            job, result = self.pending
-            try:
-                self._request({"action": "complete", "workspaceId": job["workspaceId"], "jobId": job["jobId"],
-                    "leaseToken": job["leaseToken"], "result": result})
-            except ConnectorRejected as error:
-                if error.status not in (401,403,404,409,410): raise
-                self.pending = None
-                return {"state": "lease_lost"}
-            self.pending = None
-            return {"state": "completed"}
+        # A process restart releases this bounded in-memory receipt/failure;
+        # the durable server lease and attempt ceiling recover an unfinished job.
+        if self.pending: return self._submit_pending()
         job = self._request({"action": "claim", "bundles": self.bundles}).get("job")
         if job is None: return {"state": "idle"}
         if not isinstance(job, dict): raise ValueError("Native Chat claim must be an object")
@@ -143,8 +156,9 @@ class NativeChatPool:
             job["leaseExpiresAt"] = lease["leaseExpiresAt"]
             result = EvaluationResult.model_validate(evaluate_native_job(job, backend=self.backend)).model_dump()
             # Drop answer/context immediately after inference, even if transport is offline.
-            self.pending = ({"workspaceId": job["workspaceId"], "jobId": job["jobId"], "leaseToken": job["leaseToken"]}, result)
-            return self.run_once()
+            self.pending = ({"workspaceId": job["workspaceId"], "jobId": job["jobId"], "leaseToken": job["leaseToken"],
+                "leaseExpiresAt":job["leaseExpiresAt"]}, result)
+            return self._submit_pending()
         except ConnectorRejected as error:
             if error.status not in (401,403,404,409,410): raise
             return {"state": "lease_lost"}

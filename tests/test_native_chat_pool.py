@@ -89,6 +89,75 @@ def test_native_worker_checks_permission_before_inference_and_retries_receipt_wi
     pool.close()
 
 
+@pytest.mark.parametrize("status", [400,413,422])
+def test_permanently_rejected_receipt_fails_its_lease_and_does_not_block_other_native_jobs(status):
+    job=fixture(); backend=Backend(); events=[]; claimed=[False]
+    def transport(request):
+        body=json.loads(request.content); action=body["action"]; events.append(action)
+        if action=="claim":
+            value=None if claimed[0] else job; claimed[0]=True
+            return httpx.Response(200,json={"job":value})
+        if action=="heartbeat_job": return httpx.Response(200,json={"leaseExpiresAt":job["leaseExpiresAt"]})
+        if action=="complete": return httpx.Response(status,json={"code":"invalid_receipt"})
+        if action=="fail":
+            assert body=={"action":"fail","workspaceId":job["workspaceId"],"jobId":job["jobId"],
+                "leaseToken":job["leaseToken"],"retryable":False,"errorCode":"native_receipt_rejected"}
+            return httpx.Response(200,json={"retrying":False})
+        raise AssertionError(action)
+    pool=NativeChatPool(secret="s"*32,base_url="https://www.rateloop.ai",bundles=[job["baseRegistration"]],backend=backend,
+        transport=httpx.MockTransport(transport))
+    assert pool.run_once()=={"state":"failed"}
+    assert pool.run_once()=={"state":"idle"}
+    assert pool.pending is None and backend.calls==1
+    assert events==["claim","heartbeat_job","complete","fail","claim"]
+    pool.close()
+
+
+def test_transient_receipt_failure_retains_only_fencing_and_result_until_original_lease_expires(monkeypatch):
+    from rateloop_evaluator.connector import ConnectorUnavailable, _timestamp
+    job=fixture(); backend=Backend(); events=[]; now=[time.time()]; claimed=[False]
+    monkeypatch.setattr("rateloop_evaluator.native_chat_pool.time.time",lambda:now[0])
+    def transport(request):
+        action=json.loads(request.content)["action"]; events.append(action)
+        if action=="claim":
+            value=None if claimed[0] else job; claimed[0]=True
+            return httpx.Response(200,json={"job":value})
+        if action=="heartbeat_job": return httpx.Response(200,json={"leaseExpiresAt":job["leaseExpiresAt"]})
+        if action=="complete": return httpx.Response(503,json={"code":"unavailable"})
+        raise AssertionError(action)
+    pool=NativeChatPool(secret="s"*32,base_url="https://www.rateloop.ai",bundles=[job["baseRegistration"]],backend=backend,
+        transport=httpx.MockTransport(transport))
+    with pytest.raises(ConnectorUnavailable): pool.run_once()
+    assert pool.pending is not None and job["content"]["request"]["input"]["text"] not in json.dumps(pool.pending)
+    now[0]=_timestamp(job["leaseExpiresAt"])
+    assert pool.run_once()=={"state":"lease_lost"}
+    assert pool.pending is None and pool.run_once()=={"state":"idle"}
+    assert backend.calls==1 and events==["claim","heartbeat_job","complete","claim"]
+    pool.close()
+
+
+def test_rejected_receipt_retries_only_content_free_terminal_failure_within_its_lease():
+    from rateloop_evaluator.connector import ConnectorUnavailable
+    job=fixture(); backend=Backend(); events=[]; failures=[]
+    def transport(request):
+        body=json.loads(request.content); action=body["action"]; events.append(action)
+        if action=="claim": return httpx.Response(200,json={"job":job})
+        if action=="heartbeat_job": return httpx.Response(200,json={"leaseExpiresAt":job["leaseExpiresAt"]})
+        if action=="complete": return httpx.Response(422,json={"code":"invalid_receipt"})
+        if action=="fail":
+            failures.append(body)
+            return httpx.Response(503 if len(failures)==1 else 200,json={"retrying":False})
+        raise AssertionError(action)
+    pool=NativeChatPool(secret="s"*32,base_url="https://www.rateloop.ai",bundles=[job["baseRegistration"]],backend=backend,
+        transport=httpx.MockTransport(transport))
+    with pytest.raises(ConnectorUnavailable): pool.run_once()
+    assert pool.pending is not None and pool.pending[1] is None
+    assert pool.run_once()=={"state":"failed"}
+    assert failures[0]==failures[1] and backend.calls==1 and pool.pending is None
+    assert events==["claim","heartbeat_job","complete","fail","fail"]
+    pool.close()
+
+
 def test_revocation_before_inference_does_not_score():
     job = fixture(); backend = Backend()
     def transport(request):

@@ -185,7 +185,10 @@ released. The worker validates the frozen case commitments and actual pinned
 public artifacts; it grants one case AI use until its lease expires, with no
 training or sharing rights. Raw answer/context remains in memory only. The
 ephemeral encrypted case metadata/result cache is destroyed after inference,
-and a transient receipt retry retains only its receipt and fencing metadata.
+and a transient receipt retry retains only its receipt and fencing metadata until
+the original lease expires. A permanent receipt rejection discards the result and
+reports a content-free terminal failure; temporary failure-report outages retain
+only that bounded failure intent. Other tenants can then continue processing.
 Process restarts recover through the durable application lease and bounded
 attempt count, rather than a second hidden inference queue.
 
