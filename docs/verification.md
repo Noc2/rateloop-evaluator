@@ -651,3 +651,54 @@ justify replacing the base evaluator, loosening the gate, claiming general
 accuracy improvement or concluding that further task-specific learning cannot
 work. New quality work needs independently chosen representative tasks and
 evaluation evidence, rather than repeated tuning of these observed holdouts.
+
+## General-request public coverage baseline — 5 October 2026
+
+The implementation committed in `34aca43` ran a bounded, offline diagnostic of the existing pinned
+`fastino/gliner2.5-multi-v1` weights on public NVIDIA HelpSteer2 helpfulness labels. The compressed training source was
+explicitly obtained and checked against the existing revision `990b2711a36180dd19d9c94b8627844866f8982a` and SHA-256
+manifest. License: CC-BY-4.0; retain [NVIDIA's attribution](https://huggingface.co/datasets/nvidia/HelpSteer2).
+The 600 normalized prompt groups were frozen before prediction: 296 development, 156 calibration and 148 test.
+Scores 0–1/3–4 mapped to negative/positive; middle scores were excluded and counted in the source manifest.
+Unlike the September short-input experiment, selected long requests remained in the denominator. This is an English,
+public-score-extremes diagnostic; source taxonomy, German, representative deployment proportions and independent
+RateLoop blind reviews are absent. Base pretraining contamination is unknown. This new split is diagnostic, not a
+claim that these public sources have never appeared in earlier research or model training.
+
+Real inference used the existing local fp32 checkpoint with GLiNER2 2.0.0, PyTorch 2.14.0, Python 3.12.14 and MPS.
+Process-level connection functions denied network access during inference. Weight SHA-256:
+`c1ff4ec0bc00031c15530b8f3c33d3677f27949e6a0cb52e1247a6224b6c5395`. The frozen benchmark commitment was
+`32d1c5618a74b297f0106a471ad0db0c4aaff1b3b3c491081a5fc0ed35369d05`. No training, registration, promotion, website
+activation, provider calls or human-review claims were made.
+
+| Measure | Raw normalized scores | Diagnostic temperature fit |
+| --- | ---: | ---: |
+| Frozen final source groups | 148 | Same 148 |
+| Input/schema overflow | 105 | Same 105 |
+| Completed score distributions | 43 | Same 43 |
+| Useful judgments at fixed 0.9 threshold | 36 (24.3% coverage) | 0 |
+| Accepted cases / wrong acceptances | 32 / 3 | 0 / 0 |
+| One-sided 95% false-acceptance upper bound | 22.5% | Unavailable: no accepted cases |
+| Balanced agreement on completed cases before thresholding | 52.9% | 52.9% |
+| Brier score on completed cases | 0.3648 | 0.3669 |
+| NLL on completed cases | 0.9797 | 0.5584 |
+| Ten-bin ECE on completed cases | 0.1956 | 0.1726 |
+
+The temperature (7.0166) used 45 completed calibration groups; 111 other calibration groups overflowed. Neither test
+labels nor threshold tuning entered fitting. All 43 calibrated test scores fell below the predeclared 0.9 threshold.
+NLL improved while Brier worsened, illustrating why fitting a calibrator alone does not establish usable confidence.
+The unchanged 512-token combined input/schema limit rejected 70.9% of selected test requests. These metrics cannot be
+reported as live Chat accuracy. Both reports remain unqualified; minimum accepted sample, coverage and risk gates fail.
+
+Warm local validation/tokenization/inference latency across **all** test attempts was p50 1.12 ms and p95 44.09 ms;
+model loading was separately 6.13 seconds. Fast overflow rejections dominate that denominator. This is one local
+process with no hosted queue, network or concurrency measurement, not a production SLA. Local inference made zero
+API calls; hardware and electricity costs were not measured. Raw inputs, source files, scores and report artifacts
+remain outside Git under the operator's private experiment directory.
+
+Report SHA-256: `3f4ad721476aed394c38df086963fd68db662b91196784db4096b3ca9d7ca7a5`.
+Operating-point file SHA-256: `fe48d81ed30ae32b0cf9770fbb479cf809997f88e499b12af5c12dd64735a97b`.
+Calibration artifact file SHA-256: `86f11d66dafd72d95f574df2d47243d84d5bce3e342711078a3383f738344f09`.
+The focused benchmark, experiment, calibration and existing quality suites passed 47 tests at the implementation
+commit. The [maintained learning procedure](learning.md#general-request-benchmark-and-qualification-diagnostics)
+describes reproduction, other candidates, blank coverage slices and the separate authenticated qualification path.
