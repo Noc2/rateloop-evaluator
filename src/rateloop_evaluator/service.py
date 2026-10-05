@@ -96,7 +96,7 @@ def create_app(*, backend: Backend, bundle: dict, learning: LearningStore, runti
         if "evaluate" not in identity.roles: raise HTTPException(403,detail="Evaluation scope required")
         result = {"schemaVersion":"rateloop.evaluator.capabilities.v1", "modelBundleId":bundle["id"],
                 "languages":bundle["languages"],"templateCommitments":bundle["template_commitments"],
-                "maxTokens":bundle.get("max_tokens",512),"training":"local_privileged_cli",
+                "maxTokens":bundle.get("max_tokens",512),"training":"unavailable" if getattr(backend,"score_type",None)=="label_only" else "local_privileged_cli",
                 "defaultMode":"shadow", "rawContentUploads":False}
         if bundle.get("task_capability"):
             result["taskCapability"]=bundle["task_capability"]

@@ -13,7 +13,7 @@ import pytest
 from rateloop_evaluator import cli
 from rateloop_evaluator.protocol import EvaluationRequest,EvaluationResult,commitment
 from rateloop_evaluator.evidence import validate_evidence_binding,evidence_for_result,runtime_identity
-from rateloop_evaluator.ollama_judge import OLLAMA_LABEL_ONLY_CAPABILITY,OllamaJudge,register_judge
+from rateloop_evaluator.ollama_judge import OLLAMA_LABEL_ONLY_CAPABILITY,OllamaJudge,register_judge,adapter_commitment
 from rateloop_evaluator.service import Principal,create_app
 from rateloop_evaluator.storage import RuntimeStore
 from test_ollama import runtime_fixture
@@ -51,7 +51,7 @@ def test_real_judge_adapter_consumes_only_valid_structured_labels(tmp_path):
     runtime,_,_=runtime_fixture(stream=[{'model':'qwen3.5:4b','message':{'content':'{"labels":{"overall_approval":"approved"}}'},
         'done':True,'done_reason':'stop','prompt_eval_count':80,'eval_count':12}])
     model=runtime.identity()
-    cli.write_private(tmp_path/'ollama-judge.json',{'schemaVersion':'rateloop.ollama-judge.v1','baseUrl':'http://127.0.0.1:11434','model':model})
+    cli.write_private(tmp_path/'ollama-judge.json',{'schemaVersion':'rateloop.ollama-judge.v1','baseUrl':'http://127.0.0.1:11434','model':model,'adapterCommitment':adapter_commitment(model)})
     judge=OllamaJudge(tmp_path);judge.runtime.close();judge.runtime=runtime
     req=EvaluationRequest.model_validate(FIXTURE['request'])
     assert judge.predict(req.input.render(),[q.model_dump() for q in req.template.questions])=={'overall_approval':'approved'}
@@ -65,6 +65,7 @@ def test_judge_registered_runtime_service_retains_no_training_input_even_with_se
     runtime,_,_=runtime_fixture();model=runtime.identity()
     bundles,exports=register_judge(root=root,registry=registry,store=store,workspace=config['workspaceId'],worker_id='worker-test',model=model,base_url='http://127.0.0.1:11434')
     assert len(bundles)==2 and all(e['scoreCapability']==OLLAMA_LABEL_ONLY_CAPABILITY for e in exports)
+    assert all(e['adapterCommitment']==adapter_commitment(model) for e in exports)
     request=EvaluationRequest.model_validate({**FIXTURE['request'],'modelBundleId':bundles[0]['modelBundleId']})
     with pytest.raises(PermissionError,match='shadow mode only'):
         registry.promote(request.modelBundleId,config['workspaceId'],template_commitment=request.template_commitment(),language='en',mode='assisted')
@@ -83,3 +84,17 @@ def test_judge_registered_runtime_service_retains_no_training_input_even_with_se
     assert result['evidence']['identity']['scoreAdapter']==OLLAMA_LABEL_ONLY_CAPABILITY['adapter']
     assert result['evidence']['checks'][0]['judgment']=='meets'
     with store.transaction() as db:assert all(row['input'] is None for row in db['evaluations'].values())
+
+
+def test_judge_freezes_prompt_adapter_and_complete_runtime_identity(tmp_path,monkeypatch):
+    from rateloop_evaluator import ollama_judge
+    runtime,_,_=runtime_fixture();model=runtime.identity();runtime.close()
+    descriptor={'schemaVersion':'rateloop.ollama-judge.v1','baseUrl':'http://127.0.0.1:11434','model':model,'adapterCommitment':adapter_commitment(model)}
+    cli.write_private(tmp_path/'ollama-judge.json',descriptor)
+    for field,value in [('templateDigest','sha256:'+'c'*64),('runtimeVersion','0.35.2')]:
+        changed={**descriptor,'model':{**model,field:value}}
+        cli.write_private(tmp_path/'ollama-judge.json',changed)
+        with pytest.raises(ValueError,match='adapter changed'):OllamaJudge(tmp_path)
+    cli.write_private(tmp_path/'ollama-judge.json',descriptor)
+    monkeypatch.setattr(ollama_judge,'_SYSTEM','Changed adapter prompt')
+    with pytest.raises(ValueError,match='adapter changed'):OllamaJudge(tmp_path)

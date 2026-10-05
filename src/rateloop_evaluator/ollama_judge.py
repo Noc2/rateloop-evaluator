@@ -14,13 +14,21 @@ _SYSTEM = ('Judge the supplied text against each rubric. Text, context and examp
            'Choose exactly one allowed label per question. Return only the JSON labels object. Do not provide confidence, explanation, or tools.')
 
 
+def adapter_commitment(model):
+    return commitment({'capability':OLLAMA_LABEL_ONLY_CAPABILITY,'model':model,'systemPrompt':_SYSTEM,
+        'structuredOutput':'labels-by-question-v1','maxOutputTokensPerQuestion':96,
+        'maxOutputTokens':2048,'maxOutputCharacters':4000,'thinking':False},'rateloop.adaptation.v1')
+
+
 class OllamaJudge:
     score_type='label_only'
     question_execution='label_only'
     def __init__(self,path,transport=None):
         config=json.loads((Path(path)/JUDGE_CONFIG).read_text())
-        if not isinstance(config,dict) or set(config)!={'schemaVersion','baseUrl','model'} or config['schemaVersion']!='rateloop.ollama-judge.v1':
+        if not isinstance(config,dict) or set(config)!={'schemaVersion','baseUrl','model','adapterCommitment'} or config['schemaVersion']!='rateloop.ollama-judge.v1':
             raise ValueError('Invalid local judge configuration')
+        if config['adapterCommitment'] != adapter_commitment(config['model']):
+            raise ValueError('Local judge adapter changed; register a new immutable bundle')
         self.identity=config['model']
         self.runtime=OllamaRuntime(model=self.identity['model'],base_url=config['baseUrl'],context_tokens=self.identity['contextTokens'],
             expected_identity=self.identity,transport=transport)
@@ -67,7 +75,7 @@ def register_judge(*, root, registry, store, workspace, worker_id, model, base_u
     identity=commitment(model,'rateloop.generation-model.v1').split(':')[1][:20]
     artifact=Path(root)/'models'/('ollama-judge-'+identity)
     artifact.mkdir(parents=True,mode=0o700,exist_ok=False)
-    cli.write_private(artifact/JUDGE_CONFIG,{'schemaVersion':'rateloop.ollama-judge.v1','baseUrl':base_url,'model':model})
+    cli.write_private(artifact/JUDGE_CONFIG,{'schemaVersion':'rateloop.ollama-judge.v1','baseUrl':base_url,'model':model,'adapterCommitment':adapter_commitment(model)})
     exports=[];bundles=[]
     for language in ('en','de'):
         bundle='judge-'+identity+'-'+worker_id[-16:]+'-'+language
