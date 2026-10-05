@@ -146,6 +146,9 @@ def score_general_benchmark(manifest, rows, point, observations):
                 counts['score_abstention'] += 1
                 continue
             prediction = winners[0]
+            if prediction == 'insufficient_evidence':
+                counts['insufficient_evidence_prediction'] += 1
+                continue
             confusion[reference][prediction] += 1
             decisions += 1; correct += int(prediction == reference)
             accepted += int(prediction in passing)

@@ -99,3 +99,17 @@ def test_inadequate_sample_policy_cannot_reduce_required_evidence():
     manifest, _, point, _ = fixture()
     with pytest.raises(ValueError, match='200'):
         freeze_operating_point(manifest, model=point['model'], route=point['route'], minimum_accepted=59)
+
+
+def test_insufficient_evidence_judgment_is_not_useful_decision_coverage():
+    manifest, rows, point, observations = fixture()
+    for r in rows:
+        r['template']['questions'][0]['labels'].append({'id': 'insufficient_evidence'})
+    manifest = freeze_benchmark(rows, SOURCES)
+    point = freeze_operating_point(manifest, model=point['model'], route=point['route'])
+    for obs in observations:
+        obs['operating_point_commitment'] = point['commitment']
+        obs['scores']['judgment'] = {'approved': .01, 'rejected': .01, 'insufficient_evidence': .98}
+    scope = next(iter(score_general_benchmark(manifest, rows, point, observations)['slices'].values()))
+    assert scope['accepted'] == 0 and scope['decisions'] == 0 and scope['useful_coverage'] == 0
+    assert scope['states']['insufficient_evidence_prediction'] == len(observations)
