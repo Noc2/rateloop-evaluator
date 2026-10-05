@@ -99,3 +99,28 @@ def test_worker_config_requires_private_permissions_and_fixed_allowlist(tmp_path
     path=args['state_dir']/'worker.json'
     path.chmod(0o644)
     with pytest.raises(ValueError): worker_arguments(args['state_dir'])
+
+
+def test_generation_only_pairing_never_loads_rating_weights_or_grants_rating_access(tmp_path,monkeypatch):
+    from rateloop_evaluator import ollama,hosted
+    identity={**IDENTITY,'capabilities':['generation']}
+    model={'model':'qwen3.5:4b','runtime':'ollama','runtimeVersion':'0.35.1','contextTokens':8192}
+    class Runtime:
+        def __init__(self,**kwargs):assert kwargs['model']=='qwen3.5:4b'
+        def identity(self):return model
+        def close(self):pass
+    monkeypatch.setattr(ollama,'OllamaRuntime',Runtime)
+    monkeypatch.setattr(hosted,'validate_pinned_model',lambda *_:pytest.fail('No rating model selected'))
+    calls=[]
+    def handle(request):
+        value=json.loads(request.content);calls.append(value)
+        if 'bundles' not in value:return httpx.Response(200,json=identity)
+        assert value['bundles']==[]
+        return httpx.Response(200,json={**identity,'apiKey':KEY,'apiKeyId':'key-test','modelBundleIds':[]})
+    root=tmp_path/'generation'
+    connected=connect(state_dir=root,base_url='https://rateloop.example',enrollment_token=TOKEN,
+        generation_model='qwen3.5:4b',transport=httpx.MockTransport(handle))
+    assert connected['modelBundleIds']==[]
+    args=worker_arguments(root)
+    assert args.bundle_id==[] and args.generation=={'baseUrl':'http://127.0.0.1:11434','model':model}
+    assert len(calls)==2

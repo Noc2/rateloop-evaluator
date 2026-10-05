@@ -34,13 +34,14 @@ def enrollment_origin(value: str, *, allow_insecure_loopback: bool = False) -> s
 def _identity(value: dict) -> dict:
     identity = {key: _opaque(value.get(key)) for key in _IDENTITY}
     capabilities = value.get("capabilities")
-    if not isinstance(capabilities, list) or "evaluation" not in capabilities or set(capabilities) - {"evaluation", "generation"}:
-        raise ValueError("Pairing must permit AI ratings on this device")
+    if not isinstance(capabilities, list) or not capabilities or len(set(capabilities)) != len(capabilities) or set(capabilities) - {"evaluation", "generation"}:
+        raise ValueError("Pairing must permit a supported capability on this device")
     identity["capabilities"] = capabilities
     return identity
 
 
-def connect(*, state_dir: str | Path, base_url: str, enrollment_token: str, model_dir: str | Path,
+def connect(*, state_dir: str | Path, base_url: str, enrollment_token: str, model_dir: str | Path | None = None,
+            generation_model: str | None = None, ollama_url: str = "http://127.0.0.1:11434", context_tokens: int = 8192,
             device: str = "cpu", allow_insecure_loopback: bool = False,
             transport: httpx.BaseTransport | None = None) -> dict:
     """Preview identity, prepare local manifests, then consume the code once.
@@ -52,8 +53,8 @@ def connect(*, state_dir: str | Path, base_url: str, enrollment_token: str, mode
     from .hosted import bootstrap, validate_pinned_model
     from .templates import CUSTOM_TEXT_CAPABILITY
     root = Path(state_dir).expanduser().absolute()
-    model = Path(model_dir).expanduser().resolve(strict=True)
-    if root.is_symlink() or root.resolve() != root or root == model or model.is_relative_to(root):
+    model = Path(model_dir).expanduser().resolve(strict=True) if model_dir else None
+    if root.is_symlink() or root.resolve() != root or model is not None and (root == model or model.is_relative_to(root)):
         raise ValueError("Use separate absolute, non-symlink state and model directories")
     if device not in ("cpu", "mps", "cuda"):
         raise ValueError("Unsupported local device")
@@ -62,7 +63,15 @@ def connect(*, state_dir: str | Path, base_url: str, enrollment_token: str, mode
         raise ValueError("Pairing code is invalid")
     if root.exists() and any(root.iterdir()):
         raise ValueError("Pairing requires a new state directory; keep existing worker credentials separate")
-    validate_pinned_model(model)
+    if model is None and generation_model is None:
+        raise ValueError("Select an existing rating model directory or a local generation model")
+    if model is not None: validate_pinned_model(model)
+    generation = None
+    if generation_model is not None:
+        from .ollama import OllamaRuntime
+        runtime = OllamaRuntime(model=generation_model, base_url=ollama_url, context_tokens=context_tokens)
+        try: generation = {"baseUrl": ollama_url, "model": runtime.identity()}
+        finally: runtime.close()
     with httpx.Client(base_url=origin, timeout=30, trust_env=False, follow_redirects=False, transport=transport) as client:
         try:
             with client.stream("POST", _ENROLL, json={"enrollmentToken": enrollment_token}) as response:
@@ -71,6 +80,8 @@ def connect(*, state_dir: str | Path, base_url: str, enrollment_token: str, mode
                 preview = _identity(bounded_response_object(response, max_bytes=16_384))
         except httpx.HTTPError:
             raise RuntimeError("RateLoop could not be reached; pairing has not been claimed") from None
+        if model is not None and "evaluation" not in preview["capabilities"] or generation is not None and "generation" not in preview["capabilities"]:
+            raise ValueError("Pairing does not permit the locally selected capability")
         seed = hashlib.sha256((preview["deviceId"] + ":gliner25").encode()).hexdigest()[:24]
         bundles = [{"language": language, "modelBundleId": "local-" + seed + "-" + language}
                    for language in ("en", "de")]
@@ -80,8 +91,13 @@ def connect(*, state_dir: str | Path, base_url: str, enrollment_token: str, mode
                       "agentId": preview["agentId"], "agentVersionId": preview["agentVersionId"], "metadataUploadEnabled": True}
         config = {"workspaceId": preview["workspaceId"], "workerId": preview["workerId"], "modelDir": str(model),
                   "stateDir": str(root), "bundles": bundles, "connection": connection}
-        prepared = bootstrap(config)
-        registrations = [json.loads(read_secret(path)) for path in prepared["registrations"]]
+        if model is not None:
+            prepared = bootstrap(config)
+            registrations = [json.loads(read_secret(path)) for path in prepared["registrations"]]
+        else:
+            bundles = []
+            cli.run(Namespace(command="init", state_dir=str(root), workspace=preview["workspaceId"]))
+            registrations = []
         cli.write_private(root / "enrollment.json", {**preview, "baseUrl": origin, "status": "claiming"})
         # Exactly one consuming request. Do not retry this request automatically.
         try:
@@ -101,7 +117,7 @@ def connect(*, state_dir: str | Path, base_url: str, enrollment_token: str, mode
             if allow_insecure_loopback: connection["allowInsecureLoopback"] = True
             cli.write_private(root / "connector.json", connection)
             cli.write_private(root / "worker.json", {"schemaVersion": "rateloop.local-worker.v1", "workerId": preview["workerId"],
-                "modelBundleIds": expected, "device": device, "pollSeconds": 5})
+                "modelBundleIds": expected, "device": device, "pollSeconds": 5, **({"generation": generation} if generation else {})})
             cli.write_private(root / "enrollment.json", {**preview, "baseUrl": origin, "status": "connected"})
         except (httpx.HTTPError, ValueError, KeyError, OSError, RuntimeError):
             raise RuntimeError(_UNCERTAIN) from None
@@ -114,17 +130,18 @@ def worker_arguments(state_dir: str | Path, *, command: str = "worker", once: bo
                      load: bool = False, output: str | None = None) -> Namespace:
     root = Path(state_dir).expanduser().resolve(strict=True)
     record = json.loads(read_secret(root / "worker.json"))
-    if (not isinstance(record, dict) or set(record) != {"schemaVersion", "workerId", "modelBundleIds", "device", "pollSeconds"}
+    if (not isinstance(record, dict) or set(record) - {"schemaVersion", "workerId", "modelBundleIds", "device", "pollSeconds", "generation"}
+            or not {"schemaVersion", "workerId", "modelBundleIds", "device", "pollSeconds"} <= set(record)
             or record["schemaVersion"] != "rateloop.local-worker.v1"):
         raise ValueError("Invalid paired worker configuration")
     _opaque(record["workerId"])
     bundles = record["modelBundleIds"]
-    if not isinstance(bundles, list) or not 1 <= len(bundles) <= 20 or len(set(bundles)) != len(bundles):
+    if not isinstance(bundles, list) or not (0 if record.get("generation") else 1) <= len(bundles) <= 20 or len(set(bundles)) != len(bundles):
         raise ValueError("Invalid paired model allowlist")
     for bundle in bundles: _opaque(bundle)
     if record["device"] not in ("cpu", "mps", "cuda") or type(record["pollSeconds"]) not in (int, float) or not 1 <= record["pollSeconds"] <= 60:
         raise ValueError("Invalid paired worker settings")
-    return Namespace(command=command, state_dir=str(root), config=str(root / "connector.json"), worker_id=record["workerId"],
+    return Namespace(generation=record.get("generation"), command=command, state_dir=str(root), config=str(root / "connector.json"), worker_id=record["workerId"],
         bundle_id=bundles, device=record["device"], poll_seconds=record["pollSeconds"], allow_training=False,
         training_model_dir=None, once=once, load=load,
         output=output or str(Path.home() / "Library/LaunchAgents" / ("ai.rateloop.evaluator." + hashlib.sha256(record["workerId"].encode()).hexdigest()[:16] + ".plist")))

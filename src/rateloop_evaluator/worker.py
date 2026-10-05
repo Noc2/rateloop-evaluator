@@ -352,7 +352,7 @@ def run_worker(worker: OutboundWorker, root: Path, *, once: bool = False):
 
 
 def install_launchd(*, state_dir: Path, config_path: str, worker_id: str, bundle_ids: list[str], device: str,
-                    poll_seconds: float, output: str, load: bool = False, training_model_dir: str | None = None) -> dict:
+                    poll_seconds: float, output: str, load: bool = False, training_model_dir: str | None = None, paired: bool = False) -> dict:
     """Write an owner-only native Mac service; credentials stay in their private file."""
     import plistlib
     import subprocess
@@ -361,7 +361,7 @@ def install_launchd(*, state_dir: Path, config_path: str, worker_id: str, bundle
     if sys.platform != "darwin": raise ValueError("launchd installation requires macOS")
     _opaque(worker_id)
     for bundle in bundle_ids: _opaque(bundle)
-    if not bundle_ids or device not in ("cpu","mps","cuda") or not 1<=poll_seconds<=60:
+    if (not bundle_ids and not paired) or device not in ("cpu","mps","cuda") or not 1<=poll_seconds<=60:
         raise ValueError("Invalid launchd worker configuration")
     config=Path(config_path).expanduser().resolve(); read_secret(config)
     destination=Path(output).expanduser().absolute()
@@ -374,6 +374,10 @@ def install_launchd(*, state_dir: Path, config_path: str, worker_id: str, bundle
         from .hosted import validate_pinned_model
         path=Path(training_model_dir).expanduser().resolve(); validate_pinned_model(path)
         arguments.extend(["--allow-training","--training-model-dir",str(path)])
+    if paired:
+        if training_model_dir: raise ValueError("Paired workers do not implicitly enable training")
+        read_secret(state_dir / "worker.json")
+        arguments=[sys.executable,"-m","rateloop_evaluator.cli","--state-dir",str(state_dir.resolve()),"start"]
     label="ai.rateloop.evaluator."+hashlib.sha256(worker_id.encode()).hexdigest()[:16]
     value={"Label":label,"ProgramArguments":arguments,"WorkingDirectory":str(state_dir.resolve()),
         "RunAtLoad":True,"KeepAlive":True,"ThrottleInterval":30,"ProcessType":"Background",

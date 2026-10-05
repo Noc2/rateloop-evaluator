@@ -188,3 +188,11 @@ Import checks the export digest and current grant watermark, exact local case/in
 Local case deletion removes matching connector results, audit metadata and imported-label references along with retained examples. A hashed workspace/case tombstone prevents an in-flight or later request from recreating the deleted case; genuinely new work needs a new case ID. The deletion CLI also clears matching runtime cache/outbox entries.
 
 Call `connector.close()` when the process finishes. Local backups, distributed model copies and any separately authorized human-review content have their own retention and deletion procedures; revoking a grant does not claim instant machine unlearning.
+
+## Local generation identity
+
+The paired connector stores an optional generation runtime separately from rating bundles. Its `rateloop.generation-model.v1` identity is registered through `/api/assurance/v2/generation/models`. Jobs carry the same immutable identity and commitment; only the operator-selected loopback origin in private local configuration is callable.
+
+`weightDigest` is the first local `FROM` blob SHA-256 reported by Ollama. `templateDigest` uses the existing RFC8785 commitment function under `rateloop.ollama.template.v1` with exactly these keys: `manifestDigest` (normalized `sha256:` prefix), `template`, `system`, `parameters`, `messages`. Missing string fields default to `""`; missing messages default to `[]`. The manifest commitment also binds auxiliary model blobs, renderer and parser metadata. This identifies installed artifacts; it is not a quality qualification.
+
+The completion outbox is a separate encrypted database from rating receipts. It saves final text and the lease only for exact retry after a lost acknowledgment; no prompt or partial stream is saved. A revoked/expired lease cannot authorize new inference or completion. See the README for the single `connect` / `start` / `install` workflow.

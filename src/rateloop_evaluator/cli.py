@@ -41,7 +41,10 @@ def main(argv=None):
     commands = parser.add_subparsers(dest="command",required=True)
     connect = commands.add_parser("connect", help="Pair a customer-owned worker using a short-lived code")
     connect.add_argument("--url", default="https://www.rateloop.ai")
-    connect.add_argument("--model-dir", required=True)
+    connect.add_argument("--model-dir")
+    connect.add_argument("--generation-model", help="Explicitly selected, already provisioned Ollama model")
+    connect.add_argument("--ollama-url", default="http://127.0.0.1:11434")
+    connect.add_argument("--context-tokens", type=int, default=8192)
     connect.add_argument("--device", choices=["cpu", "mps", "cuda"], default="cpu")
     connect.add_argument("--token-stdin", action="store_true", help="Read the pairing code from standard input, never a command argument")
     start = commands.add_parser("start", help="Run the paired outbound worker")
@@ -163,11 +166,16 @@ def run(args):
             from getpass import getpass
             token = getpass("RateLoop pairing code: ").strip()
         return connect(state_dir=args.state_dir, base_url=args.url, enrollment_token=token,
-                       model_dir=args.model_dir, device=args.device)
+                       model_dir=args.model_dir, device=args.device, generation_model=args.generation_model,
+                       ollama_url=args.ollama_url, context_tokens=args.context_tokens)
     if args.command in ("start", "install"):
         from .enrollment import worker_arguments
-        return run(worker_arguments(args.state_dir, command="worker" if args.command == "start" else "install-launchd",
-            once=getattr(args, "once", False), load=getattr(args, "load", False), output=getattr(args, "output", None)))
+        selected = worker_arguments(args.state_dir, command="worker" if args.command == "start" else "install-launchd",
+            once=getattr(args, "once", False), load=getattr(args, "load", False), output=getattr(args, "output", None))
+        if selected.generation:
+            from .paired_worker import run_paired, install_paired
+            return run_paired(selected) if args.command == "start" else install_paired(selected)
+        return run(selected)
     if args.command == "init":
         root = Path(args.state_dir).expanduser().resolve()
         if root.exists() and any(root.iterdir()): raise ValueError("Initialization requires an empty directory")

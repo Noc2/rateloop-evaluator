@@ -70,6 +70,27 @@ For operation while you are logged in to your Mac, replace `start` with `install
 
 A missing response during the one-use claim has an unknown outcome. Revoke that device in RateLoop, create another pairing code, and use a new private state directory. The connector never silently retries the consumed code or prints the device credential.
 
+## Generate with your local Ollama model
+
+The same paired connector can generate text through an already installed local Ollama model. Select generation when creating the device in RateLoop; rating and generation permissions are independent. This first adapter has been exercised with Ollama 0.35.1 and Qwen3.5 4B Q4_K_M on an Apple GPU. It accepts the 0.35.x API family and pins the exact installed version; another runtime version or model update requires a new approved registration.
+
+Provision the model explicitly before pairing, with Ollama cloud features disabled on your local server:
+
+```sh
+OLLAMA_NO_CLOUD=1 ollama serve
+# In another terminal:
+ollama pull qwen3.5:4b
+rateloop-evaluator --state-dir "$HOME/.local/share/rateloop-generation" connect \
+  --generation-model qwen3.5:4b
+rateloop-evaluator --state-dir "$HOME/.local/share/rateloop-generation" start
+```
+
+Add `--model-dir "$HOME/rateloop-models/gliner25" --device mps` to pair both capabilities. `install --load` uses the same configuration on macOS. `--ollama-url` selects a loopback origin on this machine and is stored locally; website jobs cannot choose an endpoint. `--context-tokens` defaults to 8192 and is capped at 32768. Model downloads are never performed by the worker.
+
+The adapter binds the actual model-weight blob, the full manifest and template defaults, quantization, context size and exact runtime version. It checks that identity before and after inference. Its local render preflight requires Ollama's `_debug_render_only` response; it conservatively bounds the complete rendered UTF-8 bytes plus the output budget, then sends `truncate:false` and `shift:false`. An unsupported preflight, changed model, excess context, missing terminal response, tool call, or output limit becomes an explicit failure. There is no provider fallback. Reasoning output is disabled, tool execution is unavailable, and the worker never treats a partial answer as complete.
+
+The connector polls over HTTPS, renews each fenced job, and reports bounded partial output at most once per second. Final text is encrypted locally only while awaiting a completion acknowledgment, then removed. Prompts are not persisted by this generation worker. The cloud-connected RateLoop workspace still handles chat inputs and final outputs; running the model locally does not make that workspace fully offline.
+
 ## Integrate RateLoop
 
 `register` creates a candidate by default. Training, registering, and exporting metadata do not switch the active model. Use `promote --mode shadow` after reviewing the candidate, or deliberately choose `register --activate` for the initial base model. Promotion changes the default; already queued jobs continue using their original activated bundle only while it remains configured and its exact consent is current. Revocation and expired evidence still block those jobs. Never-activated candidates cannot serve inference.
