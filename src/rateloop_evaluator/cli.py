@@ -47,6 +47,7 @@ def main(argv=None):
     connect.add_argument("--ollama-url", default="http://127.0.0.1:11434")
     connect.add_argument("--context-tokens", type=int, default=8192)
     connect.add_argument("--device", choices=["cpu", "mps", "cuda"], default="cpu")
+    connect.add_argument("--allow-insecure-loopback", action="store_true", help="Development only: permit an HTTP loopback RateLoop origin")
     connect.add_argument("--token-stdin", action="store_true", help="Read the pairing code from standard input, never a command argument")
     start = commands.add_parser("start", help="Run the paired outbound worker")
     start.add_argument("--once", action="store_true")
@@ -168,7 +169,8 @@ def run(args):
             token = getpass("RateLoop pairing code: ").strip()
         return connect(state_dir=args.state_dir, base_url=args.url, enrollment_token=token,
                        model_dir=args.model_dir, device=args.device, generation_model=args.generation_model, judge_model=args.judge_model,
-                       ollama_url=args.ollama_url, context_tokens=args.context_tokens)
+                       ollama_url=args.ollama_url, context_tokens=args.context_tokens,
+                       allow_insecure_loopback=args.allow_insecure_loopback)
     if args.command in ("start", "install"):
         from .enrollment import worker_arguments
         selected = worker_arguments(args.state_dir, command="worker" if args.command == "start" else "install-launchd",

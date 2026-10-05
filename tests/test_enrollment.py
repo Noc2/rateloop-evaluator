@@ -90,6 +90,7 @@ def test_cli_reads_code_only_from_stdin_and_start_routes_private_worker_config(t
     monkeypatch.setattr('sys.stdin',io.StringIO(TOKEN+'\n'))
     assert cli.main(['--state-dir',str(tmp_path/'state'),'connect','--model-dir',str(tmp_path/'model'),'--token-stdin'])==0
     assert captured[0]['enrollment_token']==TOKEN
+    assert captured[0]['allow_insecure_loopback'] is False
     assert TOKEN not in capsys.readouterr().out
     with pytest.raises(SystemExit): cli.main(['connect','--model-dir','/tmp/model','--token',TOKEN])
 
