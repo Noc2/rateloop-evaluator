@@ -140,6 +140,67 @@ Run `--criterion correctness` separately. Defaults freeze 400 development prompt
 
 If an earlier experiment already exposed that final set, `--previous-experiment /private/quality-helpfulness` reserves a new high-hash tail of upstream training prompts, excludes it from development, and requires the original development commitment to remain identical. Its report explicitly identifies that alternative final source. Do not repeatedly tune against either final set. A rejected validation run exports no candidate and skips candidate final-test scoring. Public-data experiments never change website activation or qualify a workspace for autonomous decisions. See the [original measurements and their preprocessing limitation](verification.md#public-quality-and-validation-gates--28-september-2026) and the [fixed-code attempts](verification.md#post-correction-public-regression-attempts).
 
+## General-request benchmark and qualification diagnostics
+
+`scripts/run_general_benchmark.py` runs the broader diagnostic path without modifying a worker, model registration or
+production default. Explicitly download the pinned HelpSteer2 training file described above, then freeze one response
+per normalized source prompt before any model predictions:
+
+```sh
+python scripts/run_general_benchmark.py prepare-public --source-gzip /private/HelpSteer2/train.jsonl.gz --criterion helpfulness --maximum-groups 600 --output /private/general-helpfulness
+python scripts/run_general_benchmark.py run --manifest /private/general-helpfulness/manifest.json --rows /private/general-helpfulness/rows.json --model-dir /private/models/public-gliner --device mps --output /private/general-helpfulness-base
+```
+
+The default threshold is fixed at 0.9 before final predictions. `run` writes both operating-point commitments and any
+temperature fits before observing final scores. It uses calibration groups only for fitting; test groups are never used
+for fitting or threshold selection. Calibrators with fewer than 20 completed groups or only one reference class are
+omitted. This is a diagnostic minimum, not enough evidence to qualify confidence. Files are exclusive, owner-only writes;
+use a new output directory for another predeclared candidate. Repeated inspection or selection on the same holdout needs
+fresh evidence before a release-quality claim. `--backend gliclass` uses the separately provisioned GLiClass runtime and
+weights. No command downloads models or creates a hosted fallback.
+
+Unlike the earlier short-input benchmark, the general experiment retains long selected requests. Overflow, unsupported,
+failed, partial, unperformed and withheld checks remain in coverage denominators. Proper scores explicitly report their
+completed-case denominator. Reports include class recall/precision, false rejections, accepted-case false acceptance,
+exact one-sided bounds, useful coverage, NLL/Brier/ECE, reliability-bin intervals, latency and full logical-evaluation
+API cost. The local runner reports warm local processing latency and model-load time separately; it does not measure
+website/network/hosted queue latency, concurrent capacity, hardware or electricity cost. The zero API cost is specific
+to this local run. Slice-wide claims use a Bonferroni-adjusted bound alongside each ordinary 95% bound. Public diagnostics
+always report `qualified: false` and `quality_gate: false`, even if statistical targets are met.
+
+For additional licensed or authorized EN/DE data, `freeze --rows ROWS.json --sources SOURCES.json --output MANIFEST.json`
+accepts the same row format emitted by `prepare-public`: stable evaluation/group IDs, input, exact template, labels,
+source ID, family and language. Families are `request_following`, `source_faithfulness`, `knowledge`, `writing`,
+`code_math` and `unsupported`. A source declares its revision, content SHA-256, license, attribution, URL and label
+provenance. Public human labels retain `external_human`; owner, AI-assisted and synthetic sources retain those origins.
+The public adapter's family is the declared rubric scope, not a claim that HelpSteer2 supplies an independent six-family
+task classification. Its absent German and source-faithfulness slices remain visibly empty.
+
+Related source IDs must link paraphrases, translations, conversations and document families. Normalized prompt/document
+and exact/formatting-equivalent input aliases also group automatically. The frozen manifest is content-free and records
+50% development, 25% calibration and 25% test hash assignments; actual small-slice counts vary. Reserve the existing fixed
+20% validation fraction within development for candidate selection. Pass `--previous MANIFEST.json` when extending a
+cohort to preserve assignments; a newly discovered relationship crossing frozen roles fails closed. Do not force exact
+counts by moving held-out material into development. Semantic duplicates still require explicit source links.
+
+`packet --manifest MANIFEST.json --rows ROWS.json --output BLIND.json` exports instructions, inputs and anchored rubrics
+without imported labels or AI predictions. Two eligible reviewers should independently annotate, preserving disagreement
+for blinded adjudication. The packet neither authenticates reviewers nor upgrades imports. Actual independent feedback
+must enter through the authenticated review path described earlier; a file's provenance declaration is not proof.
+
+`point --manifest MANIFEST.json --configuration CONFIG.json --output POINT.json` freezes an external route's model,
+weights/tokenizer, runtime, quantization, evidence policy, optional calibrator and operating threshold. `report --manifest
+MANIFEST.json --rows ROWS.json --point POINT.json --observations OBSERVATIONS.json --output REPORT.json` accepts one bound
+observation for every test representative, including operational skips. This supports comparing an explicitly provisioned
+local judge or separately authorized external experiment without manufacturing probabilities from generated confidence
+text. Only normalized complete distributions may supply probabilistic diagnostics; incomplete checks cannot masquerade
+as completed scores. Whole-route API costs include retries and child checks. No report activates or qualifies anything.
+
+The production confidence path remains the signed `BundleRegistry` promotion gate over authenticated, blinded reference
+snapshots, exact weight-bound calibration, immutable operating policy and unexpired evidence. General diagnostics add
+minimum-accepted-group, per-family/language coverage and simultaneous-bound checks; they do not weaken existing gates.
+External public data first, plus missing target-population evidence, means native confidence remains unvalidated.
+
 ## Retirement and recovery
 
 `revoke --grant-id GRANT` invalidates dependent snapshots and retires managed derived models. `delete-case --case-id CASE` removes controlled learning records and retires affected lineage. Deployment rechecks grants and bundle validity before and after inference, including on cached requests. `rollback --template-commitment DIGEST --language en` restores only a still-authorized, unexpired prior deployment.
