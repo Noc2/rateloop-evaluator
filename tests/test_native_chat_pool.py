@@ -4,6 +4,8 @@ import time
 import httpx
 import pytest
 
+from test_hosted import config
+
 from rateloop_evaluator.native_chat_pool import NativeChatPool, WORKER_ID, evaluate_native_job
 from rateloop_evaluator.protocol import EvaluationRequest
 from rateloop_evaluator.templates import CUSTOM_TEXT_CAPABILITY, custom_text_evaluation, custom_text_seed
@@ -340,3 +342,28 @@ def test_native_evidence_unknown_version_never_infers():
     job=fixture();job['evidenceVersion']='unknown';backend=Backend()
     with pytest.raises(ValueError):evaluate_native_job(job,backend=backend)
     assert backend.calls==0
+
+
+def test_native_v2_runtime_identity_matches_real_registration_export(config):
+    from pathlib import Path
+    from rateloop_evaluator.hosted import bootstrap,validate_pinned_model
+    from rateloop_evaluator.native_chat_pool import validate_registrations
+    config['bundles']=[{'language':language,'modelBundleId':'native-'+language,'taskCapability':CUSTOM_TEXT_CAPABILITY} for language in ('en','de')]
+    output=bootstrap(config)
+    registrations=[json.loads(Path(path).read_text()) for path in output['registrations']]
+    assert validate_registrations(registrations,config['modelDir'])==registrations
+    backend=Backend();backend.question_execution='joint_schema'
+    backend.manifest=validate_pinned_model(Path(config['modelDir']))
+    for registration in registrations:
+        job=fixture(registration['language']);job['baseRegistration']=registration
+        job['evidenceVersion']='rateloop.evaluator.evidence.v2'
+        request=EvaluationRequest.model_validate(job['content']['request'])
+        request.modelBundleId=registration['modelBundleId']
+        job.update(modelBundleId=request.modelBundleId,inputCommitment=request.input_commitment())
+        job['content']['request']=request.model_dump()
+        evidence=evaluate_native_job(job,backend=backend)['evidence']
+        identity=evidence['identity']
+        assert identity['weightsCommitment']==registration['baseWeightsCommitment']
+        assert identity['tokenizerCommitment']==registration['tokenizerCommitment']
+        assert identity['scoreAdapter']==registration['scoreCapability']['adapter']
+        assert identity['precision']==registration['quantization']=='fp32'

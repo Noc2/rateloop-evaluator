@@ -239,6 +239,11 @@ def run_hosted(config: dict) -> None:
                         registrations.append(json.loads(read_secret(root/"registrations"/("bundle-"+configured["modelBundleId"]+".json"))))
                 registrations=validate_registrations(registrations,config["modelDir"])
                 class SharedBackend:
+                    question_execution = "joint_schema"
+                    @property
+                    def manifest(self):
+                        if worker.evaluate.native_backend is None: raise PermissionError("Public native model unavailable")
+                        return worker.evaluate.native_backend.manifest
                     def count_tokens(self,*args):
                         if worker.evaluate.native_backend is None: raise PermissionError("Public native model unavailable")
                         return worker.evaluate.native_backend.count_tokens(*args)
