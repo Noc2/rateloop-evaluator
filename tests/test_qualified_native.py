@@ -170,3 +170,29 @@ def test_baseline_regression_blocks_export(qualified_fixture):
     registry.registration_policy = registry.active
     with pytest.raises(PermissionError, match='regresses'):
         export(qualified_fixture)
+
+
+@pytest.mark.parametrize('bad', [None, False, '0', float('nan'), float('inf')])
+def test_signed_missing_or_nonfinite_metrics_never_validate(qualified_fixture, bad):
+    exported = export(qualified_fixture); registry = qualified_fixture[0]; now = qualified_fixture[-1]
+    payload = deepcopy(exported['qualification']['manifest'])
+    payload['calibrationDiagnostics']['expected_calibration_error'] = bad
+    # Canonical JSON itself rejects NaN/infinity; the numeric validator also
+    # rejects them if another caller invokes the metrics helper directly.
+    from rateloop_evaluator.qualified_native import _validate_quality_diagnostics
+    with pytest.raises(ValueError, match='finite numerical'):
+        _validate_quality_diagnostics(payload['calibrationDiagnostics'], payload['referenceDiagnostics']['test']['referenceLabels'])
+    if isinstance(bad, float):
+        return
+    exported['qualification'] = registry.sign(payload)
+    with pytest.raises(ValueError, match='finite numerical'):
+        validate_qualified_native(exported, registry.public_key, now=now)
+
+
+def test_signed_class_and_bin_aggregates_cannot_disagree(qualified_fixture):
+    exported = export(qualified_fixture); registry = qualified_fixture[0]; now = qualified_fixture[-1]
+    payload = deepcopy(exported['qualification']['manifest'])
+    payload['calibrationDiagnostics']['per_label']['approved']['recall'] = .5
+    exported['qualification'] = registry.sign(payload)
+    with pytest.raises(ValueError, match='confusion matrix'):
+        validate_qualified_native(exported, registry.public_key, now=now)

@@ -17,6 +17,7 @@ from .calibration import apply_temperature
 from .learning import is_independent_reference
 from .protocol import commitment
 from .quality import group_representatives, score_predictions
+from .comparison import label_metrics
 from .registrations import export_registration
 from .templates import custom_text_evaluation
 
@@ -39,7 +40,7 @@ def builtin_template(rubric_id, language):
 
 
 def validate_native_scope(scope, template):
-    if not isinstance(scope, dict) or set(scope) != SCOPE_FIELDS or scope.get('rubricVersion') != 1:
+    if not isinstance(scope, dict) or set(scope) != SCOPE_FIELDS or type(scope.get('rubricVersion')) is not int or scope.get('rubricVersion') != 1:
         raise ValueError('Native scope must pin the built-in rubric, population, route, baseline and rollout')
     if template != builtin_template(scope['rubricId'], scope['language']):
         raise ValueError('Qualified native scope requires the exact frozen built-in wording and labels')
@@ -72,7 +73,11 @@ def validate_native_registration_manifest(manifest):
             or manifest.get('languages') != [scope['language']]):
         raise ValueError('Qualified native candidates require independent lineage and one exact calibrated scope')
     policy = manifest.get('selective_policy', {})
-    if policy.get('minimum_coverage', 0) < .5 or policy.get('max_false_approval_rate', 1) > .05 or policy.get('confidence', 0) < .95:
+    bounds = {'threshold': (.5, 1), 'minimum_coverage': (.5, 1), 'max_false_approval_rate': (0, .05), 'confidence': (.95, 1)}
+    if (set(policy) != set(bounds) or any(type(policy[k]) not in (int, float) or not math.isfinite(policy[k])
+            or not minimum <= policy[k] <= maximum for k, (minimum, maximum) in bounds.items())
+            or any(policy[k] == 1 for k in ('threshold', 'minimum_coverage', 'confidence'))
+            or policy['max_false_approval_rate'] == 0):
         raise ValueError('Native targets must be fixed before final testing')
 
 
@@ -182,6 +187,61 @@ def export_qualified_native(registry, store, workspace, bundle_id, request, *, e
     return exported
 
 
+def _validate_quality_diagnostics(metrics, counts):
+    """Reject missing/non-numeric metrics and recompute class/confusion summaries."""
+    if not isinstance(metrics, dict) or metrics.get('expected_label_counts') != counts:
+        raise ValueError('Quality diagnostics must bind the exact reference population')
+    total = sum(counts.values())
+    if type(metrics.get('count')) is not int or metrics['count'] != total:
+        raise ValueError('Quality sample count differs from its references')
+    for name, maximum in (('brier_score', 2), ('negative_log_likelihood', None),
+                           ('expected_calibration_error', 1), ('balanced_agreement', 1), ('agreement', 1)):
+        value = metrics.get(name)
+        if type(value) not in (int, float) or not math.isfinite(value) or value < 0 or maximum is not None and value > maximum:
+            raise ValueError('Native quality diagnostics require finite numerical metrics')
+    confusion = metrics.get('confusion', {})
+    recomputed = label_metrics(confusion, counts)
+    for label in counts:
+        values = metrics.get('per_label', {}).get(label, {})
+        for field in ('support', 'correct', 'predicted', 'abstentions'):
+            if type(values.get(field)) is not int or values[field] < 0:
+                raise ValueError('Class diagnostics require integer observation counts')
+        for field in ('recall', 'precision'):
+            value = values.get(field)
+            if value is None and recomputed['per_label'][label][field] is None:
+                continue
+            if type(value) not in (int, float) or not math.isfinite(value) or not 0 <= value <= 1:
+                raise ValueError('Class diagnostics require finite numerical rates')
+    if metrics.get('per_label') != recomputed['per_label'] or metrics['balanced_agreement'] != recomputed['balanced_agreement']:
+        raise ValueError('Class diagnostics differ from the reference confusion matrix')
+    correct = sum(confusion[label][label] for label in counts)
+    if (type(metrics.get('false_approvals')) is not int or metrics['false_approvals'] != confusion['rejected']['approved']
+            or type(metrics.get('false_rejections')) is not int or metrics['false_rejections'] != confusion['approved']['rejected']
+            or type(metrics.get('correct')) is not int or metrics['correct'] != correct
+            or metrics['agreement'] != correct/total):
+        raise ValueError('Quality error counts differ from the confusion matrix')
+    bins = metrics.get('calibration_bins')
+    if not isinstance(bins, list) or len(bins) != 10:
+        raise ValueError('Complete reliability bins are required')
+    count = 0; expected_error = 0.
+    for index, bucket in enumerate(bins):
+        n = bucket.get('count')
+        if (type(n) is not int or n < 0 or bucket.get('lower') != index/10 or bucket.get('upper') != (index+1)/10):
+            raise ValueError('Invalid reliability-bin boundary or count')
+        count += n
+        for name in ('mean_raw_score', 'accuracy'):
+            value = bucket.get(name)
+            if (n == 0 and value is not None or n > 0 and
+                    (type(value) not in (int, float) or not math.isfinite(value) or not 0 <= value <= 1)):
+                raise ValueError('Reliability bins require finite scores and observed rates')
+        if n:
+            if not math.isclose(bucket['accuracy'] * n, round(bucket['accuracy'] * n), abs_tol=1e-8):
+                raise ValueError('Reliability-bin rate cannot represent fractional observations')
+            expected_error += n * abs(bucket['accuracy'] - bucket['mean_raw_score'])
+    if count != total or not math.isclose(metrics['expected_calibration_error'], expected_error/total, abs_tol=1e-9):
+        raise ValueError('Reliability aggregate differs from the complete bins')
+
+
 def validate_qualified_native(exported, trusted_public_key, *, now=None, revoked_registration_commitments=()):
     """Verify signed exact scope using an externally pinned operator key.
 
@@ -280,6 +340,8 @@ def validate_qualified_native(exported, trusted_public_key, *, now=None, revoked
     comparison = payload.get('baselineDiagnostics', {})
     baseline = comparison.get('baseline', {}); candidate = comparison.get('candidate', {})
     diagnostics = payload.get('calibrationDiagnostics', {})
+    for metrics in (baseline, candidate, diagnostics):
+        _validate_quality_diagnostics(metrics, references['test']['referenceLabels'])
     try:
         if (candidate['count'] != tested or baseline['count'] != tested or diagnostics['count'] != tested
                 or candidate['balanced_agreement'] < baseline['balanced_agreement']
