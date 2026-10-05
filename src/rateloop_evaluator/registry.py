@@ -122,6 +122,8 @@ class BundleRegistry:
                     or manifest["languages"] != [template.language]
                     or manifest["template_commitments"] != [commitment(template.model_dump(), "rateloop.evaluator.template.v1")]):
                 raise ValueError("Custom task capability requires the pinned untrained public model and canonical seed")
+        from .qualified_native import validate_native_registration_manifest
+        validate_native_registration_manifest(manifest)
         ids = set()
         bindings = set()
         for artifact in manifest["calibrations"]:

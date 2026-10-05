@@ -201,6 +201,45 @@ snapshots, exact weight-bound calibration, immutable operating policy and unexpi
 minimum-accepted-group, per-family/language coverage and simultaneous-bound checks; they do not weaken existing gates.
 External public data first, plus missing target-population evidence, means native confidence remains unvalidated.
 
+## Qualified built-in native registrations
+
+The ordinary `export-registration` and the qualified export share one registration projection. A separate capability,
+`rateloop.evaluator.builtin-qualified-text.v1`, is available only for exact version-1 request-following or supplied-material
+rubrics in English/German. It is not a calibration grant for arbitrary custom questions. The source rubric requires
+source evidence in its reference cases and at runtime. No public benchmark result produced above can enable it.
+
+Before final testing, register an ordinary calibrated candidate with `--native-scope /private/native-scope.json`.
+The scope fixes `rubricId`, `rubricVersion`, `language`, `templateCommitment`, `populationId`, `routeId`, `routeVersion`,
+`evidencePolicyId`, `baselineBundleId`, `baselineModelCommitment` and `rolloutId`. The supported route is
+`native-single-pass`, version 1; evidence policy is `request-context-v1` or `supplied-material-v1` for the corresponding
+rubric. The baseline commitment uses `rateloop.bundle-manifest.v1` over its exact signed registry manifest. Changing
+any item requires a new immutable bundle and fresh validation. Set coverage/error/confidence targets before testing.
+
+After the existing independent selective promotion succeeds:
+
+```sh
+rateloop-evaluator export-qualified-native --bundle-id QUALIFIED_BUNDLE --request /private/exact-request.json --evidence /private/test-evidence.json --baseline-evidence /private/baseline-evidence.json --rollback-bundle-id PREVIOUS_BUNDLE --output /private/native-qualified.json
+```
+
+Baseline evidence includes the fixed baseline bundle/model commitment, exact template/language, observation time and
+raw scores for every final test representative. Export recomputes the existing independent gate from live authorized
+snapshot lineage. It additionally requires at least 200 audited accepted cases, 50% coverage, a one-sided 95% false-
+acceptance upper bound at most 5%, at least 200 calibration groups, both reference classes and two agreeing authenticated
+blind reviewers per calibration/test case. Candidate class recall and false approvals cannot regress against the pinned
+baseline. Held-out ECE must be below 0.05 and NLL/Brier cannot worsen after fitting; these are additional diagnostics,
+not substitutes for the risk and reference gates. Conflicting reviews remain quarantined until resolved independently.
+
+The result is `{registration, qualification}`. The registration carries the exact built-in capability and calibration
+identity. Qualification is an RFC 8785 canonicalized Ed25519 envelope containing the registration commitment, original
+signed bundle, exact deployment gate, calibration artifacts, frozen scope, content-free reference/class diagnostics,
+expiry and rollback identity. Consumers must trust an independently configured public key, verify both envelopes and
+all identity/expiry bindings, and apply their revocation list. Never trust a key supplied only by the same envelope.
+`validate_qualified_native` is the shared Python verifier; it recomputes the accepted-case risk bound instead of trusting
+a signed aggregate alone. A custom question cannot inherit another rubric's calibration. Supported worker weights and
+routes are an additional operational gate, even after a qualified export exists. Signatures attest the operator's
+verified collection process; they cannot independently prove human identity or representativeness against a dishonest
+operator. No qualifying independent cohort has been produced by the public diagnostic experiment.
+
 ## Retirement and recovery
 
 `revoke --grant-id GRANT` invalidates dependent snapshots and retires managed derived models. `delete-case --case-id CASE` removes controlled learning records and retires affected lineage. Deployment rechecks grants and bundle validity before and after inference, including on cached requests. `rollback --template-commitment DIGEST --language en` restores only a still-authorized, unexpired prior deployment.

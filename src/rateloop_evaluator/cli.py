@@ -52,8 +52,12 @@ def main(argv=None):
     register.add_argument("--snapshot-id"); register.add_argument("--calibrations"); register.add_argument("--real-data",action="store_true",help="Declare verified non-synthetic provenance; does not qualify deployment")
     register.add_argument("--activate",action="store_true",help="Explicitly activate this registration for advisory evaluation")
     register.add_argument("--custom-text",action="store_true",help="Allow custom binary text tasks on the pinned public base, with exact per-task consent")
+    register.add_argument("--native-scope",help="Exact builtin population, route, baseline and rollout fixed before final testing")
     register.add_argument("--selective-policy",help="JSON operating threshold/error policy fixed before final testing")
     export = commands.add_parser("export-registration"); export.add_argument("--bundle-id",required=True); export.add_argument("--request",required=True); export.add_argument("--output",required=True)
+    qualified = commands.add_parser("export-qualified-native")
+    for field in ("bundle-id", "request", "evidence", "baseline-evidence", "rollback-bundle-id", "output"):
+        qualified.add_argument("--"+field, required=True)
     serve = commands.add_parser("serve"); serve.add_argument("--bundle-id",required=True); serve.add_argument("--device",choices=["cpu","mps","cuda"],default="cpu")
     serve.add_argument("--host",default="127.0.0.1"); serve.add_argument("--port",type=int,default=8765); serve.add_argument("--tls-cert"); serve.add_argument("--tls-key")
     snapshot = commands.add_parser("snapshot"); snapshot.add_argument("--template",required=True); snapshot.add_argument("--version",type=int,required=True)
@@ -390,47 +394,24 @@ def run(args):
             manifest.update(task_capability=dict(CUSTOM_TEXT_CAPABILITY),template=req.template.model_dump())
         if args.snapshot_id: manifest["snapshot_id"] = args.snapshot_id
         if args.selective_policy: manifest["selective_policy"] = read_json(args.selective_policy)
+        if getattr(args,"native_scope",None): manifest["native_scope"] = read_json(args.native_scope)
         registry.register(manifest,workspace,args.model_dir)
         if getattr(args,"activate",False):
             registry.promote(req.modelBundleId,workspace,template_commitment=req.template_commitment(),language=req.template.language,mode="shadow")
         return {"modelBundleId":req.modelBundleId,"templateCommitment":req.template_commitment(),
                 "mode":"shadow" if getattr(args,"activate",False) else "candidate","publicKey":registry.public_key}
-    if args.command == "export-registration":
-        from .backends import MANIFEST_NAME, GLINER_SCORE_CAPABILITY, tokenizer_commitment
-        record = registry.get(args.bundle_id,workspace); manifest = record["manifest"]
+    if args.command in ("export-registration", "export-qualified-native"):
         req = EvaluationRequest.model_validate(read_json(args.request))
-        from .templates import bundle_supports_template, is_custom_text_template
-        if req.workspaceId != workspace or req.modelBundleId != args.bundle_id or not bundle_supports_template(manifest,req.template):
-            raise ValueError("Registration request does not match the signed bundle")
-        model = read_json(Path(record["artifact_root"]) / MANIFEST_NAME)
-        if model.get("training") and not model["source"].get("baseWeightsSha256"):
-            raise ValueError("Trained model is missing its original weight digest")
-        base_hash = model["source"].get("baseWeightsSha256",model["files"].get("model.safetensors"))
-        if not base_hash: raise ValueError("Original model weight digest is unavailable")
+        if args.command == "export-qualified-native":
+            from .qualified_native import export_qualified_native
+            exported = export_qualified_native(registry, store, workspace, args.bundle_id, req,
+                evidence=read_json(args.evidence), baseline_evidence=read_json(args.baseline_evidence),
+                rollback_bundle_id=args.rollback_bundle_id)
+        else:
+            from .registrations import export_registration
+            exported = export_registration(registry, store, workspace, args.bundle_id, req)
+        write_private(args.output, exported)
         active = registry.registration_policy(args.bundle_id,workspace,req.template)
-        calibrations = {c["question_id"]:c for c in manifest["calibrations"] if c["template_commitment"] == req.template_commitment() and c["language"] == req.template.language}
-        # No calibration is asserted to SaaS until a time-bounded deployment gate exists.
-        expiry = (active.get("gate") or {}).get("valid_until")
-        if expiry is not None:
-            from datetime import datetime, timezone
-            expiry = datetime.fromtimestamp(expiry,timezone.utc).isoformat(timespec="milliseconds").replace("+00:00","Z")
-        criteria = []
-        for question in req.template.questions:
-            cal = calibrations.get(question.id) if expiry else None
-            criteria.append({"questionId":question.id,"labels":[label.id for label in question.labels],"calibrationId":cal["id"] if cal else None,
-                "calibrationCommitment":commitment(cal,"rateloop.calibration.v1") if cal else None,"calibrationExpiresAt":expiry if cal else None})
-        snapshot_digest = None
-        if manifest.get("snapshot_id"): snapshot_digest = "sha256:"+store.load_snapshot(manifest["snapshot_id"],workspace)["content_digest"]
-        registration = {"modelBundleId":args.bundle_id,"templateCommitment":req.template_commitment(),"language":req.template.language,
-            "baseWeightsCommitment":"sha256:"+base_hash,"adapterCommitment":commitment(model["files"],"rateloop.adaptation.v1") if model.get("training") else None,
-            "tokenizerCommitment":tokenizer_commitment(model),"quantization":"fp32",
-            "trainingSnapshotCommitment":snapshot_digest,"evaluationReportCommitment":commitment(active,"rateloop.deployment-evidence.v1"),
-            "licenseManifestCommitment":commitment({"software":"Apache-2.0","weights":model["source"].get("license","Apache-2.0"),"model":manifest["model_id"],"revision":manifest["model_revision"]},"rateloop.licenses.v1"),
-            "maxTokens":manifest["max_tokens"],"criteria":criteria,"scoreCapability":dict(GLINER_SCORE_CAPABILITY)}
-        if manifest.get("task_capability"):
-            registration["taskCapability"]=manifest["task_capability"]
-        if is_custom_text_template(req.template): registration["template"]=req.template.model_dump()
-        write_private(args.output,registration)
         return {"registrationFile":str(Path(args.output).resolve()),"contentIncluded":False,"mode":active["mode"]}
     if args.command == "promote":
         return registry.promote(args.bundle_id,workspace,template_commitment=args.template_commitment,language=args.language,mode=args.mode,evidence=read_json(args.evidence) if args.evidence else None)
