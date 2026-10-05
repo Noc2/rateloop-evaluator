@@ -34,10 +34,13 @@ def read_config(path: str | Path) -> dict:
         raise ValueError("Hosted private training must be explicitly enabled or disabled")
     if "nativeChatPool" in value:
         pool=value["nativeChatPool"]
-        if (not isinstance(pool,dict) or set(pool)!={"baseUrl","secret"} or pool["baseUrl"]!="https://www.rateloop.ai"
+        if (not isinstance(pool,dict) or set(pool)-{"baseUrl","secret","qualifiedNative"} or not {"baseUrl","secret"}<=set(pool) or pool["baseUrl"]!="https://www.rateloop.ai"
                 or not isinstance(pool["secret"],str) or not 32<=len(pool["secret"])<=256
                 or any(c in pool["secret"] for c in "\r\n")):
             raise ValueError("Invalid native Chat pool configuration")
+        if "qualifiedNative" in pool:
+            from .native_chat_pool import validate_qualified_pool_config
+            validate_qualified_pool_config(pool["qualifiedNative"])
     _opaque(value["workspaceId"]); _opaque(value["workerId"])
     for key in ("modelDir","stateDir"):
         path=Path(value[key])
@@ -237,7 +240,7 @@ def run_hosted(config: dict) -> None:
                 for configured in config["bundles"]:
                     if configured.get("taskCapability"):
                         registrations.append(json.loads(read_secret(root/"registrations"/("bundle-"+configured["modelBundleId"]+".json"))))
-                registrations=validate_registrations(registrations,config["modelDir"])
+                registrations=validate_registrations(registrations,config["modelDir"],qualified_native=config["nativeChatPool"].get("qualifiedNative"))
                 class SharedBackend:
                     question_execution = "joint_schema"
                     @property
@@ -251,7 +254,7 @@ def run_hosted(config: dict) -> None:
                         if worker.evaluate.native_backend is None: raise PermissionError("Public native model unavailable")
                         return worker.evaluate.native_backend.predict(*args)
                 native=NativeChatPool(secret=config["nativeChatPool"]["secret"],base_url=config["nativeChatPool"]["baseUrl"],
-                    bundles=registrations,backend=SharedBackend())
+                    bundles=registrations,backend=SharedBackend(),qualified_native=config["nativeChatPool"].get("qualifiedNative"))
             try:
                 if native is None: worker.run()
                 else:

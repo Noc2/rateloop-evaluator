@@ -19,8 +19,9 @@ from rateloop_evaluator.registry import BundleRegistry
 
 
 @pytest.fixture
-def qualified_fixture(tmp_path):
-    now = time.time(); template = builtin_template('request_following', 'en')
+def qualified_fixture(tmp_path, request):
+    rubric = getattr(request, 'param', 'request_following')
+    now = time.time(); template = builtin_template(rubric, 'en')
     template_hash = commitment(template.model_dump(), 'rateloop.evaluator.template.v1')
     files = {'model.safetensors': 'c'*64, 'tokenizer.json': 'd'*64}
     model = {'files': files, 'source': {'license': 'Apache-2.0'}}
@@ -28,7 +29,8 @@ def qualified_fixture(tmp_path):
     def source_row(prefix, i):
         label = 'approved' if i % 2 else 'rejected'
         return {'evaluation_id': f'{prefix}-{i:04}', 'group_id': f'{prefix}-group-{i}',
-            'case_id': f'{prefix}-case-{i}', 'input': {'text': f'{prefix} authored synthetic case {i}'},
+            'case_id': f'{prefix}-case-{i}', 'input': {'text': f'{prefix} authored synthetic case {i}',
+                **({'evidence': f'{prefix} synthetic supplied source {i}'} if rubric == 'source_faithfulness' else {})},
             'template': template.model_dump(), 'template_commitment': template_hash, 'labels': {'judgment': label},
             'human_labels': [{'annotator_id': reviewer, 'independent_human': True, 'exposed_to_ai': False,
                              'labels': {'judgment': label}, 'quarantine_reasons': []} for reviewer in ('fixture-a', 'fixture-b')]}
@@ -43,9 +45,9 @@ def qualified_fixture(tmp_path):
         model_bundle_id='qualified', template_commitment=template_hash, question_id='judgment', language='en',
         example_ids=[r['group_id'] for r in snapshot['calibration']], model_weights_sha256='c'*64)
     baseline = {'id': 'base', 'template_commitments': [template_hash], 'files': files, 'languages': ['en']}
-    scope = {'rubricId': 'request_following', 'rubricVersion': 1, 'language': 'en', 'templateCommitment': template_hash,
+    scope = {'rubricId': rubric, 'rubricVersion': 1, 'language': 'en', 'templateCommitment': template_hash,
         'populationId': 'synthetic-fixture-never-publish', 'routeId': 'native-single-pass', 'routeVersion': 1,
-        'evidencePolicyId': 'request-context-v1', 'baselineBundleId': 'base',
+        'evidencePolicyId': 'request-context-v1' if rubric == 'request_following' else 'supplied-material-v1', 'baselineBundleId': 'base',
         'baselineModelCommitment': commitment(baseline, 'rateloop.bundle-manifest.v1'), 'rolloutId': 'fixture'}
     policy = {'threshold': .95, 'max_false_approval_rate': .05, 'minimum_coverage': .5, 'confidence': .95}
     manifest = {'id': 'qualified', 'workspace_id': 'workspace', 'model_id': 'synthetic-test-only', 'model_revision': 'a'*40,

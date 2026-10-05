@@ -308,7 +308,7 @@ def test_native_pool_unavailable_does_not_revoke_retained_worker_health_and_clos
     monkeypatch.setattr(hosted,"prepare_evaluator",lambda *_args,**kwargs:evaluate)
     monkeypatch.setattr(hosted,"OutboundWorker",Worker)
     monkeypatch.setattr("rateloop_evaluator.native_chat_pool.NativeChatPool",Pool)
-    monkeypatch.setattr("rateloop_evaluator.native_chat_pool.validate_registrations",lambda bundles,_path:bundles)
+    monkeypatch.setattr("rateloop_evaluator.native_chat_pool.validate_registrations",lambda bundles,_path,**_kwargs:bundles)
     hosted.run_hosted(config)
     assert events == ["old-connected","native-connected","old-poll","native-poll","native-closed","model-closed","old-closed"]
     assert state["health"].last_success is not None

@@ -268,3 +268,22 @@ Training preserves the pinned base tokenizer assets byte for byte and compares t
 Failure reporting sends only `workerId`, `leaseToken` and a content-free `errorCode`. The worker persists that terminal intent until the website acknowledges the same job with `status: failed`. Transport errors, rejected payloads and ambiguous acknowledgements preserve it for retry without retraining or resubmitting a rejected completion. An explicit 404, 409 or 410 releases a missing, superseded or expired lease. This training contract differs from the evaluation job failure contract; do not add its `retryable` field here.
 
 Outbound endpoints are under `/api/assurance/v2/evaluations/training`: `/workers/heartbeat`, `/jobs/claim`, and `/jobs/{id}/content|heartbeat|complete|fail`. Content retrieval uses the fenced `X-Evaluator-Lease` and `X-Evaluator-Worker` headers. Every job binds the exact task and dataset commitment; the dataset digest domain is `rateloop.evaluator.dataset.v1` over `{workspaceId,templateCommitment,provenance,rows}` using RFC 8785. Completion uploads metadata only, never dataset rows, artifact paths or checkpoint bytes.
+
+
+## Optional qualified native registrations
+
+The native pool continues to serve the two pinned uncalibrated public base registrations. Once an independent cohort
+passes the [qualified native export procedure](learning.md#qualified-built-in-native-registrations), operators may add
+`qualifiedNative` inside `nativeChatPool`: an externally pinned `trustedPublicKey`, up to four exported `registrations`
+wrappers, and optional `revokedRegistrationCommitments`. Install exactly the same reviewed wrappers and trust pin in the
+application. This is server configuration, never a browser-supplied key or confidence override. There is currently no
+qualified public-data cohort to configure by default.
+
+The pool advertises only valid registrations, checks each signed job qualification and exact input/template lease,
+and rechecks authorization before releasing a result. Expired or revoked qualifications withdraw while the ordinary
+advisory base remains available. Apply revocation updates to both application and worker configuration; restart the
+worker to load edited configuration. The pool only supports its existing pinned public fp32 checkpoint and tokenizer;
+a qualified adapted model needs an explicitly provisioned compatible runtime and cannot silently use base weights.
+Supplied-material judgments require actual `input.evidence`. Custom wording never inherits built-in calibration.
+Calibrated probabilities remain advisory: the native service uses shadow mode, preserves human-review requirements,
+and grants no sending or other action permission. Raw native inputs are ephemeral and are not retained for learning.
