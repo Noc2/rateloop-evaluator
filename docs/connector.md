@@ -1,6 +1,6 @@
 # Optional RateLoop connector
 
-The evaluator works without a RateLoop account. The connector adds outbound metadata receipts, server-selected human audits and explicitly authorized human-label imports. It does not upload the evaluated text, context or evidence.
+The evaluator works without a RateLoop account. The rating connector adds outbound metadata receipts, server-selected human audits and explicitly authorized human-label imports. Rating receipts do not upload the evaluated text, context or evidence. The separately enabled generation worker receives Chat inputs and sends generated text back to the connected workspace. Local inference does not remove the workspace’s existing handling of those inputs and outputs.
 
 RateLoop's evaluator connection supports **off, shadow and paused**. Separately, each website case selects **Human**, **AI** or **AI + human**. AI-only returns an advisory result without creating human review; AI + human withholds that result until the independent human answer freezes. Hosted receipts cannot automatically satisfy required human review, regardless of the evaluator's local deployment mode.
 

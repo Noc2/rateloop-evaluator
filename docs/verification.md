@@ -735,3 +735,67 @@ and local single-process measurement limits from the baseline apply unchanged.
 Report SHA-256: `1e33b4feb31c080b3f4241c19c28cb95bbfc32b6d6e1501325da9285c966c673`.
 The next comparison needs a measured context-capable candidate, adequate German/source-faithfulness references and a
 fresh final cohort before any release-quality claim; merely raising a UI confidence threshold cannot fix input overflow.
+
+
+## Customer-owned Mac connector and Ollama — 2026-10-05
+
+Evaluator implementation `79dee0e` (following `25b36b5`, `187f998`, `8060817`,
+and `123c5e3`) was exercised on this 128 GiB Apple Silicon Mac. The product
+service checkout included device enrollment `d94495045`, label-only results
+`655dae080`, and durable local Chat generation `b81304c86`. The complete evaluator
+suite passed **728 tests**, with **five optional hardware tests skipped**; the
+public JSON Schema check passed. Separate real model checks below used GPU access
+outside the development sandbox. No customer content or hosted credentials were used.
+
+The explicit local runtime was official Ollama **0.35.1**, started on loopback with
+cloud features disabled. The separately provisioned model was **Qwen3.5 4B Q4_K_M**,
+selected as `qwen3.5:4b`, with an 8192-token context setting. Its actual weight blob
+was `sha256:a9d0a3e1d8c91732a3812becd31f8d4a8ff57414903f226306069f0437e2ac50`;
+the adapter's manifest/template/default commitment was
+`sha256:7c9b24fddb50d90eb248fde843b47f79ae76ac1029e8cec80a8c0d808ba156ee`.
+No inference request downloaded a model. The earlier pinned GLiNER2.5 multilingual
+checkpoint above supplied actual MPS rating inference.
+
+A temporary loopback HTTP bridge invoked the application's real enrollment,
+authentication, generation, consent, job, receipt and Chat services against a
+fully migrated local PostgreSQL database. The actual Python command-line connector
+performed pairing and each worker poll. The verified path was:
+
+1. A one-use pairing registered six exact GLiNER and experimental judge bundles,
+   plus the independently authorized generation capability. Credential storage
+   stayed private; pairing created no input-processing or training consent.
+2. A real local `READY` generation probe completed, and its checked status was
+   persisted. Explicit owner selection then chose that exact frozen runtime.
+3. A real Qwen-generated synthetic answer was persisted in Chat through the
+   fenced completion path. Generation did not grant rating input access.
+4. The owner explicitly selected the actual GLiNER custom-English bundle for the
+   saved native question. Missing processing permission was rejected. Selection
+   created one exact `ai_use` consent at `customer_local` and no training grant.
+5. The real worker fetched the queued, permitted native case, ran GLiNER on MPS,
+   delivered its fenced receipt and completed the job. The persisted result was
+   `uncertain` / `uncalibrated`, with null probabilities and calibration identity.
+6. Device revocation rejected both a previously authenticated API principal and
+   the real connector. Chat retained its local destination and became unavailable;
+   it did not switch to hosted generation.
+
+This bridge tests real inference and persisted service integration, not a browser
+journey or the public deployment. Synthetic hosted eligibility metadata was used
+only to initialize the existing native rating question/binding; no hosted model
+inference ran. The local queue transport was absent, so the real review queue
+processing function was invoked directly after draft completion. Current native
+rating selection still requires that prior binding; a fully local first-use rating
+setup has not been verified by this check. Final public-deployment checks belong
+to the product release record.
+
+The experimental Ollama judge also completed separate English and German synthetic
+service/evidence checks. Its version-2 results carry a label but **no numeric score,
+confidence, entropy or calibration**, and remain advisory. These execution checks
+do not establish rating quality, independent human agreement, training capability,
+throughput or latency guarantees. Kolibri, LM Studio, MLX and other model/runtime
+combinations were not executed by this check.
+
+Only source installation and optional per-login launchd setup are available here.
+The inspected Mac had an Apple Development identity but no Developer ID Application
+or Installer identity; no signed, notarized installer was produced. A sleeping Mac
+is not an always-on service. Model licensing remains specific to the operator's
+selected weights; the Apache-2.0 evaluator license does not grant model redistribution.
