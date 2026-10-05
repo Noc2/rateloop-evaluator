@@ -80,3 +80,13 @@ material; input overflow abstains without truncating away contradictions. Source
 references bind hashes and UTF-8 byte offsets. General custom questions cannot be
 renamed to claim this check. No network lookup, sandbox execution or model download
 is enabled by these contracts.
+
+The local `/v2/evaluate` route accepts the same request v1 and returns
+`{result, evidence}`. It shares the v1 authentication, grant, input limit, deadline,
+retention and idempotency core; switching response versions does not incur a second
+inference. The TypeScript client exposes `evaluateWithEvidence` alongside `evaluate`.
+The hosted and native workers return optional receipt `evidence` only for a claim
+whose top-level `evidenceVersion` is exactly `rateloop.evaluator.evidence.v2`.
+Old claims still receive only result v1. Content-free evidence shares the fenced,
+encrypted receipt retry and erasure boundaries. Source checks use an explicitly
+registered supplied-material template; the native binary default is unchanged.

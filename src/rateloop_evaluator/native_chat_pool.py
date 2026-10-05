@@ -19,6 +19,7 @@ from .connector import ConnectorRejected, ConnectorUnavailable, bounded_response
 from .hosted import validate_pinned_model
 from .learning import LearningStore, provision_key
 from .protocol import EvaluationRequest, EvaluationResult
+from .evidence import EVIDENCE_SCHEMA, validate_evidence_binding
 from .service import Principal, create_app
 from .storage import RuntimeStore
 from .templates import CUSTOM_TEXT_CAPABILITY, bundle_supports_template, custom_text_seed, website_binary_question
@@ -39,6 +40,7 @@ def validate_registrations(bundles: list[dict], model_dir: str) -> list[dict]:
                 or bundle.get("adapterCommitment") is not None or bundle.get("trainingSnapshotCommitment") is not None
                 or bundle.get("taskCapability") != CUSTOM_TEXT_CAPABILITY
                 or bundle.get("scoreCapability") != GLINER_SCORE_CAPABILITY
+                or bundle.get("quantization") != "fp32"
                 or bundle.get("maxTokens") != 512
                 or bundle.get("template") != custom_text_seed(language).model_dump()
                 or any(criterion.get("calibrationId") is not None for criterion in bundle.get("criteria", []))):
@@ -50,6 +52,8 @@ def validate_registrations(bundles: list[dict], model_dir: str) -> list[dict]:
 def evaluate_native_job(job: dict, *, backend, now=None) -> dict:
     """A real, ephemeral, single-case use grant; no raw input is written to disk."""
     current = time.time() if now is None else now
+    if job.get("evidenceVersion") not in (None, EVIDENCE_SCHEMA):
+        raise ValueError("Unsupported native Chat evidence version")
     request = EvaluationRequest.model_validate(job.get("content", {}).get("request"))
     content = job["content"]
     expires = _timestamp(job.get("leaseExpiresAt"))
@@ -86,7 +90,8 @@ def evaluate_native_job(job: dict, *, backend, now=None) -> dict:
         app = create_app(backend=backend, bundle=bundle, learning=learning, runtime=runtime,
             tokens={"0"*64: identity}, validate_bundle=lambda value: {"mode": "shadow"},
             allow_training_retention=lambda value: False)
-        return app.state.evaluate(request, identity)
+        return (app.state.evaluate_with_evidence(request, identity) if job.get("evidenceVersion") == EVIDENCE_SCHEMA
+                else app.state.evaluate(request, identity))
 
 
 class NativeChatPool:
@@ -120,7 +125,8 @@ class NativeChatPool:
         failing=job.get("failureCode") is not None
         body={"action":"fail" if failing else "complete","workspaceId":job["workspaceId"],
             "jobId":job["jobId"],"leaseToken":job["leaseToken"]}
-        body.update({"retryable":False,"errorCode":job["failureCode"]} if failing else {"result":result})
+        body.update({"retryable":False,"errorCode":job["failureCode"]} if failing else
+            result if isinstance(result, dict) and "evidence" in result else {"result":result})
         try:
             response=self._request(body)
             if failing: require_failure_acknowledgment(response)
@@ -150,7 +156,14 @@ class NativeChatPool:
         try:
             lease = self._request({"action": "heartbeat_job", **binding})
             job["leaseExpiresAt"] = lease["leaseExpiresAt"]
-            result = EvaluationResult.model_validate(evaluate_native_job(job, backend=self.backend)).model_dump()
+            evaluated = evaluate_native_job(job, backend=self.backend)
+            if job.get("evidenceVersion") == EVIDENCE_SCHEMA:
+                result_value = EvaluationResult.model_validate(evaluated["result"])
+                request = EvaluationRequest.model_validate(job["content"]["request"])
+                evidence = validate_evidence_binding(evaluated["evidence"], result_value, request)
+                result = {"result":result_value.model_dump(), "evidence":evidence.model_dump()}
+            else:
+                result = EvaluationResult.model_validate(evaluated).model_dump()
             # Drop answer/context immediately after inference, even if transport is offline.
             self.pending = ({"workspaceId": job["workspaceId"], "jobId": job["jobId"], "leaseToken": job["leaseToken"],
                 "leaseExpiresAt":job["leaseExpiresAt"]}, result)

@@ -534,3 +534,20 @@ def test_frozen_template_examples_match_python_contract():
         path=Path(__file__).parents[1]/f"examples/approval-request-{language}.json"
         request=EvaluationRequest.model_validate_json(path.read_text())
         assert request.template==overall_approval(language)
+
+
+def test_opt_in_evidence_uses_one_inference_and_survives_metadata_receipt_transport(website):
+    from rateloop_evaluator.evidence import RuntimeIdentity,evidence_for_result
+    from rateloop_evaluator.protocol import EvaluationResult
+    worker,req,backend,_,behavior,calls=website
+    behavior['job']['evidenceVersion']='rateloop.evaluator.evidence.v2'
+    original=worker.evaluate
+    def with_evidence(request):
+        result=EvaluationResult.model_validate(original(request))
+        return {'result':result.model_dump(),'evidence':evidence_for_result(request,result,
+            identity=RuntimeIdentity(runtime='fixture-only',scoreAdapter='fixture-only')).model_dump()}
+    worker.evaluate.with_evidence=with_evidence
+    assert worker.run_once()['state']=='completed'
+    receipt=next(json.loads(call.content) for call in calls if call.url.path.endswith('/receipts'))
+    assert receipt['evidence']['checks'][0]['judgment']=='meets' and backend.calls==1
+    assert req.input.text not in json.dumps(receipt)

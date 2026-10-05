@@ -77,6 +77,10 @@ def prepare_evaluator(connector, registry, bundle_ids: list[str], *, device: str
     def evaluate(request):
         if request.modelBundleId not in apps: raise PermissionError("Unconfigured worker bundle")
         return apps[request.modelBundleId].state.evaluate(request,identity)
+    def evaluate_with_evidence(request):
+        if request.modelBundleId not in apps: raise PermissionError("Unconfigured worker bundle")
+        return apps[request.modelBundleId].state.evaluate_with_evidence(request,identity)
+    evaluate.with_evidence=evaluate_with_evidence
     def close():
         cache.close()
     evaluate.close=close

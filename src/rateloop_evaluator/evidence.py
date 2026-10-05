@@ -196,3 +196,75 @@ def validate_source_reference(reference: SourceReference, material: str) -> None
     if (reference.sourceCommitment != commitment(material, "rateloop.evaluator.source.v1")
             or reference.passageCommitment != commitment(passage, "rateloop.evaluator.passage.v1")):
         raise ValueError("Source reference does not match the exact supplied bytes")
+
+
+def runtime_identity(bundle: dict, backend) -> RuntimeIdentity:
+    """Use verified local inventory; unknown identities stay explicitly absent."""
+    from importlib.metadata import PackageNotFoundError, version
+    from .backends import tokenizer_commitment
+    model = getattr(backend, 'manifest', None) or {}
+    files = bundle.get('files') or model.get('files') or {}
+    source = model.get('source') or {}
+    packages = []
+    for distribution in ('rateloop-evaluator', 'gliner2', 'torch'):
+        try: packages.append(distribution + ':' + version(distribution))
+        except PackageNotFoundError: pass
+    score = bundle.get('score_capability') or {}
+    adapter = score.get('adapter', '')
+    if not adapter:
+        adapter = 'rateloop-evaluator/gliner2' if getattr(backend, 'question_execution', None) == 'joint_schema' else 'unspecified'
+    weights = files.get('model.safetensors')
+    return RuntimeIdentity(modelId=bundle.get('model_id') or source.get('repository'),
+        modelRevision=bundle.get('model_revision') or source.get('revision'),
+        weightsCommitment='sha256:' + weights if weights else None,
+        tokenizerCommitment=tokenizer_commitment({'files':files}) if any('tokenizer' in key for key in files) else None,
+        runtime=';'.join(packages) or 'rateloop-evaluator:unknown',
+        precision='fp32' if getattr(backend, 'question_execution', None) in ('joint_schema','batched_question_prompts') else None,
+        scoreAdapter=adapter)
+
+
+def evidence_for_result(request: EvaluationRequest, result: EvaluationResult, *, identity: RuntimeIdentity) -> EvaluationEvidence:
+    """Expose exactly the scored rubric and an explicit unperformed factual lookup.
+
+    One complete unit means the entire declared answer/material pair fit the
+    rubric, not that a claim extractor checked every fact. Existing v1 abstention
+    never becomes automated approval or calibrated public confidence here.
+    """
+    from .source_evidence import is_supplied_material_template, whole_material_reference
+    scored = {criterion.questionId: criterion for criterion in result.criteria}
+    source_rubric = is_supplied_material_template(request.template)
+    checks = []
+    failure = result.abstainReason in ('deadline_exceeded', 'backend_failed')
+    for question in request.template.questions:
+        criterion = scored.get(question.id)
+        kind = 'supplied_material' if source_rubric else 'criterion'
+        if criterion is None or failure:
+            checks.append(dict(id='criterion:'+question.id,questionId=question.id,kind=kind,
+                state='failed' if failure else 'not_checked',judgment=None,
+                reasonCode=result.abstainReason or 'criterion_not_scored',coverage={'status':'none','checkedUnits':0,'totalUnits':None},
+                sourceRefs=[],calibration={'status':'not_validated'}))
+            continue
+        probabilities = criterion.probabilities or criterion.rawScores
+        highest = max(probabilities.values())
+        tied = sum(score == highest for score in probabilities.values()) != 1
+        judgment = 'meets' if criterion.label in question.passLabels else 'does_not_meet'
+        reason = None
+        if tied:
+            judgment, reason = 'insufficient_evidence', 'tied_scores'
+        elif not question.passLabels:
+            judgment, reason = 'insufficient_evidence', 'rubric_has_no_judgment_mapping'
+        elif source_rubric and criterion.label == 'insufficient_evidence':
+            judgment, reason = 'insufficient_evidence', 'insufficient_source_evidence'
+        checks.append(dict(id='criterion:'+question.id,questionId=question.id,kind=kind,state='completed',judgment=judgment,
+            reasonCode=reason,coverage={'status':'complete','checkedUnits':1,'totalUnits':1},
+            sourceRefs=[whole_material_reference(request.input.evidence)] if source_rubric else [],
+            calibration={'status':'mapping_registered' if criterion.calibrationId else 'not_validated','calibrationId':criterion.calibrationId}))
+    # No internet research or factual verifier runs in this service. This row
+    # never overrides the user's rubric or claims a second prediction was made.
+    checks.append(dict(id='factual_claims',questionId=None,kind='factual_claims',state='not_checked',judgment=None,
+        reasonCode='external_sources_not_checked',coverage={'status':'none','checkedUnits':0,'totalUnits':None},
+        sourceRefs=[],calibration={'status':'not_validated'}))
+    fields={key:getattr(result,key) for key in ('workspaceId','caseId','modelBundleId','inputCommitment','templateCommitment','resultCommitment','observedAt')}
+    value=make_evidence(**fields,answerCommitment=commitment(request.input.text,'rateloop.evaluator.answer.v1'),
+        language=request.template.language,identity=identity.model_dump(),checks=checks)
+    return validate_evidence_binding(value,result,request)

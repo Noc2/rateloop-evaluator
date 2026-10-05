@@ -16,6 +16,7 @@ from fastapi import HTTPException
 
 from .connector import ConnectorRejected, ConnectorUnavailable, ReceiptRejected, RateLoopConnector, _audit_selection, _hash, _opaque, _timestamp, require_completion_acknowledgment, require_failure_acknowledgment
 from .protocol import EvaluationRequest, EvaluationResult
+from .evidence import EVIDENCE_SCHEMA, validate_evidence_binding
 from .templates import website_binary_question
 from .execution import ExecutionBusy, model_execution
 from .presence import WorkerPresence
@@ -127,6 +128,8 @@ class OutboundWorker:
 
     def _validate_claim(self, job: dict) -> None:
         _review_mode(job)
+        if job.get("evidenceVersion") not in (None, EVIDENCE_SCHEMA):
+            raise ValueError("Unsupported evidence version")
         for key in ("jobId","modelBundleId"): _opaque(job.get(key))
         for key in ("inputCommitment","templateCommitment"): _hash(job.get(key))
         if job["modelBundleId"] not in self.model_bundle_ids:
@@ -205,8 +208,16 @@ class OutboundWorker:
         self._remember_collection(request,body,review_mode)
         if review_mode=="ai_and_human": self._remember_audit(request,body)
         job["caseId"]=request.caseId; self._save(job)
+        evidence=None
         with self._renew_while_working(job) as failed:
-            result=EvaluationResult.model_validate(self.evaluate(request))
+            if job.get("evidenceVersion") == EVIDENCE_SCHEMA:
+                if not callable(getattr(self.evaluate,"with_evidence",None)):
+                    raise ValueError("Worker lacks the requested evidence capability")
+                evaluated=self.evaluate.with_evidence(request)
+                result=EvaluationResult.model_validate(evaluated["result"])
+                evidence=validate_evidence_binding(evaluated["evidence"],result,request).model_dump()
+            else:
+                result=EvaluationResult.model_validate(self.evaluate(request))
         if failed: raise failed[0]
         if (result.workspaceId,result.caseId,result.modelBundleId,result.inputCommitment,result.templateCommitment) != (
                 request.workspaceId,request.caseId,request.modelBundleId,request.input_commitment(),request.template_commitment()):
@@ -217,7 +228,7 @@ class OutboundWorker:
         with self.connector.learning.transaction() as database:
             self.connector._case_live(database,request.caseId)
             self.connector._state(database)["results"][result.inputCommitment]=result.model_dump()
-        receipt_key=self.connector.queue_result(result,job_context={"jobId":job["jobId"],"workerId":self.worker_id,"leaseToken":job["leaseToken"]})
+        receipt_key=self.connector.queue_result(result,evidence=evidence,job_context={"jobId":job["jobId"],"workerId":self.worker_id,"leaseToken":job["leaseToken"]})
         acknowledgment=self.connector.runtime.acknowledgment(receipt_key)
         if acknowledgment is None:
             self.connector.flush()

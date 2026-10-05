@@ -19,6 +19,8 @@ from .protocol import EvaluationRequest, EvaluationResult, WireModel, Identifier
 from .storage import RuntimeStore
 from .execution import ExecutionBusy, model_execution
 from .templates import bundle_supports_template
+from .evidence import evidence_for_result, runtime_identity
+from .source_evidence import is_supplied_material_template
 
 
 class Backend(Protocol):
@@ -129,6 +131,8 @@ def create_app(*, backend: Backend, bundle: dict, learning: LearningStore, runti
             reason = None; criteria = []; outcome = "uncertain"
             if request.template.language not in bundle["languages"]: reason = "unsupported_language"
             elif not bundle_supports_template(bundle,request.template): reason = "unsupported_template"
+            elif is_supplied_material_template(request.template) and not request.input.evidence:
+                reason = "missing_supplied_material"
             else:
                 questions = [q.model_dump() for q in request.template.questions]
                 text = request.input.render()
@@ -194,6 +198,15 @@ def create_app(*, backend: Backend, bundle: dict, learning: LearningStore, runti
             execution.close()
             worker.release()
 
+    @app.post("/v2/evaluate")
+    def evaluate_with_evidence(request: EvaluationRequest, identity: Principal = Depends(principal)):
+        # Reuse the same authenticated, budgeted, revocation-checked invocation.
+        # Retrying either version reuses the immutable v1 result and does not
+        # invoke a second model or retain source content.
+        result = EvaluationResult.model_validate(evaluate(request, identity))
+        evidence = evidence_for_result(request, result, identity=runtime_identity(bundle, backend))
+        return {"result":result.model_dump(), "evidence":evidence.model_dump()}
+
     @app.post("/v1/feedback")
     def feedback(request: Feedback, identity: Principal = Depends(principal)):
         if "feedback" not in identity.roles or identity.workspace_id != request.workspaceId or not identity.annotator_id or identity.annotator_id != request.annotatorId:
@@ -211,4 +224,5 @@ def create_app(*, backend: Backend, bundle: dict, learning: LearningStore, runti
     # The outbound worker calls the same authenticated evaluation core in-process;
     # it does not expose a second listener or duplicate inference policy.
     app.state.evaluate = evaluate
+    app.state.evaluate_with_evidence = evaluate_with_evidence
     return app

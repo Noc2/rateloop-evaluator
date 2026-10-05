@@ -19,6 +19,7 @@ from urllib.parse import urlsplit
 import httpx
 
 from .learning import LearningStore, _digest
+from .evidence import validate_evidence_binding
 from .protocol import EvaluationRequest, EvaluationResult, commitment
 from .storage import RuntimeStore
 from .authorization import AUTHORIZATION_SECONDS, CLOCK_SKEW_SECONDS, local_authorization_deadline, remote_time_observable
@@ -501,20 +502,23 @@ class RateLoopConnector:
             self._revoke_mirrors("invalid_remote_grant_state")
             raise
 
-    def _receipt(self, result: EvaluationResult | dict) -> dict:
+    def _receipt(self, result: EvaluationResult | dict, evidence: dict | None = None) -> dict:
         result=EvaluationResult.model_validate(result.model_dump() if isinstance(result,EvaluationResult) else result)
         if result.abstainReason is not None:
             _opaque(result.abstainReason)
         if result.workspaceId != self.workspace_id:
             raise PermissionError("Result belongs to another workspace")
         # This exact wire schema has no input, context, evidence or review text.
-        return {"schemaVersion":"rateloop.automated-eval-receipt.v2","agentId":self.agent_id,
+        receipt={"schemaVersion":"rateloop.automated-eval-receipt.v2","agentId":self.agent_id,
                 "agentVersionId":self.agent_version_id,"result":result.model_dump()}
+        if evidence is not None:
+            receipt["evidence"]=validate_evidence_binding(evidence,result).model_dump()
+        return receipt
 
-    def queue_result(self, result: EvaluationResult | dict, *, job_context: dict | None = None) -> str:
+    def queue_result(self, result: EvaluationResult | dict, *, job_context: dict | None = None, evidence: dict | None = None) -> str:
         if not self.metadata_upload_enabled:
             raise PermissionError("Receipt metadata upload has not been explicitly enabled")
-        receipt=self._receipt(result)
+        receipt=self._receipt(result,evidence)
         with self.learning.transaction() as database:
             self._case_live(database,receipt["result"]["caseId"])
         receipt_id="receipt_"+self.namespace[:16]+"_"+hashlib.sha256((self.namespace+receipt["result"]["resultCommitment"]).encode()).hexdigest()
@@ -553,7 +557,7 @@ class RateLoopConnector:
             if not receipt_id.startswith("receipt_"+self.namespace[:16]+"_"):
                 continue
             try:
-                if set(receipt) != {"schemaVersion","agentId","agentVersionId","result"} or receipt != self._receipt(receipt["result"]):
+                if set(receipt) not in ({"schemaVersion","agentId","agentVersionId","result"}, {"schemaVersion","agentId","agentVersionId","result","evidence"}) or receipt != self._receipt(receipt["result"],receipt.get("evidence")):
                     raise ValueError("Outbox payload is not this connector's exact metadata receipt")
                 expected="receipt_"+self.namespace[:16]+"_"+hashlib.sha256((self.namespace+receipt["result"]["resultCommitment"]).encode()).hexdigest()
                 if expected != receipt_id:

@@ -310,3 +310,33 @@ def test_native_pool_unavailable_does_not_revoke_retained_worker_health_and_clos
     hosted.run_hosted(config)
     assert events == ["old-connected","native-connected","old-poll","native-poll","native-closed","model-closed","old-closed"]
     assert state["health"].last_success is not None
+
+
+def test_native_evidence_is_opt_in_content_free_and_retried_without_reinference():
+    from rateloop_evaluator.connector import ConnectorUnavailable
+    job=fixture();job['evidenceVersion']='rateloop.evaluator.evidence.v2'
+    backend=Backend(); completions=[]
+    def transport(request):
+        body=json.loads(request.content)
+        if body['action']=='claim': return httpx.Response(200,json={'job':job})
+        if body['action']=='heartbeat_job': return httpx.Response(200,json={'leaseExpiresAt':job['leaseExpiresAt']})
+        if body['action']=='complete':
+            completions.append(body)
+            return httpx.Response(503 if len(completions)==1 else 200,json={'completed':True})
+        raise AssertionError(body['action'])
+    pool=NativeChatPool(secret='s'*32,base_url='https://www.rateloop.ai',bundles=[job['baseRegistration']],backend=backend,
+        transport=httpx.MockTransport(transport))
+    with pytest.raises(ConnectorUnavailable):pool.run_once()
+    assert pool.run_once()=={'state':'completed'}
+    assert completions[0]==completions[1] and backend.calls==1
+    evidence=completions[0]['evidence']
+    assert evidence['checks'][0]['judgment']=='meets'
+    assert evidence['checks'][-1]['state']=='not_checked'
+    assert job['content']['request']['input']['text'] not in json.dumps(completions)
+    pool.close()
+
+
+def test_native_evidence_unknown_version_never_infers():
+    job=fixture();job['evidenceVersion']='unknown';backend=Backend()
+    with pytest.raises(ValueError):evaluate_native_job(job,backend=backend)
+    assert backend.calls==0

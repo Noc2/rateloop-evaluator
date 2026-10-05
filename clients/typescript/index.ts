@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 import { commitment, parseEvaluationResult } from "../../contracts/evaluator.ts";
 import type { EvaluationRequest, EvaluationResult } from "../../contracts/evaluator.ts";
+import { validateEvidenceBinding, type EvaluationEvidence } from "../../contracts/evidence.ts";
+export type { EvaluationEvidence, EvidenceCheck } from "../../contracts/evidence.ts";
 export type { EvaluationRequest, EvaluationResult } from "../../contracts/evaluator.ts";
 
 /** Server-side client. Keep the local token out of browser bundles. */
@@ -16,7 +18,15 @@ export class EvaluatorClient {
     this.endpoint = url; this.token = options.token; this.send = options.fetch ?? fetch;
   }
   async evaluate(request: EvaluationRequest): Promise<EvaluationResult> {
-    const response = await this.send(new URL("/v1/evaluate", this.endpoint), {
+    return (await this.runEvaluation(request, false)).result;
+  }
+  async evaluateWithEvidence(request: EvaluationRequest): Promise<{result: EvaluationResult; evidence: EvaluationEvidence}> {
+    const response = await this.runEvaluation(request, true);
+    if (!response.evidence) throw new Error("Missing evaluator evidence");
+    return {result: response.result, evidence: response.evidence};
+  }
+  private async runEvaluation(request: EvaluationRequest, withEvidence: boolean): Promise<{result: EvaluationResult; evidence: EvaluationEvidence | null}> {
+    const response = await this.send(new URL(withEvidence ? "/v2/evaluate" : "/v1/evaluate", this.endpoint), {
       method: "POST", redirect: "error", signal: AbortSignal.timeout(Math.min(request.deadlineMs + 5000, 65000)),
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${this.token}` }, body: JSON.stringify(request),
     });
@@ -31,7 +41,9 @@ export class EvaluatorClient {
     }
     const bytes = new Uint8Array(length); let offset = 0;
     for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
-    const result = parseEvaluationResult(JSON.parse(new TextDecoder("utf-8", {fatal:true}).decode(bytes)));
+    const payload = JSON.parse(new TextDecoder("utf-8", {fatal:true}).decode(bytes));
+    if (withEvidence && (!payload || typeof payload !== "object" || Array.isArray(payload) || Object.keys(payload).sort().join(",") !== "evidence,result")) throw new Error("Missing evaluator evidence envelope");
+    const result = parseEvaluationResult(withEvidence ? payload.result : payload);
     const { schemaVersion: _schema, idempotencyKey: _retry, deadlineMs: _deadline, ...input } = request;
     if (result.workspaceId !== request.workspaceId || result.caseId !== request.caseId || result.modelBundleId !== request.modelBundleId
       || result.inputCommitment !== commitment(input, "rateloop.evaluator.input.v1")
@@ -42,6 +54,6 @@ export class EvaluatorClient {
       const question = questions.get(criterion.questionId);
       if (!question || question.labels.map(label => label.id).sort().join("\0") !== Object.keys(criterion.rawScores).sort().join("\0")) throw new Error("Evaluator labels differ from the request");
     }
-    return result;
+    return {result, evidence: withEvidence ? validateEvidenceBinding(payload.evidence, result, request) : null};
   }
 }
