@@ -702,3 +702,36 @@ Calibration artifact file SHA-256: `86f11d66dafd72d95f574df2d47243d84d5bce3e3427
 The focused benchmark, experiment, calibration and existing quality suites passed 47 tests at the implementation
 commit. The [maintained learning procedure](learning.md#general-request-benchmark-and-qualification-diagnostics)
 describes reproduction, other candidates, blank coverage slices and the separate authenticated qualification path.
+
+### Existing GLiClass challenger on the same frozen cohort
+
+The same `34aca43` runner, 600-group manifest and fixed 0.9 operating threshold also measured the already provisioned
+`gliclass-modern-base-v3` checkpoint. No new model weights were downloaded. Its separate temporary Python environment
+used GLiClass 0.1.20, PyTorch 2.14.1, Transformers 5.18.0, Python 3.12.14, fp32 and MPS; the existing worker environment
+was unchanged. Inference connections were denied. Weight SHA-256:
+`b83af831dc664ff552fc52054f9ec0def73b83d81ce554ae1c91b86ade7cd369`.
+
+| Measure | GLiClass raw scores | GLiClass diagnostic temperature fit |
+| --- | ---: | ---: |
+| Same final source groups | 148 | Same 148 |
+| Input/schema overflow | 69 | Same 69 |
+| Completed score distributions | 79 | Same 79 |
+| Useful judgments at fixed 0.9 threshold | 65 (43.9% coverage) | 0 |
+| Accepted cases / wrong acceptances | 57 / 8 | 0 / 0 |
+| One-sided 95% false-acceptance upper bound | 23.9% | Unavailable: no accepted cases |
+| Balanced agreement on completed cases before thresholding | 60.0% | 60.0% |
+| Brier score on completed cases | 0.3906 | 0.3629 |
+| NLL on completed cases | 0.8474 | 0.5501 |
+| Ten-bin ECE on completed cases | 0.1707 | 0.1241 |
+
+The fit used 88 completed calibration groups; 68 calibration groups overflowed. All final calibrated scores fell below
+0.9. Warm local processing across all attempts was p50 13.02 ms/p95 20.08 ms, with 15.53 seconds of model loading
+reported separately. The tokenizers/schema encodings differ, so GLiClass's 79 completed cases differ from GLiNER's
+43; the completed-case agreement figures are **not** a directly matched accuracy ranking. Full-cohort coverage retains
+that difference rather than concealing it. Both candidates fail sample/risk/coverage qualification targets. The
+experiment therefore justifies neither a model replacement nor numerical production confidence. English-only source
+and local single-process measurement limits from the baseline apply unchanged.
+
+Report SHA-256: `1e33b4feb31c080b3f4241c19c28cb95bbfc32b6d6e1501325da9285c966c673`.
+The next comparison needs a measured context-capable candidate, adequate German/source-faithfulness references and a
+fresh final cohort before any release-quality claim; merely raising a UI confidence threshold cannot fix input overflow.
