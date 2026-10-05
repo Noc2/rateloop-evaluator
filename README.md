@@ -189,3 +189,25 @@ The compact model does not need 128 GB for inference; the measured process used 
 ```
 
 Default tests use synthetic fixtures and download no models. Real-model checks are opt-in. [Operations](docs/operations.md) covers native macOS, Linux service and container examples, upgrades, backup and recovery. [Security](SECURITY.md) describes the trust boundary. Software is [Apache-2.0](LICENSE); separately downloaded weights and datasets retain their own terms.
+
+
+### Experimental local generative judge
+
+An existing Ollama 0.35.x model can provide advisory labels for the fixed English and
+German overall-approval questions. Provision the model separately and choose AI ratings
+when creating the device pairing code in RateLoop:
+
+```sh
+rateloop-evaluator --state-dir "$HOME/Library/Application Support/RateLoop Local Judge" connect --judge-model qwen3.5:4b
+rateloop-evaluator --state-dir "$HOME/Library/Application Support/RateLoop Local Judge" start
+```
+
+The pairing code is entered privately. Add `--generation-model qwen3.5:4b` to the same
+connect command only when that device was also authorized for answer generation.
+Selecting a model does not grant redistribution rights: inspect its own license.
+
+Judgments contain labels with no numeric confidence. They remain uncalibrated and
+cannot reduce required human review. This is an experimental adapter; successful local
+execution is not evidence of evaluation quality. Training inputs are not retained.
+The source installation and optional launchd setup are the supported beta path;
+this repository does not currently ship a signed, notarized Mac installer.

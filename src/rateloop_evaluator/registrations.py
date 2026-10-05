@@ -12,6 +12,18 @@ def export_registration(registry, store, workspace, bundle_id, request):
     record = registry.get(bundle_id, workspace); manifest = record['manifest']
     if request.workspaceId != workspace or request.modelBundleId != bundle_id or not bundle_supports_template(manifest, request.template):
         raise ValueError('Registration request does not match the signed bundle')
+    if manifest.get('backend') == 'ollama-judge':
+        from .ollama_judge import JUDGE_CONFIG, OLLAMA_LABEL_ONLY_CAPABILITY, tokenizer_commitment as judge_tokenizer_commitment
+        model = json.loads((Path(record['artifact_root'])/JUDGE_CONFIG).read_text())['model']
+        active = registry.registration_policy(bundle_id, workspace, request.template)
+        return {'modelBundleId':bundle_id,'templateCommitment':request.template_commitment(),'language':request.template.language,
+            'baseWeightsCommitment':model['weightDigest'],'adapterCommitment':commitment(OLLAMA_LABEL_ONLY_CAPABILITY,'rateloop.adaptation.v1'),
+            'tokenizerCommitment':judge_tokenizer_commitment(model),'quantization':model['quantization'],'trainingSnapshotCommitment':None,
+            'evaluationReportCommitment':commitment(active,'rateloop.deployment-evidence.v1'),
+            'licenseManifestCommitment':commitment({'software':'Apache-2.0','operatorProvisionedModel':model['weightDigest'],
+                'redistributionGranted':False},'rateloop.licenses.v1'),'maxTokens':manifest['max_tokens'],
+            'criteria':[{'questionId':q.id,'labels':[l.id for l in q.labels],'calibrationId':None,'calibrationCommitment':None,
+                'calibrationExpiresAt':None} for q in request.template.questions], 'scoreCapability':dict(OLLAMA_LABEL_ONLY_CAPABILITY)}
     model = json.loads((Path(record['artifact_root'])/MANIFEST_NAME).read_text())
     if model.get('training') and not model['source'].get('baseWeightsSha256'):
         raise ValueError('Trained model is missing its original weight digest')

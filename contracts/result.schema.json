@@ -14,15 +14,22 @@
           "type": "string"
         },
         "rawScores": {
-          "patternProperties": {
-            "^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$": {
-              "maximum": 1,
-              "minimum": 0,
-              "type": "number"
+          "anyOf": [
+            {
+              "patternProperties": {
+                "^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$": {
+                  "maximum": 1,
+                  "minimum": 0,
+                  "type": "number"
+                }
+              },
+              "type": "object"
+            },
+            {
+              "type": "null"
             }
-          },
-          "title": "Rawscores",
-          "type": "object"
+          ],
+          "title": "Rawscores"
         },
         "probabilities": {
           "anyOf": [
@@ -67,10 +74,63 @@
     }
   },
   "additionalProperties": false,
+  "allOf": [
+    {
+      "else": {
+        "properties": {
+          "outcome": {
+            "const": "uncertain"
+          },
+          "abstainReason": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "criteria": {
+            "items": {
+              "properties": {
+                "rawScores": {
+                  "type": "null"
+                },
+                "probabilities": {
+                  "type": "null"
+                },
+                "calibrationId": {
+                  "type": "null"
+                }
+              }
+            }
+          }
+        }
+      },
+      "if": {
+        "properties": {
+          "schemaVersion": {
+            "const": "rateloop.evaluator.result.v1"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "criteria": {
+            "items": {
+              "properties": {
+                "rawScores": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  ],
   "properties": {
     "schemaVersion": {
-      "const": "rateloop.evaluator.result.v1",
       "default": "rateloop.evaluator.result.v1",
+      "enum": [
+        "rateloop.evaluator.result.v1",
+        "rateloop.evaluator.result.v2"
+      ],
       "title": "Schemaversion",
       "type": "string"
     },

@@ -1,0 +1,154 @@
+{
+  "request": {
+    "schemaVersion": "rateloop.evaluator.request.v1",
+    "workspaceId": "workspace-label-only",
+    "caseId": "case-label-only",
+    "sourceGroupId": null,
+    "idempotencyKey": "label-only-fixture",
+    "template": {
+      "id": "customer-reply-approval",
+      "version": 1,
+      "language": "en",
+      "questions": [
+        {
+          "id": "overall_approval",
+          "text": "Would you send this reply to the customer as it stands?",
+          "labels": [
+            {
+              "id": "approved",
+              "description": "The reply can be sent as written."
+            },
+            {
+              "id": "rejected",
+              "description": "The reply needs changes before sending."
+            }
+          ],
+          "passLabels": [
+            "approved"
+          ]
+        }
+      ],
+      "maxTokens": 512
+    },
+    "input": {
+      "text": "Thank you for your patience.",
+      "context": "",
+      "evidence": ""
+    },
+    "modelBundleId": "ollama-judge-en",
+    "deadlineMs": 5000
+  },
+  "result": {
+    "schemaVersion": "rateloop.evaluator.result.v2",
+    "workspaceId": "workspace-label-only",
+    "caseId": "case-label-only",
+    "modelBundleId": "ollama-judge-en",
+    "inputCommitment": "sha256:8a3280fb31e4c8cf230fd42cf0ba34fd7c3495ad68f4a2ba8227b38e1dc9d81e",
+    "templateCommitment": "sha256:bb22546e25ff9d5587c60543653c111aeeac565d2e2ebff2f0228ee3a87bf20f",
+    "outcome": "uncertain",
+    "abstainReason": "uncalibrated",
+    "criteria": [
+      {
+        "questionId": "overall_approval",
+        "label": "approved",
+        "rawScores": null,
+        "probabilities": null,
+        "calibrationId": null
+      }
+    ],
+    "durationMs": 10,
+    "observedAt": "2026-10-05T12:00:00.000Z",
+    "resultCommitment": "sha256:497c53e029a2d4884929d120be40d258ff7ab0d2708381866c81e6cec4f44124"
+  },
+  "evidence": {
+    "schemaVersion": "rateloop.evaluator.evidence.v2",
+    "workspaceId": "workspace-label-only",
+    "caseId": "case-label-only",
+    "modelBundleId": "ollama-judge-en",
+    "inputCommitment": "sha256:8a3280fb31e4c8cf230fd42cf0ba34fd7c3495ad68f4a2ba8227b38e1dc9d81e",
+    "templateCommitment": "sha256:bb22546e25ff9d5587c60543653c111aeeac565d2e2ebff2f0228ee3a87bf20f",
+    "resultCommitment": "sha256:497c53e029a2d4884929d120be40d258ff7ab0d2708381866c81e6cec4f44124",
+    "answerCommitment": "sha256:ea42ca6311e37be025a669a9857bea6a4dcd4bc1e0d6f0ee95fe15109ae81356",
+    "language": "en",
+    "observedAt": "2026-10-05T12:00:00.000Z",
+    "identity": {
+      "modelId": "qwen3.5:4b",
+      "modelRevision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "weightsCommitment": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "tokenizerCommitment": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "runtime": "ollama:0.35.1",
+      "precision": "Q4_K_M",
+      "scoreAdapter": "rateloop-evaluator/ollama-judge"
+    },
+    "checks": [
+      {
+        "id": "criterion:overall_approval",
+        "questionId": "overall_approval",
+        "kind": "criterion",
+        "state": "completed",
+        "judgment": "meets",
+        "reasonCode": null,
+        "coverage": {
+          "status": "complete",
+          "checkedUnits": 1,
+          "totalUnits": 1
+        },
+        "sourceRefs": [],
+        "calibration": {
+          "status": "not_validated",
+          "calibrationId": null
+        }
+      },
+      {
+        "id": "factual_claims",
+        "questionId": null,
+        "kind": "factual_claims",
+        "state": "not_checked",
+        "judgment": null,
+        "reasonCode": "external_sources_not_checked",
+        "coverage": {
+          "status": "none",
+          "checkedUnits": 0,
+          "totalUnits": null
+        },
+        "sourceRefs": [],
+        "calibration": {
+          "status": "not_validated",
+          "calibrationId": null
+        }
+      }
+    ],
+    "evidenceCommitment": "sha256:0d82d8701c5f62f227e133738ceb251913c8f282b7c78803df6a31b7a5419284"
+  },
+  "registration": {
+    "modelBundleId": "ollama-judge-en",
+    "templateCommitment": "sha256:bb22546e25ff9d5587c60543653c111aeeac565d2e2ebff2f0228ee3a87bf20f",
+    "language": "en",
+    "baseWeightsCommitment": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "adapterCommitment": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "tokenizerCommitment": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "quantization": "Q4_K_M",
+    "trainingSnapshotCommitment": null,
+    "evaluationReportCommitment": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    "licenseManifestCommitment": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+    "maxTokens": 512,
+    "criteria": [
+      {
+        "questionId": "overall_approval",
+        "labels": [
+          "approved",
+          "rejected"
+        ],
+        "calibrationId": null,
+        "calibrationCommitment": null,
+        "calibrationExpiresAt": null
+      }
+    ],
+    "scoreCapability": {
+      "schemaVersion": "rateloop.evaluator-score-capability.v1",
+      "adapter": "rateloop-evaluator/ollama-judge",
+      "adapterVersion": 1,
+      "scoreType": "label_only"
+    }
+  }
+}

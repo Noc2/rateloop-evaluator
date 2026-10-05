@@ -42,6 +42,7 @@ def main(argv=None):
     connect = commands.add_parser("connect", help="Pair a customer-owned worker using a short-lived code")
     connect.add_argument("--url", default="https://www.rateloop.ai")
     connect.add_argument("--model-dir")
+    connect.add_argument("--judge-model", help="Experimental label-only Ollama approval judge")
     connect.add_argument("--generation-model", help="Explicitly selected, already provisioned Ollama model")
     connect.add_argument("--ollama-url", default="http://127.0.0.1:11434")
     connect.add_argument("--context-tokens", type=int, default=8192)
@@ -166,7 +167,7 @@ def run(args):
             from getpass import getpass
             token = getpass("RateLoop pairing code: ").strip()
         return connect(state_dir=args.state_dir, base_url=args.url, enrollment_token=token,
-                       model_dir=args.model_dir, device=args.device, generation_model=args.generation_model,
+                       model_dir=args.model_dir, device=args.device, generation_model=args.generation_model, judge_model=args.judge_model,
                        ollama_url=args.ollama_url, context_tokens=args.context_tokens)
     if args.command in ("start", "install"):
         from .enrollment import worker_arguments
@@ -456,7 +457,11 @@ def run(args):
         if args.host not in ("127.0.0.1","::1","localhost") and not (args.tls_cert and args.tls_key):
             raise ValueError("Non-loopback serving requires TLS certificate and key")
         record = registry.get(args.bundle_id,workspace)
-        backend = GLiNERBackend(record["artifact_root"],args.device)
+        if record["manifest"].get("backend") == "ollama-judge":
+            from .ollama_judge import OllamaJudge
+            backend = OllamaJudge(record["artifact_root"])
+        else:
+            backend = GLiNERBackend(record["artifact_root"],args.device)
         from .execution import model_execution
         with model_execution(store): backend.load()
         def validate(request):

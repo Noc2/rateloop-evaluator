@@ -8,10 +8,10 @@ export type EvaluationRequest = {
   schemaVersion: "rateloop.evaluator.request.v1"; workspaceId: string; caseId: string; idempotencyKey: string;
   sourceGroupId: string | null; template: Template; input: { text: string; context: string; evidence: string }; modelBundleId: string; deadlineMs: number;
 };
-export type Criterion = { questionId: string; label: string; rawScores: Record<string, number>;
+export type Criterion = { questionId: string; label: string; rawScores: Record<string, number> | null;
   probabilities: Record<string, number> | null; calibrationId: string | null };
 export type EvaluationResult = {
-  schemaVersion: "rateloop.evaluator.result.v1"; workspaceId: string; caseId: string; modelBundleId: string;
+  schemaVersion: "rateloop.evaluator.result.v1" | "rateloop.evaluator.result.v2"; workspaceId: string; caseId: string; modelBundleId: string;
   inputCommitment: string; templateCommitment: string; outcome: "pass" | "fail" | "uncertain";
   abstainReason: string | null; criteria: Criterion[]; durationMs: number; observedAt: string; resultCommitment: string;
 };
@@ -56,11 +56,12 @@ export function commitment(value: unknown, domain: string): string {
 }
 export function verifyEvaluationResultCommitment(value: EvaluationResult): boolean {
   const { resultCommitment, ...payload } = value;
-  return resultCommitment === commitment(payload, "rateloop.evaluator.result.v1");
+  return resultCommitment === commitment(payload, value.schemaVersion);
 }
 export function parseEvaluationResult(value: unknown): EvaluationResult {
   const v = object(value, ["schemaVersion", "workspaceId", "caseId", "modelBundleId", "inputCommitment", "templateCommitment", "outcome", "abstainReason", "criteria", "durationMs", "observedAt", "resultCommitment"]);
-  if (v.schemaVersion !== "rateloop.evaluator.result.v1") fail("version");
+  if (!["rateloop.evaluator.result.v1", "rateloop.evaluator.result.v2"].includes(String(v.schemaVersion))) fail("version");
+  const labelOnly = v.schemaVersion === "rateloop.evaluator.result.v2";
   for (const k of ["workspaceId", "caseId", "modelBundleId"]) identifier(v[k]);
   for (const k of ["inputCommitment", "templateCommitment", "resultCommitment"]) digest(v[k]);
   if (!["pass", "fail", "uncertain"].includes(String(v.outcome))) fail("outcome");
@@ -74,6 +75,10 @@ export function parseEvaluationResult(value: unknown): EvaluationResult {
     const c = object(item, ["questionId", "label", "rawScores", "probabilities", "calibrationId"]);
     const q = identifier(c.questionId); const label = identifier(c.label);
     if (questionIds.has(q)) fail("duplicate question"); questionIds.add(q);
+    if (labelOnly) {
+      if (c.rawScores !== null || c.probabilities !== null || c.calibrationId !== null) fail("label-only scores");
+      continue;
+    }
     const raw = scores(c.rawScores); if (!Object.hasOwn(raw, label)) fail("predicted label");
     if ((c.probabilities === null) !== (c.calibrationId === null)) fail("calibration binding");
     if (c.probabilities !== null) {
@@ -81,8 +86,22 @@ export function parseEvaluationResult(value: unknown): EvaluationResult {
       if (Object.keys(p).sort().join("\0") !== Object.keys(raw).sort().join("\0") || Math.abs(Object.values(p).reduce((a,b) => a+b, 0)-1) > 1e-6) fail("distribution");
     }
   }
+  if (labelOnly && (v.outcome !== "uncertain" || typeof v.abstainReason !== "string" || !v.abstainReason)) fail("label-only advisory result");
   if (v.outcome !== "uncertain" && (v.abstainReason !== null || !v.criteria.length || v.criteria.some(c => c.probabilities === null))) fail("uncalibrated decision");
   const result = v as EvaluationResult;
   if (!verifyEvaluationResultCommitment(result)) fail("result commitment mismatch");
   return result;
+}
+
+/** One judgment mapping for score-based and explicitly label-only adapters. */
+export function evaluatorCriterionJudgment(criterion: Criterion, question: Question, source = false): "meets" | "does_not_meet" | "insufficient_evidence" {
+  if (!question.labels.some(item => item.id === criterion.label)) fail("predicted label outside rubric");
+  const values = criterion.probabilities ?? criterion.rawScores;
+  if (values !== null) {
+    const highest = Math.max(...Object.values(values));
+    if (values[criterion.label] !== highest) fail("label is not score maximum");
+    if (Object.values(values).filter(value => value === highest).length !== 1) return "insufficient_evidence";
+  }
+  if (!question.passLabels.length || (source && criterion.label === "insufficient_evidence")) return "insufficient_evidence";
+  return question.passLabels.includes(criterion.label) ? "meets" : "does_not_meet";
 }

@@ -128,6 +128,11 @@ def create_app(*, backend: Backend, bundle: dict, learning: LearningStore, runti
                 if cached["policyCommitment"] != policy_digest:
                     raise HTTPException(409,detail="Deployment policy changed; use a new evaluation key")
                 return EvaluationResult.model_validate(cached["result"]).model_dump()
+            label_only = getattr(backend,"score_type",None) == "label_only"
+            if label_only:
+                from .ollama_judge import OLLAMA_LABEL_ONLY_CAPABILITY
+                if bundle.get("score_capability") != OLLAMA_LABEL_ONLY_CAPABILITY or bundle.get("calibrations") or mode != "shadow":
+                    raise ValueError("Label-only judgments require an advisory uncalibrated bundle")
             reason = None; criteria = []; outcome = "uncertain"
             if request.template.language not in bundle["languages"]: reason = "unsupported_language"
             elif not bundle_supports_template(bundle,request.template): reason = "unsupported_template"
@@ -140,11 +145,15 @@ def create_app(*, backend: Backend, bundle: dict, learning: LearningStore, runti
                 if token_count > min(request.template.maxTokens,bundle.get("max_tokens",512)): reason = "input_too_long"
                 elif (time.monotonic()-start)*1000 >= request.deadlineMs: reason = "deadline_exceeded"
                 else:
-                    scores = backend.predict(text,questions)
+                    scores = backend.predict(text,questions,timeout_seconds=max(.001,(request.deadlineMs-(time.monotonic()-start)*1000)/1000)) if label_only else backend.predict(text,questions)
                     if set(scores) != {q.id for q in request.template.questions}: raise ValueError("Backend question mismatch")
                     calibrations = {c["question_id"]:c for c in bundle.get("calibrations",[]) if c["template_commitment"] == template_digest and c["language"] == request.template.language}
                     for question in request.template.questions:
                         raw = scores[question.id]
+                        if label_only:
+                            if not isinstance(raw,str) or raw not in {label.id for label in question.labels}: raise ValueError("Backend label mismatch")
+                            criteria.append({"questionId":question.id,"label":raw,"rawScores":None,"probabilities":None,"calibrationId":None})
+                            continue
                         if set(raw) != {label.id for label in question.labels}: raise ValueError("Backend label mismatch")
                         calibration = calibrations.get(question.id); probabilities = None
                         if calibration:
@@ -167,11 +176,12 @@ def create_app(*, backend: Backend, bundle: dict, learning: LearningStore, runti
             require_right("ai_use")
             if validate_bundle and commitment(validate_bundle(request),"rateloop.serving-policy.v1") != policy_digest:
                 raise HTTPException(409,detail="Deployment policy changed during evaluation")
-            result = make_result(workspaceId=request.workspaceId,caseId=request.caseId,modelBundleId=bundle["id"],
+            result = make_result(schemaVersion="rateloop.evaluator.result.v2" if label_only else "rateloop.evaluator.result.v1",workspaceId=request.workspaceId,caseId=request.caseId,modelBundleId=bundle["id"],
                                  inputCommitment=input_digest,templateCommitment=template_digest,outcome=outcome,
                                  abstainReason=reason,criteria=criteria,durationMs=duration,observedAt=utc_now())
             retained = None
             try:
+                if label_only: raise PermissionError("Label-only judge training is unavailable")
                 require_right("private_training")
                 if allow_training_retention is None or allow_training_retention(request):
                     retained = request.input.model_dump()
@@ -201,7 +211,7 @@ def create_app(*, backend: Backend, bundle: dict, learning: LearningStore, runti
     @app.post("/v2/evaluate")
     def evaluate_with_evidence(request: EvaluationRequest, identity: Principal = Depends(principal)):
         # Reuse the same authenticated, budgeted, revocation-checked invocation.
-        # Retrying either version reuses the immutable v1 result and does not
+        # Retrying either route reuses the immutable result and does not
         # invoke a second model or retain source content.
         result = EvaluationResult.model_validate(evaluate(request, identity))
         evidence = evidence_for_result(request, result, identity=runtime_identity(bundle, backend))

@@ -148,12 +148,16 @@ class EvaluationRequest(WireModel):
 class Criterion(WireModel):
     questionId: Identifier
     label: Identifier
-    rawScores: dict[Identifier, Probability]
+    rawScores: dict[Identifier, Probability] | None
     probabilities: dict[Identifier, Probability] | None = None
     calibrationId: Identifier | None = None
 
     @model_validator(mode="after")
     def valid_distribution(self):
+        if self.rawScores is None:
+            if self.probabilities is not None or self.calibrationId is not None:
+                raise ValueError("Label-only judgments cannot claim numeric calibration")
+            return self
         if not 2 <= len(self.rawScores) <= 12 or self.label not in self.rawScores:
             raise ValueError("Incomplete score labels")
         if (self.probabilities is None) != (self.calibrationId is None):
@@ -165,7 +169,13 @@ class Criterion(WireModel):
 
 
 class EvaluationResult(WireModel):
-    schemaVersion: Literal["rateloop.evaluator.result.v1"] = "rateloop.evaluator.result.v1"
+    model_config = ConfigDict(json_schema_extra={"allOf": [{
+        "if": {"properties": {"schemaVersion": {"const": "rateloop.evaluator.result.v1"}}},
+        "then": {"properties": {"criteria": {"items": {"properties": {"rawScores": {"type": "object"}}}}}},
+        "else": {"properties": {"outcome": {"const": "uncertain"}, "abstainReason": {"type": "string", "minLength": 1},
+            "criteria": {"items": {"properties": {"rawScores": {"type": "null"}, "probabilities": {"type": "null"}, "calibrationId": {"type": "null"}}}}}}
+    }]})
+    schemaVersion: Literal["rateloop.evaluator.result.v1", "rateloop.evaluator.result.v2"] = "rateloop.evaluator.result.v1"
     workspaceId: Identifier
     caseId: Identifier
     modelBundleId: Identifier
@@ -180,6 +190,12 @@ class EvaluationResult(WireModel):
 
     @model_validator(mode="after")
     def result_invariants(self):
+        if self.schemaVersion == "rateloop.evaluator.result.v1" and any(c.rawScores is None for c in self.criteria):
+            raise ValueError("V1 requires complete raw score vectors")
+        if self.schemaVersion == "rateloop.evaluator.result.v2" and (
+                any(c.rawScores is not None or c.probabilities is not None or c.calibrationId is not None for c in self.criteria)
+                or self.outcome != "uncertain" or not self.abstainReason):
+            raise ValueError("V2 label-only judgments must remain uncalibrated advisory results")
         if not re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z", self.observedAt):
             raise ValueError("observedAt must be canonical ISO milliseconds UTC")
         datetime.fromisoformat(self.observedAt.replace("Z", "+00:00"))
@@ -187,7 +203,7 @@ class EvaluationResult(WireModel):
             raise ValueError("Duplicate question results")
         if self.outcome != "uncertain" and (self.abstainReason is not None or not self.criteria or any(c.probabilities is None for c in self.criteria)):
             raise ValueError("A decision requires calibrated criteria and no abstention")
-        expected = commitment(self.model_dump(exclude={"resultCommitment"}), "rateloop.evaluator.result.v1")
+        expected = commitment(self.model_dump(exclude={"resultCommitment"}), self.schemaVersion)
         if self.resultCommitment != expected:
             raise ValueError("Result commitment mismatch")
         return self
@@ -199,9 +215,23 @@ def commitment(value: object, domain: str) -> str:
 
 def make_result(**fields) -> EvaluationResult:
     value = {"schemaVersion": "rateloop.evaluator.result.v1", "abstainReason": None, **fields}
-    value["resultCommitment"] = commitment(value, "rateloop.evaluator.result.v1")
+    value["resultCommitment"] = commitment(value, value["schemaVersion"])
     return EvaluationResult.model_validate(value)
 
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+def criterion_judgment(criterion: Criterion, question: Question, source: bool = False) -> tuple[str, str | None]:
+    """One judgment mapping for scored and explicitly label-only adapters."""
+    if criterion.label not in {label.id for label in question.labels}:
+        raise ValueError("Predicted label is outside the rubric")
+    scores = criterion.probabilities or criterion.rawScores
+    if scores is not None:
+        maximum = max(scores.values())
+        if scores[criterion.label] != maximum: raise ValueError("Label is not the score maximum")
+        if sum(value == maximum for value in scores.values()) != 1: return "insufficient_evidence", "tied_scores"
+    if not question.passLabels: return "insufficient_evidence", "rubric_has_no_judgment_mapping"
+    if source and criterion.label == "insufficient_evidence": return "insufficient_evidence", "insufficient_source_evidence"
+    return ("meets" if criterion.label in question.passLabels else "does_not_meet"), None

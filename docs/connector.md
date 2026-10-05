@@ -196,3 +196,15 @@ The paired connector stores an optional generation runtime separately from ratin
 `weightDigest` is the first local `FROM` blob SHA-256 reported by Ollama. `templateDigest` uses the existing RFC8785 commitment function under `rateloop.ollama.template.v1` with exactly these keys: `manifestDigest` (normalized `sha256:` prefix), `template`, `system`, `parameters`, `messages`. Missing string fields default to `""`; missing messages default to `[]`. The manifest commitment also binds auxiliary model blobs, renderer and parser metadata. This identifies installed artifacts; it is not a quality qualification.
 
 The completion outbox is a separate encrypted database from rating receipts. It saves final text and the lease only for exact retry after a lost acknowledgment; no prompt or partial stream is saved. A revoked/expired lease cannot authorize new inference or completion. See the README for the single `connect` / `start` / `install` workflow.
+
+
+### Experimental judge enrollment
+
+Use `connect --judge-model <already-installed-model>` to register the fixed EN/DE
+label-only approval judge for a device that permits AI ratings. It can be combined with
+`--generation-model`, independently authorized by the pairing code. GLiNER `--model-dir`
+is optional. The worker uses exactly the returned device worker ID and immutable bundle
+allowlist. Label-only judging cannot register custom-question or native-qualified GLiNER
+capabilities, emit synthetic numeric confidence, or retain training inputs.
+See `contracts/INTERFACE.md` for result v2 semantics. Model-specific licenses remain
+operator responsibilities; pairing does not grant distribution rights.

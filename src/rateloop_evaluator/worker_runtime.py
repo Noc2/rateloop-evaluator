@@ -51,14 +51,19 @@ def prepare_evaluator(connector, registry, bundle_ids: list[str], *, device: str
     """
     workspace=connector.workspace_id
     identity=Principal(workspace,frozenset({"evaluate"}))
-    apps={}; backends={}; cache=_CheckpointCache(device); public_backend=None
+    apps={}; backends={}; judges=[]; cache=_CheckpointCache(device); public_backend=None
     for bundle_id in bundle_ids:
         record=registry.get(bundle_id,workspace)
         manifest=record["manifest"]
         # Registry verification binds the complete immutable artifact inventory.
         key=(record["artifact_root"],tuple(sorted(manifest["files"].items())))
         if key not in backends:
-            backend=_CachedBackend(cache,key,record["artifact_root"])
+            if manifest.get("backend") == "ollama-judge":
+                from .ollama_judge import OllamaJudge
+                backend=OllamaJudge(record["artifact_root"])
+                judges.append(backend)
+            else:
+                backend=_CachedBackend(cache,key,record["artifact_root"])
             backend.load()
             backends[key]=backend
         backend=backends[key]
@@ -83,6 +88,7 @@ def prepare_evaluator(connector, registry, bundle_ids: list[str], *, device: str
     evaluate.with_evidence=evaluate_with_evidence
     def close():
         cache.close()
+        for backend in judges: backend.unload()
     evaluate.close=close
     # The native Chat pool runs serially beside the existing workspace worker and
     # shares its one-checkpoint cache. Private candidates are never selected here.

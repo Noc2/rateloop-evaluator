@@ -110,6 +110,11 @@ class BundleRegistry:
             raise ValueError("Model revision must be a full lowercase commit SHA or SHA-256 digest")
         if len(manifest["template_commitments"]) != len(set(manifest["template_commitments"])) or len(manifest["languages"]) != len(set(manifest["languages"])):
             raise ValueError("Bundle scopes must be unique")
+        if manifest.get("backend") == "ollama-judge":
+            from .ollama_judge import OLLAMA_LABEL_ONLY_CAPABILITY, JUDGE_CONFIG
+            if (manifest.get("score_capability") != OLLAMA_LABEL_ONLY_CAPABILITY or manifest["calibrations"]
+                    or manifest.get("snapshot_id") or manifest.get("task_capability") or set(manifest["files"]) != {JUDGE_CONFIG}):
+                raise ValueError("Ollama judges require an uncalibrated label-only registration")
         if "task_capability" in manifest:
             from .backends import MODEL_ID, MODEL_REVISION, validate_local_model
             template = Template.model_validate(manifest.get("template"))
@@ -318,6 +323,8 @@ class BundleRegistry:
         with self.store.transaction() as state:
             record = self._get(state, bundle_id, workspace_id, current)
             manifest = record["manifest"]
+            if manifest.get("backend") == "ollama-judge" and mode != "shadow":
+                raise PermissionError("Label-only judges support shadow mode only")
             dynamic_scope = (template is not None and manifest.get("task_capability") == CUSTOM_TEXT_CAPABILITY
                 and template.language == language and mode == "shadow"
                 and commitment(template.model_dump(), "rateloop.evaluator.template.v1") == template_commitment

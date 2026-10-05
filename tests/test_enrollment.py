@@ -124,3 +124,30 @@ def test_generation_only_pairing_never_loads_rating_weights_or_grants_rating_acc
     args=worker_arguments(root)
     assert args.bundle_id==[] and args.generation=={'baseUrl':'http://127.0.0.1:11434','model':model}
     assert len(calls)==2
+
+
+def test_judge_pairing_registers_exact_label_only_scopes_without_gliner(tmp_path,monkeypatch):
+    from rateloop_evaluator import ollama,hosted
+    from rateloop_evaluator.ollama_judge import OLLAMA_LABEL_ONLY_CAPABILITY
+    from test_ollama import runtime_fixture
+    runtime,_,_=runtime_fixture();model=runtime.identity();runtime.close()
+    class Runtime:
+        def __init__(self,**kwargs):assert kwargs['model']=='qwen3.5:4b'
+        def identity(self):return model
+        def close(self):pass
+    monkeypatch.setattr(ollama,'OllamaRuntime',Runtime)
+    monkeypatch.setattr(hosted,'validate_pinned_model',lambda *_:pytest.fail('No GLiNER model selected'))
+    calls=[]
+    def handle(request):
+        value=json.loads(request.content);calls.append(value)
+        if 'bundles' not in value:return httpx.Response(200,json=IDENTITY)
+        bundles=value['bundles']
+        assert len(bundles)==2 and {b['language'] for b in bundles}=={'en','de'}
+        assert all(b['scoreCapability']==OLLAMA_LABEL_ONLY_CAPABILITY for b in bundles)
+        assert all('taskCapability' not in b and b['criteria'][0]['calibrationId'] is None for b in bundles)
+        return httpx.Response(200,json={**IDENTITY,'apiKey':KEY,'apiKeyId':'key-test','modelBundleIds':[b['modelBundleId'] for b in bundles]})
+    root=tmp_path/'judge'
+    connected=connect(state_dir=root,base_url='https://rateloop.example',enrollment_token=TOKEN,
+        judge_model='qwen3.5:4b',transport=httpx.MockTransport(handle))
+    assert len(connected['modelBundleIds'])==2 and len(calls)==2
+    assert worker_arguments(root).generation is None

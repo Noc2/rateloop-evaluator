@@ -41,7 +41,7 @@ def _identity(value: dict) -> dict:
 
 
 def connect(*, state_dir: str | Path, base_url: str, enrollment_token: str, model_dir: str | Path | None = None,
-            generation_model: str | None = None, ollama_url: str = "http://127.0.0.1:11434", context_tokens: int = 8192,
+            generation_model: str | None = None, judge_model: str | None = None, ollama_url: str = "http://127.0.0.1:11434", context_tokens: int = 8192,
             device: str = "cpu", allow_insecure_loopback: bool = False,
             transport: httpx.BaseTransport | None = None) -> dict:
     """Preview identity, prepare local manifests, then consume the code once.
@@ -63,7 +63,7 @@ def connect(*, state_dir: str | Path, base_url: str, enrollment_token: str, mode
         raise ValueError("Pairing code is invalid")
     if root.exists() and any(root.iterdir()):
         raise ValueError("Pairing requires a new state directory; keep existing worker credentials separate")
-    if model is None and generation_model is None:
+    if model is None and generation_model is None and judge_model is None:
         raise ValueError("Select an existing rating model directory or a local generation model")
     if model is not None: validate_pinned_model(model)
     generation = None
@@ -71,6 +71,12 @@ def connect(*, state_dir: str | Path, base_url: str, enrollment_token: str, mode
         from .ollama import OllamaRuntime
         runtime = OllamaRuntime(model=generation_model, base_url=ollama_url, context_tokens=context_tokens)
         try: generation = {"baseUrl": ollama_url, "model": runtime.identity()}
+        finally: runtime.close()
+    judge = None
+    if judge_model is not None:
+        from .ollama import OllamaRuntime
+        runtime = OllamaRuntime(model=judge_model, base_url=ollama_url, context_tokens=context_tokens)
+        try: judge = runtime.identity()
         finally: runtime.close()
     with httpx.Client(base_url=origin, timeout=30, trust_env=False, follow_redirects=False, transport=transport) as client:
         try:
@@ -80,7 +86,7 @@ def connect(*, state_dir: str | Path, base_url: str, enrollment_token: str, mode
                 preview = _identity(bounded_response_object(response, max_bytes=16_384))
         except httpx.HTTPError:
             raise RuntimeError("RateLoop could not be reached; pairing has not been claimed") from None
-        if model is not None and "evaluation" not in preview["capabilities"] or generation is not None and "generation" not in preview["capabilities"]:
+        if (model is not None or judge is not None) and "evaluation" not in preview["capabilities"] or generation is not None and "generation" not in preview["capabilities"]:
             raise ValueError("Pairing does not permit the locally selected capability")
         seed = hashlib.sha256((preview["deviceId"] + ":gliner25").encode()).hexdigest()[:24]
         bundles = [{"language": language, "modelBundleId": "local-" + seed + "-" + language}
@@ -98,6 +104,13 @@ def connect(*, state_dir: str | Path, base_url: str, enrollment_token: str, mode
             bundles = []
             cli.run(Namespace(command="init", state_dir=str(root), workspace=preview["workspaceId"]))
             registrations = []
+        if judge is not None:
+            from .ollama_judge import register_judge
+            _, _, store, registry = cli.state(Namespace(state_dir=str(root)))
+            judge_bundles, judge_registrations = register_judge(root=root, registry=registry, store=store,
+                workspace=preview['workspaceId'], worker_id=preview['workerId'], model=judge, base_url=ollama_url)
+            bundles += judge_bundles
+            registrations += judge_registrations
         cli.write_private(root / "enrollment.json", {**preview, "baseUrl": origin, "status": "claiming"})
         # Exactly one consuming request. Do not retry this request automatically.
         try:
@@ -123,7 +136,7 @@ def connect(*, state_dir: str | Path, base_url: str, enrollment_token: str, mode
             raise RuntimeError(_UNCERTAIN) from None
     return {"status": "connected", "stateDirectory": str(root), "deviceId": preview["deviceId"],
             "modelBundleIds": expected, "processingEnabled": False,
-            "next": "Run rateloop-evaluator start, then select this device for AI ratings in RateLoop."}
+            "next": "Run rateloop-evaluator start, then select this device for the enabled AI features in RateLoop."}
 
 
 def worker_arguments(state_dir: str | Path, *, command: str = "worker", once: bool = False,

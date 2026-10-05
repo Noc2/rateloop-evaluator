@@ -7,14 +7,14 @@ from their published schema. Wire fields use camelCase. No private product servi
 template (id, version, language, questions[{id,text,labels[{id,description}],passLabels}], maxTokens),
 input {text,context,evidence}, modelBundleId, deadlineMs.
 
-`EvaluationResult`: schemaVersion `rateloop.evaluator.result.v1`, workspaceId, caseId, modelBundleId,
+`EvaluationResult`: schemaVersion `rateloop.evaluator.result.v1` or `rateloop.evaluator.result.v2`, workspaceId, caseId, modelBundleId,
 inputCommitment, templateCommitment, outcome pass/fail/uncertain, abstainReason, criteria
 [{questionId,label,rawScores,probabilities,calibrationId}], durationMs, observedAt, resultCommitment.
 
 Scores are advisory without valid bundle/template/language calibration. Policy controls human review separately.
 Input commitment binds workspace, case, source group, template, input and model bundle, excluding retry key and deadline.
 Commitments use SHA-256 of UTF-8 `domain + "\n"` followed by RFC8785 canonical JSON bytes. Domains are
-`rateloop.evaluator.input.v1`, `rateloop.evaluator.template.v1` and `rateloop.evaluator.result.v1` respectively.
+`rateloop.evaluator.input.v1`, `rateloop.evaluator.template.v1` and the exact result `schemaVersion` respectively.
 Result commitment covers every result field except resultCommitment. Non-finite and unsafe integers are rejected.
 
 Backend API: `predict(text: str, questions: list[dict]) -> dict[str, dict[str, float]]`; each question has id, text,
@@ -87,6 +87,31 @@ retention and idempotency core; switching response versions does not incur a sec
 inference. The TypeScript client exposes `evaluateWithEvidence` alongside `evaluate`.
 The hosted and native workers return optional receipt `evidence` only for a claim
 whose top-level `evidenceVersion` is exactly `rateloop.evaluator.evidence.v2`.
-Old claims still receive only result v1. Content-free evidence shares the fenced,
+GLiNER claims without the evidence declaration still receive only result v1. Label-only judges always use result v2. Content-free evidence shares the fenced,
 encrypted receipt retry and erasure boundaries. Source checks use an explicitly
 registered supplied-material template; the native binary default is unchanged.
+
+
+## Label-only generative judging
+
+The explicit `rateloop-evaluator/ollama-judge` adapter declares score capability
+`rateloop.evaluator-score-capability.v1`, adapterVersion 1, scoreType `label_only`.
+It returns `rateloop.evaluator.result.v2`: each criterion has a selected allowed label
+and `rawScores`, `probabilities`, and `calibrationId` all null. Its outcome is always
+`uncertain` with an abstention reason. The result commitment uses the v2 domain.
+A label is an advisory judgment, never a probability, entropy, calibration, or permission
+to reduce human review. Numeric v1 results remain byte-compatible and cannot have null scores.
+
+The adapter supports only the two registered EN/DE overall-approval templates, in shadow
+mode. It cannot advertise GLiNER custom-question or qualified native-task capability.
+It retains no raw training inputs. Frozen model identity, selected local endpoint,
+structured-output schema, prompt adapter, and tokenizer commitment bind the actual
+runtime. The GGUF weight blob includes tokenizer data, so the tokenizer commitment
+binds that blob. Complete rendered-prompt preflight conservatively budgets UTF-8 bytes;
+it never silently truncates. This is not a claim of exact tokenizer counting.
+
+The endpoint accepts only local Ollama 0.35.x, pinned at setup to its exact version and
+weights/template identity. No model downloads, remote URL selection, cloud fallback,
+tools, model-generated explanations or model-supplied confidence are accepted.
+This adapter is experimental until independent, task-specific human-reference evaluation
+establishes its quality. Mechanical execution tests do not establish judge competence.

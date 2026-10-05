@@ -10,7 +10,7 @@ from typing import Literal
 
 from pydantic import Field, model_validator
 
-from .protocol import Digest, EvaluationRequest, EvaluationResult, Identifier, WireModel, commitment
+from .protocol import Digest, EvaluationRequest, EvaluationResult, Identifier, WireModel, commitment, criterion_judgment
 
 EVIDENCE_SCHEMA = "rateloop.evaluator.evidence.v2"
 
@@ -170,15 +170,8 @@ def validate_evidence_binding(evidence: EvaluationEvidence | dict, result: Evalu
                 if (check.kind == "supplied_material") != source_rubric:
                     raise ValueError("Source support requires the exact declared source rubric")
                 criterion = scored[check.questionId]
-                probabilities = criterion.probabilities or criterion.rawScores
-                highest = max(probabilities.values())
-                if probabilities[criterion.label] != highest:
-                    raise ValueError("Evidence label is not the model's selected maximum")
-                tied = sum(score == highest for score in probabilities.values()) != 1
                 question = questions[check.questionId]
-                expected = "meets" if criterion.label in question.passLabels else "does_not_meet"
-                if not question.passLabels or tied or source_rubric and criterion.label == "insufficient_evidence":
-                    expected = "insufficient_evidence"
+                expected, _ = criterion_judgment(criterion, question, source_rubric)
                 if check.judgment != expected:
                     raise ValueError("Evidence changes the rubric's actual predicted judgment")
                 if source_rubric and not request.input.evidence:
@@ -200,6 +193,12 @@ def validate_source_reference(reference: SourceReference, material: str) -> None
 
 def runtime_identity(bundle: dict, backend) -> RuntimeIdentity:
     """Use verified local inventory; unknown identities stay explicitly absent."""
+    if getattr(backend, "score_type", None) == "label_only":
+        from .ollama_judge import tokenizer_commitment, OLLAMA_LABEL_ONLY_CAPABILITY
+        model = backend.identity
+        return RuntimeIdentity(modelId=model['model'], modelRevision=model['weightDigest'].split(':')[1],
+            weightsCommitment=model['weightDigest'],tokenizerCommitment=tokenizer_commitment(model),
+            runtime='ollama:'+model['runtimeVersion'],precision=model['quantization'],scoreAdapter=OLLAMA_LABEL_ONLY_CAPABILITY['adapter'])
     from importlib.metadata import PackageNotFoundError, version
     from .backends import tokenizer_commitment
     model = getattr(backend, 'manifest', None) or {}
@@ -244,17 +243,7 @@ def evidence_for_result(request: EvaluationRequest, result: EvaluationResult, *,
                 reasonCode=result.abstainReason or 'criterion_not_scored',coverage={'status':'none','checkedUnits':0,'totalUnits':None},
                 sourceRefs=[],calibration={'status':'not_validated'}))
             continue
-        probabilities = criterion.probabilities or criterion.rawScores
-        highest = max(probabilities.values())
-        tied = sum(score == highest for score in probabilities.values()) != 1
-        judgment = 'meets' if criterion.label in question.passLabels else 'does_not_meet'
-        reason = None
-        if tied:
-            judgment, reason = 'insufficient_evidence', 'tied_scores'
-        elif not question.passLabels:
-            judgment, reason = 'insufficient_evidence', 'rubric_has_no_judgment_mapping'
-        elif source_rubric and criterion.label == 'insufficient_evidence':
-            judgment, reason = 'insufficient_evidence', 'insufficient_source_evidence'
+        judgment, reason = criterion_judgment(criterion, question, source_rubric)
         checks.append(dict(id='criterion:'+question.id,questionId=question.id,kind=kind,state='completed',judgment=judgment,
             reasonCode=reason,coverage={'status':'complete','checkedUnits':1,'totalUnits':1},
             sourceRefs=[whole_material_reference(request.input.evidence)] if source_rubric else [],

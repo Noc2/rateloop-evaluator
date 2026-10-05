@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Additive evidence v2. A v1 result and its commitment remain unchanged.
-import { commitment, type EvaluationRequest, type EvaluationResult } from "./evaluator.ts";
+import { commitment, evaluatorCriterionJudgment, type EvaluationRequest, type EvaluationResult } from "./evaluator.ts";
 import { isSuppliedMaterialTemplate } from "./source-evidence.ts";
 export type RuntimeIdentity = {
   modelId: string | null; modelRevision: string | null; weightsCommitment: string | null;
@@ -85,11 +85,7 @@ export function validateEvidenceBinding(input: unknown, result: EvaluationResult
         if (!["criterion", "supplied_material"].includes(check.kind) || (check.kind === "supplied_material") !== sourceRubric) invalid();
         const question = questions.get(check.questionId!)!;
         const criterion = criteria.get(check.questionId!)!;
-        const probabilities = criterion.probabilities ?? criterion.rawScores;
-        const highest = Math.max(...Object.values(probabilities));
-        if (probabilities[criterion.label] !== highest) invalid();
-        const tied = Object.values(probabilities).filter(score => score === highest).length !== 1;
-        const expected = !question.passLabels.length || tied || sourceRubric && criterion.label === "insufficient_evidence" ? "insufficient_evidence" : question.passLabels.includes(criterion.label) ? "meets" : "does_not_meet";
+        const expected = evaluatorCriterionJudgment(criterion, question, sourceRubric);
         if (check.judgment !== expected || sourceRubric && !request.input.evidence) invalid();
       }
       const bytes = new TextEncoder().encode(request.input.evidence);
