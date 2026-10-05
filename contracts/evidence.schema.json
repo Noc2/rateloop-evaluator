@@ -1,0 +1,394 @@
+{
+  "$defs": {
+    "CheckCalibration": {
+      "additionalProperties": false,
+      "properties": {
+        "status": {
+          "enum": [
+            "not_validated",
+            "mapping_registered"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "calibrationId": {
+          "anyOf": [
+            {
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Calibrationid"
+        }
+      },
+      "required": [
+        "status"
+      ],
+      "title": "CheckCalibration",
+      "type": "object"
+    },
+    "CheckCoverage": {
+      "additionalProperties": false,
+      "properties": {
+        "status": {
+          "enum": [
+            "complete",
+            "partial",
+            "none",
+            "unknown"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "checkedUnits": {
+          "maximum": 100000,
+          "minimum": 0,
+          "title": "Checkedunits",
+          "type": "integer"
+        },
+        "totalUnits": {
+          "anyOf": [
+            {
+              "maximum": 100000,
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Totalunits"
+        }
+      },
+      "required": [
+        "status",
+        "checkedUnits"
+      ],
+      "title": "CheckCoverage",
+      "type": "object"
+    },
+    "EvidenceCheck": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$",
+          "title": "Id",
+          "type": "string"
+        },
+        "questionId": {
+          "anyOf": [
+            {
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Questionid"
+        },
+        "kind": {
+          "enum": [
+            "criterion",
+            "supplied_material",
+            "factual_claims",
+            "code_execution"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "state": {
+          "enum": [
+            "completed",
+            "not_checked",
+            "not_applicable",
+            "pending",
+            "withheld",
+            "failed"
+          ],
+          "title": "State",
+          "type": "string"
+        },
+        "judgment": {
+          "anyOf": [
+            {
+              "enum": [
+                "meets",
+                "does_not_meet",
+                "insufficient_evidence"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Judgment"
+        },
+        "reasonCode": {
+          "anyOf": [
+            {
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reasoncode"
+        },
+        "coverage": {
+          "$ref": "#/$defs/CheckCoverage"
+        },
+        "sourceRefs": {
+          "items": {
+            "$ref": "#/$defs/SourceReference"
+          },
+          "maxItems": 20,
+          "title": "Sourcerefs",
+          "type": "array"
+        },
+        "calibration": {
+          "$ref": "#/$defs/CheckCalibration"
+        }
+      },
+      "required": [
+        "id",
+        "kind",
+        "state",
+        "coverage",
+        "calibration"
+      ],
+      "title": "EvidenceCheck",
+      "type": "object"
+    },
+    "RuntimeIdentity": {
+      "additionalProperties": false,
+      "properties": {
+        "modelId": {
+          "anyOf": [
+            {
+              "maxLength": 200,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Modelid"
+        },
+        "modelRevision": {
+          "anyOf": [
+            {
+              "pattern": "^[a-f0-9]{40,64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Modelrevision"
+        },
+        "weightsCommitment": {
+          "anyOf": [
+            {
+              "pattern": "^sha256:[0-9a-f]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Weightscommitment"
+        },
+        "tokenizerCommitment": {
+          "anyOf": [
+            {
+              "pattern": "^sha256:[0-9a-f]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Tokenizercommitment"
+        },
+        "runtime": {
+          "maxLength": 160,
+          "minLength": 1,
+          "title": "Runtime",
+          "type": "string"
+        },
+        "precision": {
+          "anyOf": [
+            {
+              "maxLength": 40,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Precision"
+        },
+        "scoreAdapter": {
+          "maxLength": 160,
+          "minLength": 1,
+          "title": "Scoreadapter",
+          "type": "string"
+        }
+      },
+      "required": [
+        "runtime",
+        "scoreAdapter"
+      ],
+      "title": "RuntimeIdentity",
+      "type": "object"
+    },
+    "SourceReference": {
+      "additionalProperties": false,
+      "properties": {
+        "sourceId": {
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$",
+          "title": "Sourceid",
+          "type": "string"
+        },
+        "sourceCommitment": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Sourcecommitment",
+          "type": "string"
+        },
+        "passageCommitment": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Passagecommitment",
+          "type": "string"
+        },
+        "startByte": {
+          "maximum": 400000,
+          "minimum": 0,
+          "title": "Startbyte",
+          "type": "integer"
+        },
+        "endByte": {
+          "maximum": 400000,
+          "minimum": 1,
+          "title": "Endbyte",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "sourceId",
+        "sourceCommitment",
+        "passageCommitment",
+        "startByte",
+        "endByte"
+      ],
+      "title": "SourceReference",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "schemaVersion": {
+      "const": "rateloop.evaluator.evidence.v2",
+      "default": "rateloop.evaluator.evidence.v2",
+      "title": "Schemaversion",
+      "type": "string"
+    },
+    "workspaceId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$",
+      "title": "Workspaceid",
+      "type": "string"
+    },
+    "caseId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$",
+      "title": "Caseid",
+      "type": "string"
+    },
+    "modelBundleId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$",
+      "title": "Modelbundleid",
+      "type": "string"
+    },
+    "inputCommitment": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Inputcommitment",
+      "type": "string"
+    },
+    "templateCommitment": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Templatecommitment",
+      "type": "string"
+    },
+    "resultCommitment": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Resultcommitment",
+      "type": "string"
+    },
+    "answerCommitment": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Answercommitment",
+      "type": "string"
+    },
+    "language": {
+      "enum": [
+        "en",
+        "de"
+      ],
+      "title": "Language",
+      "type": "string"
+    },
+    "observedAt": {
+      "title": "Observedat",
+      "type": "string"
+    },
+    "identity": {
+      "$ref": "#/$defs/RuntimeIdentity"
+    },
+    "checks": {
+      "items": {
+        "$ref": "#/$defs/EvidenceCheck"
+      },
+      "maxItems": 24,
+      "minItems": 1,
+      "title": "Checks",
+      "type": "array"
+    },
+    "evidenceCommitment": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Evidencecommitment",
+      "type": "string"
+    }
+  },
+  "required": [
+    "workspaceId",
+    "caseId",
+    "modelBundleId",
+    "inputCommitment",
+    "templateCommitment",
+    "resultCommitment",
+    "answerCommitment",
+    "language",
+    "observedAt",
+    "identity",
+    "checks",
+    "evidenceCommitment"
+  ],
+  "title": "EvaluationEvidence",
+  "type": "object"
+}

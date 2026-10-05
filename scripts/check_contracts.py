@@ -3,11 +3,12 @@ import argparse
 import json
 from pathlib import Path
 from rateloop_evaluator.protocol import EvaluationRequest, EvaluationResult, Template
+from rateloop_evaluator.evidence import EvaluationEvidence
 
 parser = argparse.ArgumentParser(); parser.add_argument("--write", action="store_true")
 args = parser.parse_args()
 root = Path(__file__).resolve().parents[1]
-for name, model in [("request", EvaluationRequest), ("result", EvaluationResult), ("template", Template)]:
+for name, model in [("request", EvaluationRequest), ("result", EvaluationResult), ("template", Template), ("evidence", EvaluationEvidence)]:
     path = root / "contracts" / f"{name}.schema.json"
     content = json.dumps(model.model_json_schema(), indent=2, ensure_ascii=False) + "\n"
     if args.write: path.write_text(content)

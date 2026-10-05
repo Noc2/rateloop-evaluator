@@ -51,3 +51,32 @@ for legacy grant compatibility and the operations guide for workspace-erasure bo
 Portable connector audit calls require the existing `frozen_question_hash` from the human-review schema, not just the
 question prompt. Source and suggestion hashes separately bind their exact UTF-8 content. Website workers also enforce
 the frozen `customer-reply-approval` EN/DE templates; template translations remain separate snapshot scopes.
+
+## Additive evidence v2
+
+`contracts/evidence.ts` and `rateloop_evaluator.evidence` define the optional
+`rateloop.evaluator.evidence.v2` envelope. The original result v1 and its commitment
+remain unchanged. Evidence binds its exact workspace, case, model bundle, input,
+template, result, observation time, answer hash and language. The answer domain is
+`rateloop.evaluator.answer.v1`; the envelope domain is `rateloop.evaluator.evidence.v2`.
+
+Each check separates completed judgment (`meets`, `does_not_meet`,
+`insufficient_evidence`) from operational `not_checked`, `not_applicable`, `pending`,
+`withheld` or `failed`. Coverage counts the declared evaluation units; it does not
+claim extracted-claim recall. Missing checks, repeated criteria, fabricated source
+support, altered predictions and unsupported completed web/code checks fail closed.
+Tied scores abstain instead of inheriting dictionary order as a substantive decision.
+
+The runtime identity includes actual model/revision/weights/tokenizer when known;
+missing identity stays null. `mapping_registered` records a fitted calibration ID,
+**not independent qualification**. Public confidence requires a separate verified
+registration bound to the exact scope. This envelope never changes human-review or
+release policy. It contains no raw answer, source excerpt or generated explanation.
+
+Supplied-material support uses the exact versioned EN/DE rubric in
+`source_evidence.py` / `source-evidence.ts`. It judges agreement with supplied text,
+not whether the source is true. It uses one bounded inference over complete supplied
+material; input overflow abstains without truncating away contradictions. Source
+references bind hashes and UTF-8 byte offsets. General custom questions cannot be
+renamed to claim this check. No network lookup, sandbox execution or model download
+is enabled by these contracts.
