@@ -54,6 +54,22 @@ Register a **new** public-base bundle using `register --custom-text --activate -
 
 Hosted configurations may add new capability bundles to the existing volume while preserving all existing bundle entries, workspace, worker, model path and agent identity. Add `"taskCapability":{"schemaVersion":"rateloop.evaluator.custom-binary-text.v1"}` to each new English/German bundle entry. Old registrations stay immutable and queued jobs keep their original identity. All registrations reuse the same verified local weights. Training-derived bundles stay bound to their exact rubric and never receive this general base-model capability.
 
+## Connect your own Mac
+
+Install from this public repository using the local setup above, then provision the pinned rating model once. In RateLoop, create a device pairing code. Use a fresh private state directory for each device/workspace connection:
+
+```sh
+rateloop-evaluator --state-dir "$HOME/.local/share/rateloop-office" connect \
+  --model-dir "$HOME/rateloop-models/gliner25" --device mps
+rateloop-evaluator --state-dir "$HOME/.local/share/rateloop-office" start
+```
+
+The connection command privately prompts for the short-lived code; never include it in shell arguments. `--token-stdin` is available for an explicit private pipe. The command registers the exact existing English/German approval and custom-text models and stores its scoped device credential with owner-only permissions. It grants no processing or training rights. Select this device for AI ratings in RateLoop after the worker starts. The worker opens no inbound port.
+
+For operation while you are logged in to your Mac, replace `start` with `install --load`. Keep the model, state directory and Python environment in place. This is a login service: a sleeping or powered-off Mac cannot accept work. Use `start --once` for a one-poll diagnostic. CPU and CUDA are explicit alternatives to `--device mps`.
+
+A missing response during the one-use claim has an unknown outcome. Revoke that device in RateLoop, create another pairing code, and use a new private state directory. The connector never silently retries the consumed code or prints the device credential.
+
 ## Integrate RateLoop
 
 `register` creates a candidate by default. Training, registering, and exporting metadata do not switch the active model. Use `promote --mode shadow` after reviewing the candidate, or deliberately choose `register --activate` for the initial base model. Promotion changes the default; already queued jobs continue using their original activated bundle only while it remains configured and its exact consent is current. Revocation and expired evidence still block those jobs. Never-activated candidates cannot serve inference.

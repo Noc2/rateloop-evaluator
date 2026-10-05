@@ -39,6 +39,16 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description="Private local rating and learning")
     parser.add_argument("--state-dir",default="~/.local/share/rateloop-evaluator")
     commands = parser.add_subparsers(dest="command",required=True)
+    connect = commands.add_parser("connect", help="Pair a customer-owned worker using a short-lived code")
+    connect.add_argument("--url", default="https://www.rateloop.ai")
+    connect.add_argument("--model-dir", required=True)
+    connect.add_argument("--device", choices=["cpu", "mps", "cuda"], default="cpu")
+    connect.add_argument("--token-stdin", action="store_true", help="Read the pairing code from standard input, never a command argument")
+    start = commands.add_parser("start", help="Run the paired outbound worker")
+    start.add_argument("--once", action="store_true")
+    install = commands.add_parser("install", help="Install the paired worker for this macOS login")
+    install.add_argument("--load", action="store_true")
+    install.add_argument("--output")
     init = commands.add_parser("init"); init.add_argument("--workspace",required=True)
     reviewer = commands.add_parser("issue-reviewer-token"); reviewer.add_argument("--reviewer-id",required=True); reviewer.add_argument("--output",required=True)
     provision = commands.add_parser("provision"); provision.add_argument("--model-dir",required=True); provision.add_argument("--revision"); provision.add_argument("--backend",choices=["gliner","gliclass"],default="gliner")
@@ -145,6 +155,19 @@ def main(argv=None):
 
 
 def run(args):
+    if args.command == "connect":
+        from .enrollment import connect
+        if args.token_stdin:
+            token = sys.stdin.readline(258).strip()
+        else:
+            from getpass import getpass
+            token = getpass("RateLoop pairing code: ").strip()
+        return connect(state_dir=args.state_dir, base_url=args.url, enrollment_token=token,
+                       model_dir=args.model_dir, device=args.device)
+    if args.command in ("start", "install"):
+        from .enrollment import worker_arguments
+        return run(worker_arguments(args.state_dir, command="worker" if args.command == "start" else "install-launchd",
+            once=getattr(args, "once", False), load=getattr(args, "load", False), output=getattr(args, "output", None)))
     if args.command == "init":
         root = Path(args.state_dir).expanduser().resolve()
         if root.exists() and any(root.iterdir()): raise ValueError("Initialization requires an empty directory")
