@@ -81,7 +81,10 @@ def test_health_requires_warm_fresh_success_and_rejects_inference():
     health.warm=True; assert health.response()==(200,{"status":"ready"})
     clock[0]=151; assert health.response()[0]==503
     health.polled(True); health.polled(False); assert health.response()[0]==503
+    health.auxiliary_polled(True); assert health.response()[0]==503
     health.polled(True)
+    clock[0]+=100; health.auxiliary_polled(True)
+    clock[0]+=100; assert health.response()[0]==200
     with hosted.health_server(health,0,host="127.0.0.1") as port:
         with httpx.Client(base_url=f"http://127.0.0.1:{port}",trust_env=False) as client:
             assert client.get("/healthz").json()=={"status":"ready"}

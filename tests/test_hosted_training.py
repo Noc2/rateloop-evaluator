@@ -172,9 +172,9 @@ def test_auxiliary_reservations_share_retained_daily_budget_and_restart(runner):
     worker,_,_=isolated(runner)
     reservation=worker._reserve_budget(runner[3],maximum_seconds=120)
     assert reservation['seconds']==120
-    worker._refund_budget(reservation,20)
+    worker._refund_budget(reservation,125)
     restarted,_,_=isolated(runner)
-    assert restarted._reserve_budget(runner[3])['seconds']==3580
+    assert restarted._reserve_budget(runner[3])['seconds']==3475
     assert worker._reserve_budget(runner[3],maximum_seconds=120) is False
     for invalid in (0,3601,True,float('nan')):
         with pytest.raises(ValueError): worker._reserve_budget(runner[3],maximum_seconds=invalid)

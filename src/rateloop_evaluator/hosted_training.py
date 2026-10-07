@@ -103,11 +103,13 @@ class IsolatedHostedTrainingWorker(TrainingWorker):
 
     def _refund_budget(self, reservation, elapsed):
         if not reservation: return
-        refund=max(0,reservation["seconds"]-max(0,elapsed))
+        adjustment=max(0,elapsed)-reservation["seconds"]
         with self.connector.learning.transaction() as database:
             budget=self._state(database)["hosted_budget"]
             if budget["utcDay"]==reservation["utcDay"]:
-                budget["usedSeconds"]=max(0,budget["usedSeconds"]-refund)
+                # Include bounded termination/cleanup overshoot; it cannot
+                # create unaccounted daily compute beyond the reservation.
+                budget["usedSeconds"]=max(0,budget["usedSeconds"]+adjustment)
 
     def _resource_failure(self, job, code):
         saved=self._saved() or job

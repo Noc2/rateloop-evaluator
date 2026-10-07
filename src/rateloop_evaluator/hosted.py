@@ -170,6 +170,12 @@ class WorkerHealth:
             self.reachable=healthy
             if healthy: self.last_success=self.clock()
 
+    def auxiliary_polled(self, healthy: bool):
+        # Bounded auxiliary work can renew freshness while the retained worker
+        # is busy, but cannot hide a failed retained-worker poll.
+        with self.lock:
+            if healthy and self.reachable: self.last_success=self.clock()
+
     def response(self):
         with self.lock:
             fresh=self.last_success is not None and self.clock()-self.last_success<=150
@@ -256,7 +262,7 @@ def run_hosted(config: dict, *, auxiliary_factory=None) -> None:
                 native=NativeChatPool(secret=config["nativeChatPool"]["secret"],base_url=config["nativeChatPool"]["baseUrl"],
                     bundles=registrations,backend=SharedBackend(),qualified_native=config["nativeChatPool"].get("qualifiedNative"))
             auxiliary = auxiliary_factory(config=config, connector=connector, training_worker=trainer,
-                release_inference=lambda: worker.evaluate.close(), stop=stop, on_poll=health.polled) if auxiliary_factory else None
+                release_inference=lambda: worker.evaluate.close(), stop=stop, on_poll=health.auxiliary_polled) if auxiliary_factory else None
             try:
                 if native is None and auxiliary is None: worker.run()
                 else:
