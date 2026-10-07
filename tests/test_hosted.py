@@ -161,3 +161,44 @@ def test_hosted_private_training_is_explicit_and_remains_workspace_scoped(config
         with pytest.raises(ValueError): hosted.read_config(path)
     hosted.bootstrap({**config,'privateTraining':True})
     with pytest.raises(PermissionError): hosted.bootstrap({**config,'privateTraining':True,'workspaceId':'foreign'})
+
+
+@pytest.mark.parametrize('native_enabled',[False,True])
+def test_auxiliary_extension_is_serialized_and_shutdown_keeps_retained_worker(config,monkeypatch,native_enabled):
+    import threading
+    from rateloop_evaluator.execution import model_execution, ExecutionBusy
+    events=[]
+    if native_enabled:
+        from rateloop_evaluator import native_chat_pool
+        config['nativeChatPool']={'baseUrl':'https://www.rateloop.ai','secret':'test-only'}
+        class Native:
+            def __init__(self,**kwargs): pass
+            def run_once(self): events.append('native')
+            def close(self): events.append('native_closed')
+        monkeypatch.setattr(native_chat_pool,'NativeChatPool',Native)
+        monkeypatch.setattr(native_chat_pool,'validate_registrations',lambda *args,**kwargs:[])
+    monkeypatch.setitem(sys.modules,"torch",SimpleNamespace(set_num_threads=lambda n:None,set_num_interop_threads=lambda n:None))
+    monkeypatch.setattr(hosted,"health_server",lambda *_:__import__("contextlib").nullcontext())
+    class Connector:
+        def __init__(self,**kwargs): self.learning=kwargs['learning']
+        def close(self): events.append('connector_closed')
+    class Worker:
+        def __init__(self,*args,**kwargs): self.last_label_sync=__import__('time').monotonic(); self.evaluate=kwargs['evaluate']
+        def run_once(self): events.append('retained'); return {'state':'idle'}
+    class Auxiliary:
+        def __init__(self,**kwargs): self.kwargs=kwargs
+        def run_once(self):
+            events.append('auxiliary')
+            def concurrent():
+                with pytest.raises(ExecutionBusy):
+                    with model_execution(self.kwargs['connector'].learning): pass
+                events.append('excluded')
+            thread=threading.Thread(target=concurrent); thread.start(); thread.join()
+            self.kwargs['stop'].set()
+        def close(self): events.append('auxiliary_closed')
+    monkeypatch.setattr(hosted,'RateLoopConnector',Connector)
+    monkeypatch.setattr(hosted,'OutboundWorker',Worker)
+    monkeypatch.setattr(hosted,'prepare_evaluator',lambda *_args,**_kwargs:SimpleNamespace(close=lambda:events.append('inference_closed')))
+    hosted.run_hosted(config,auxiliary_factory=Auxiliary)
+    assert events==['retained',*(['native'] if native_enabled else []),'auxiliary','excluded','auxiliary_closed',
+        *(['native_closed'] if native_enabled else []),'inference_closed','connector_closed']

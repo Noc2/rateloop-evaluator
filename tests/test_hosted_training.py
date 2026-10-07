@@ -168,6 +168,18 @@ def test_daily_budget_refunds_unused_time_and_resets_only_on_later_utc_day(runne
     assert worker._reserve_budget(runner[3])['seconds']==3600
 
 
+def test_auxiliary_reservations_share_retained_daily_budget_and_restart(runner):
+    worker,_,_=isolated(runner)
+    reservation=worker._reserve_budget(runner[3],maximum_seconds=120)
+    assert reservation['seconds']==120
+    worker._refund_budget(reservation,20)
+    restarted,_,_=isolated(runner)
+    assert restarted._reserve_budget(runner[3])['seconds']==3580
+    assert worker._reserve_budget(runner[3],maximum_seconds=120) is False
+    for invalid in (0,3601,True,float('nan')):
+        with pytest.raises(ValueError): worker._reserve_budget(runner[3],maximum_seconds=invalid)
+
+
 def test_low_disk_refuses_training_before_claimed_content_is_loaded(runner,monkeypatch):
     worker,events,_=isolated(runner)
     monkeypatch.setattr(hosted_training.shutil,'disk_usage',lambda _:SimpleNamespace(free=100))

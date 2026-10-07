@@ -82,8 +82,11 @@ class IsolatedHostedTrainingWorker(TrainingWorker):
         self._serving_bundles=current
         return response
 
-    def _reserve_budget(self, job):
+    def _reserve_budget(self, job, *, maximum_seconds=None):
         if job["action"] not in ("train","compare"): return None
+        if maximum_seconds is None: maximum_seconds=self.max_operation_seconds
+        if type(maximum_seconds) not in (int,float) or not 1<=maximum_seconds<=self.max_operation_seconds:
+            raise ValueError("Invalid operation reservation duration")
         day=int(time.time()//86400)
         with self.connector.learning.transaction() as database:
             state=self._state(database)
@@ -92,7 +95,7 @@ class IsolatedHostedTrainingWorker(TrainingWorker):
                 budget.update(utcDay=day,usedSeconds=0.0)
             remaining=MAX_DAILY_TRAINING_SECONDS-budget["usedSeconds"] if budget["utcDay"]==day else 0
             if remaining < 30: return False
-            reserved=min(self.max_operation_seconds,remaining)
+            reserved=min(maximum_seconds,remaining)
             # Charge before spawn. A process/machine crash cannot reset spend;
             # only this surviving coordinator refunds unused reserved seconds.
             budget["usedSeconds"]+=reserved

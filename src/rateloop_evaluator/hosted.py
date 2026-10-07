@@ -197,7 +197,7 @@ def health_server(health: WorkerHealth, port: int, *, host="0.0.0.0"):
         server.shutdown(); server.server_close(); thread.join(timeout=2)
 
 
-def run_hosted(config: dict) -> None:
+def run_hosted(config: dict, *, auxiliary_factory=None) -> None:
     offline_environment()
     import torch
     torch.set_num_threads(1); torch.set_num_interop_threads(1)
@@ -255,8 +255,10 @@ def run_hosted(config: dict) -> None:
                         return worker.evaluate.native_backend.predict(*args)
                 native=NativeChatPool(secret=config["nativeChatPool"]["secret"],base_url=config["nativeChatPool"]["baseUrl"],
                     bundles=registrations,backend=SharedBackend(),qualified_native=config["nativeChatPool"].get("qualifiedNative"))
+            auxiliary = auxiliary_factory(config=config, connector=connector, training_worker=trainer,
+                release_inference=lambda: worker.evaluate.close(), stop=stop, on_poll=health.polled) if auxiliary_factory else None
             try:
-                if native is None: worker.run()
+                if native is None and auxiliary is None: worker.run()
                 else:
                     while not stop.is_set():
                         # No parallel model inference/training: both queues share one serial runtime.
@@ -269,10 +271,19 @@ def run_hosted(config: dict) -> None:
                         # Adding the endpoint cannot take the retained worker offline during deployment.
                         try:
                             from .execution import model_execution
-                            with model_execution(connector.learning): native.run_once()
+                            if native is not None:
+                                with model_execution(connector.learning): native.run_once()
                         except Exception: pass
+                        # Operator extensions run in this same serial loop and
+                        # lock; they cannot introduce concurrent model work.
+                        if auxiliary is not None and not stop.is_set():
+                            try:
+                                from .execution import model_execution
+                                with model_execution(connector.learning): auxiliary.run_once()
+                            except Exception: pass
                         stop.wait(config["pollSeconds"])
             finally:
+                if auxiliary is not None: auxiliary.close()
                 if native is not None: native.close()
                 if hasattr(getattr(worker,"evaluate",None),"close"): worker.evaluate.close()
     finally:

@@ -6,7 +6,7 @@ import subprocess
 import sys
 
 
-def start():
+def start(*, runner=None):
     os.umask(0o077)
     volume=Path("/data")
     if volume.is_symlink(): raise ValueError("Invalid volume")
@@ -39,7 +39,10 @@ def start():
         env.pop("HF_HUB_OFFLINE",None); env.pop("TRANSFORMERS_OFFLINE",None)
         subprocess.run([sys.executable,"-m","rateloop_evaluator.hosted","prepare","--config",str(path)],env=env,check=True)
     if export=="1": emit_registrations(config)
-    os.execv(sys.executable,[sys.executable,"-m","rateloop_evaluator.hosted","run","--config",str(path)])
+    if runner is not None:
+        runner(config)
+    else:
+        os.execv(sys.executable,[sys.executable,"-m","rateloop_evaluator.hosted","run","--config",str(path)])
 
 
 if __name__=="__main__":
