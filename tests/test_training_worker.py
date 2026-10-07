@@ -92,7 +92,7 @@ def runner(initialized,tmp_path,capsys,monkeypatch):
         def predict(self,_text,questions): return {q["id"]:{"approved":.8,"rejected":.2} for q in questions}
     def train(store,snapshot_id,workspace,source,output,*,bundle_id,options):
         behavior["train_calls"]+=1
-        assert options.method=="lora" and options.epochs==1 and options.max_steps==20
+        assert options.method=="lora" and options.epochs==behavior.get("expected_epochs",1) and options.max_steps==behavior.get("expected_steps",20)
         if behavior["cancel_during_train"]:
             behavior["cancelled"]=True
             time.sleep(1.1)
@@ -118,6 +118,44 @@ def runner(initialized,tmp_path,capsys,monkeypatch):
 def next_job(behavior,job,action,target="candidate"):
     behavior["pending"]={**job,"jobId":action+"-job","action":action,"candidateBundleId":target,"leaseExpiresAt":iso(time.time()+120)}
     behavior["claimed"]=False
+
+
+def test_independent_feedback_cycle_compares_frozen_incumbent_and_erases_withdrawn_examples(runner):
+    worker,behavior,authorization,job,template,store,registry,changed,calls=runner
+    rows=[]; now=time.time(); tc=job["templateCommitment"]
+    for i in range(200):
+        lineage={"aiExposed":False,"humanResultCommitment":f"human-{i}","auditIds":[f"audit-{i}"],
+            "templateCommitment":tc,"inputCommitment":f"input-{i}","modelBundleId":"native-source-v2","trainingModelBundleId":"base"}
+        rows.append({"caseId":f"human-{i}","sourceGroupId":f"source-{i}","input":{"text":f"Independent example {i}","context":"","evidence":""},
+            "labels":{"judgment":"approved" if i%2 else "rejected"},"inputCommitment":f"input-{i}",
+            "createdAt":iso(now-1000+i),"observedAt":iso(now-999+i),"lineage":lineage,
+            "evidenceFingerprint":commitment(lineage,"rateloop.evaluator.feedback-evidence.v1"),
+            "partition":"train" if i<140 else "calibration" if i<170 else "test"})
+    digest=commitment({"workspaceId":"workspace-test","templateCommitment":tc,"provenance":"independent_human","rows":rows},"rateloop.evaluator.dataset.v1")
+    authorization.update(caseIds=[row["caseId"] for row in rows],fields=["input.text","input.context","input.evidence","human_labels"],datasetCommitment=digest)
+    job["datasetCommitment"]=digest; behavior["pending"]["datasetCommitment"]=digest
+    behavior.update(expected_epochs=5,expected_steps=25)
+    def mutate(content):
+        content["dataset"]={"versionId":job["datasetVersionId"],"provenance":"independent_human","rows":deepcopy(rows)}
+        content["recipe"]={"schemaVersion":training_worker.RECIPE_SCHEMA,"method":"lora","epochs":5,"maxSteps":25,"learningRate":.0001,
+            "validationFraction":.2,"validationInterval":25,"earlyStoppingPatience":3,"minValidationPerLabel":5}
+        content["comparisonModelBundleId"]="base"
+    behavior["content_mutator"]=mutate
+    assert worker.run_once()["state"]=="training_completed"
+    result=behavior["completed"][0]
+    assert result["comparison"]["independent_reference_count"]==30
+    assert result["comparison"]["incumbent_model_bundle_id"]=="base"
+    assert set(result["comparison"]["models"])=={"baseline","candidate","incumbent","reference"}
+    assert result["signedManifest"]["manifest"]["synthetic"] is False
+    assert not changed, "Training never activates a candidate"
+    assert "Independent example" not in json.dumps(result)
+    behavior["permission"]=False
+    worker.sync_permissions()
+    with store.transaction() as state:
+        snapshot=state["snapshots"][result["snapshotId"]]
+        assert snapshot["invalidated_at"] is not None
+        assert all(not snapshot[part] for part in ("train","calibration","test"))
+    with pytest.raises(PermissionError): registry.get("candidate","workspace-test")
 
 
 def test_owner_dataset_train_compare_export_activate_and_rollback_on_same_runner(runner):

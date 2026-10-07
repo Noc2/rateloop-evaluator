@@ -27,10 +27,11 @@ from .protocol import EvaluationRequest, Template, commitment
 from .presence import validate_served_model_bundles
 from .templates import is_custom_text_template, overall_approval
 from .training import TrainOptions, train_snapshot
+from .feedback_cycle import SCHEMA as FEEDBACK_SCHEMA, import_feedback_snapshot, erase_feedback_permission, TrainingMajorityReference
 
 RECIPE_SCHEMA="rateloop.evaluator.training-recipe.v2"
 CAPABILITY={"schemaVersion":"rateloop.evaluator.training-worker.v1","maxRows":MAX_ROWS,"maxSteps":200,
-    "recipeSchemaVersion":RECIPE_SCHEMA}
+    "recipeSchemaVersion":RECIPE_SCHEMA,"feedbackSchemaVersion":FEEDBACK_SCHEMA}
 _JOB_FIELDS={"jobId","action","modelBundleId","candidateBundleId","templateCommitment","datasetVersionId",
              "datasetCommitment","leaseToken","leaseExpiresAt"}
 _AUTH_FIELDS={"grantId","workspaceId","apiKeyId","workerId","rights","caseIds","templateIds","templateCommitments",
@@ -116,7 +117,7 @@ class TrainingWorker:
                 raise ValueError("Training authorization scope must be explicit and unique")
             for item in values:
                 (_hash if key=="templateCommitments" else _opaque)(item)
-        if "imported_labels" not in value["fields"] or not set(value["fields"])<= {"input.text","input.context","input.evidence","imported_labels"}:
+        if len(set(value["fields"]) & {"imported_labels", "human_labels"}) != 1 or not set(value["fields"])<= {"input.text","input.context","input.evidence","imported_labels","human_labels"}:
             raise ValueError("Training authorization must cover imported labels and supported fields")
         now=time.time(); expires=_timestamp(value["expiresAt"]); until=_timestamp(value["authorizationUntil"])
         if not now<until<=min(expires,now+150) or not now<expires<=now+30*86400+30:
@@ -168,6 +169,7 @@ class TrainingWorker:
 
     def _erase_permission(self, permission):
         self.connector.learning.revoke_grant(permission["localId"],self.connector.workspace_id)
+        erase_feedback_permission(self.connector.learning, workspace_id=self.connector.workspace_id, grant_id=permission["localId"])
         with self.connector.learning.transaction() as db:
             versions=[key for key,value in db.get("datasets",{}).items()
                 if value["workspace_id"]==self.connector.workspace_id and permission["localId"] in value["grant_ids"]]
@@ -284,6 +286,16 @@ class TrainingWorker:
         if saved:
             if saved["datasetCommitment"]!=job["datasetCommitment"]: raise ValueError("Dataset version changed bytes")
             return self.connector.learning.load_snapshot(saved["snapshotId"],self.connector.workspace_id)
+        if dataset["provenance"] == "independent_human":
+            with self.connector.learning.transaction() as db:
+                permission=self._state(db)["permissions"].get(content["authorization"]["grantId"])
+            if permission is None or "human_labels" not in permission["authorization"]["fields"]:
+                raise PermissionError("Independent feedback needs a current human-label permission")
+            snapshot=import_feedback_snapshot(self.connector.learning,workspace_id=self.connector.workspace_id,
+                template=template,model_bundle_id=job["modelBundleId"],rows=rows,grant_id=permission["localId"],request_id=job["datasetVersionId"])
+            with self.connector.learning.transaction() as db:
+                self._state(db).setdefault("snapshots",{})[job["datasetVersionId"]]={"datasetCommitment":job["datasetCommitment"],"snapshotId":snapshot["id"]}
+            return snapshot
         imported_rows=[]
         for row in rows:
             if not isinstance(row,dict) or set(row)!={"caseId","sourceGroupId","input","labels"}:
@@ -408,7 +420,7 @@ class TrainingWorker:
                     modelBundleId=candidate_id,template=template,input={"text":"Synthetic metadata export"})
                 request_file=directory/"registration-request.json"; cli.write_private(request_file,request.model_dump())
                 cli.run(Namespace(command="register",state_dir=str(self.root),model_dir=str(artifact),request=str(request_file),
-                    snapshot_id=snapshot["id"],calibrations=None,real_data=False,selective_policy=None,custom_text=False,activate=False))
+                    snapshot_id=snapshot["id"],calibrations=None,real_data=content["dataset"]["provenance"] == "independent_human",selective_policy=None,custom_text=False,activate=False))
             candidate=self.registry.get(candidate_id,self.connector.workspace_id)
             if candidate["manifest"].get("snapshot_id")!=snapshot["id"] or candidate["artifact_root"]!=str(artifact.resolve()):
                 raise ValueError("Registered candidate differs from this exact training artifact")
@@ -425,7 +437,24 @@ class TrainingWorker:
             if candidate["manifest"]["template_commitments"]!=[job["templateCommitment"]]:
                 raise ValueError("Comparison candidate belongs to another exact task")
             models["candidate"]=GLiNERBackend(candidate["artifact_root"],self.device)
+        if content["dataset"]["provenance"] == "independent_human":
+            expected_incumbent=content.get("comparisonModelBundleId")
+            if not isinstance(expected_incumbent,str) or not expected_incumbent:
+                raise ValueError("Feedback comparison requires the frozen incumbent identity")
+            try:
+                active=self.registry.active(self.connector.workspace_id,job["templateCommitment"],template.language)
+                if active["bundle_id"] != expected_incumbent:
+                    raise ValueError("The incumbent changed after feedback was frozen")
+                incumbent=self.registry.get(active["bundle_id"],self.connector.workspace_id)
+                models["incumbent"]=GLiNERBackend(incumbent["artifact_root"],self.device)
+            except KeyError:
+                if expected_incumbent != job["modelBundleId"]:
+                    raise ValueError("The frozen incumbent is unavailable") from None
+                models["incumbent"]=GLiNERBackend(self.model_dir,self.device)
+            models["reference"]=TrainingMajorityReference(snapshot)
         result["comparison"]=compare_snapshot(checked_store,snapshot["id"],self.connector.workspace_id,models)
+        if content["dataset"]["provenance"] == "independent_human":
+            result["comparison"]["incumbent_model_bundle_id"]=expected_incumbent
         check()
         return result
 

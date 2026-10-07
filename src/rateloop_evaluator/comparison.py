@@ -66,8 +66,8 @@ def compare_snapshot(store: LearningStore, snapshot_id: str, workspace_id: str,
     for production inference. Models are provisioned by the trusted caller, never
     supplied as executable uploads. Live permissions are rechecked between rows.
     """
-    if not isinstance(models, dict) or not 1 <= len(models) <= 3 or any(not isinstance(key, str) or not key for key in models):
-        raise ValueError('Comparison requires one to three named local models')
+    if not isinstance(models, dict) or not 1 <= len(models) <= 4 or any(not isinstance(key, str) or not key for key in models):
+        raise ValueError('Comparison requires one to four named local models')
     snapshot = store.load_snapshot(snapshot_id, workspace_id, now=now)
     if snapshot['purpose'] != 'private_training':
         raise PermissionError('Private comparisons require a private-training snapshot')
