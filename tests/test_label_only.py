@@ -98,3 +98,18 @@ def test_judge_freezes_prompt_adapter_and_complete_runtime_identity(tmp_path,mon
     cli.write_private(tmp_path/'ollama-judge.json',descriptor)
     monkeypatch.setattr(ollama_judge,'_SYSTEM','Changed adapter prompt')
     with pytest.raises(ValueError,match='adapter changed'):OllamaJudge(tmp_path)
+
+
+def test_judge_preserves_full_prompt_overflow_as_distinct_non_prediction(tmp_path, monkeypatch):
+    from rateloop_evaluator.ollama import OllamaError
+    from rateloop_evaluator.ollama_judge import JudgeInputOverflow
+    runtime, _, _ = runtime_fixture(); model = runtime.identity()
+    cli.write_private(tmp_path/'ollama-judge.json', {'schemaVersion': 'rateloop.ollama-judge.v1',
+        'baseUrl': 'http://127.0.0.1:11434', 'model': model, 'adapterCommitment': adapter_commitment(model)})
+    judge = OllamaJudge(tmp_path); judge.runtime.close(); judge.runtime = runtime
+    def overflow(*args, **kwargs): raise OllamaError('context_overflow')
+    monkeypatch.setattr(runtime, 'generate', overflow)
+    request = EvaluationRequest.model_validate(FIXTURE['request'])
+    with pytest.raises(JudgeInputOverflow):
+        judge.predict(request.input.render(), [q.model_dump() for q in request.template.questions])
+    judge.unload()

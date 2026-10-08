@@ -3,6 +3,8 @@ import argparse
 import json
 from pathlib import Path
 
+from rateloop_evaluator.benchmark_reporting import matched_cohort_report
+from rateloop_evaluator.judge_benchmark import run_local_judge
 from rateloop_evaluator.general_benchmark import blind_review_packet, freeze_benchmark
 from rateloop_evaluator.general_experiment import prepare_public, run_local, write_private
 from rateloop_evaluator.general_qualification import freeze_operating_point, score_general_benchmark
@@ -25,7 +27,7 @@ def main(argv=None):
     public.add_argument('--output', required=True)
     freeze = commands.add_parser('freeze'); freeze.add_argument('--sources', required=True)
     freeze.add_argument('--previous'); freeze.add_argument('--sampling', choices=['diagnostic_balanced', 'representative_traffic'], default='diagnostic_balanced')
-    for name in ('packet', 'run', 'report', 'point'):
+    for name in ('packet', 'run', 'run-judge', 'matched', 'report', 'point'):
         command = commands.add_parser(name)
         command.add_argument('--manifest', required=True)
         if name != 'point': command.add_argument('--rows', required=True)
@@ -35,6 +37,10 @@ def main(argv=None):
             command.add_argument('--backend', choices=['gliner', 'gliclass'], default='gliner')
             command.add_argument('--device', choices=['cpu', 'mps', 'cuda'], default='cpu')
             command.add_argument('--threshold', type=float, default=.9)
+        if name == 'run-judge':
+            command.add_argument('--model-dir', required=True)
+            command.add_argument('--timeout-seconds', type=float, default=60)
+        if name == 'matched': command.add_argument('--observations-by-model', required=True)
         if name == 'report':
             command.add_argument('--point', required=True); command.add_argument('--observations', required=True)
         if name == 'point': command.add_argument('--configuration', required=True)
@@ -53,6 +59,12 @@ def main(argv=None):
         write_private(Path(args.output), result)
     elif args.command == 'packet':
         result = blind_review_packet(read(args.manifest), read(args.rows)); write_private(Path(args.output), result)
+    elif args.command == 'run-judge':
+        result = run_local_judge(read(args.manifest), read(args.rows), model_dir=args.model_dir,
+            output=args.output, timeout_seconds=args.timeout_seconds)
+    elif args.command == 'matched':
+        result = matched_cohort_report(read(args.manifest), read(args.rows), read(args.observations_by_model))
+        write_private(Path(args.output), result)
     elif args.command == 'point':
         result = freeze_operating_point(read(args.manifest), **read(args.configuration)); write_private(Path(args.output), result)
     elif args.command == 'report':

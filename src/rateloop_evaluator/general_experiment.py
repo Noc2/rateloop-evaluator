@@ -9,6 +9,7 @@ import platform
 import time
 
 from .backends import prepare_inference, GLiNERBackend, GLiClassBackend, offline_environment, render_input, tokenizer_commitment
+from .benchmark_reporting import full_cohort_report, implementation_commitment
 from .calibration import apply_temperature, fit_temperature
 from .general_benchmark import digest, freeze_benchmark, verify_manifest
 from .general_qualification import freeze_operating_point, score_general_benchmark, test_representatives
@@ -61,21 +62,25 @@ def prepare_public(source_path, *, criterion='helpfulness', maximum_groups=600):
 
 
 def _predict(backend, row):
-    started = time.perf_counter()
+    started = time.perf_counter(); prepared = None
+    observation = {'state': 'failed', 'cost_usd': 0, 'queue_ms': 0}
     try:
         text = render_input(row['input'])
         prepared = prepare_inference(backend, text, row['template']['questions'])
+        observation['token_count'] = prepared.token_count
         if prepared.token_count > row['template']['maxTokens']:
-            return {'state': 'overflow', 'total_ms': (time.perf_counter() - started) * 1000, 'cost_usd': 0, 'queue_ms': 0}
-        scores = prepared.predict()
-        # Validate before persisting to avoid reporting malformed scores as success.
-        from .quality import score_predictions
-        score_predictions([row], [scores])
-        return {'state': 'completed', 'scores': scores, 'total_ms': (time.perf_counter() - started) * 1000,
-                'queue_ms': 0, 'cost_usd': 0, 'stages_ms': dict(prepared.stages_ms)}
+            observation['state'] = 'overflow'
+        else:
+            scores = prepared.predict()
+            from .quality import score_predictions
+            score_predictions([row], [scores])
+            observation.update(state='completed', scores=scores)
     except (ValueError, RuntimeError):
-        # No raw content or exception strings in operational reports.
-        return {'state': 'failed', 'total_ms': (time.perf_counter() - started) * 1000, 'queue_ms': 0, 'cost_usd': 0}
+        pass  # Report failures without raw content or exception strings.
+    finally:
+        observation['total_ms'] = (time.perf_counter()-started)*1000
+        observation['stages_ms'] = dict(prepared.stages_ms) if prepared else {}
+    return observation
 
 
 def run_local(manifest, rows, *, model_dir, output, backend_name='gliner', device='cpu', threshold=.9):
@@ -130,7 +135,7 @@ def run_local(manifest, rows, *, model_dir, output, backend_name='gliner', devic
     raw = []; calibrated = []
     for entry, row in test_representatives(manifest, rows):
         observation = _predict(backend, row)
-        raw.append({**observation, 'evaluation_id': row['evaluation_id'], 'operating_point_commitment': raw_point['commitment']})
+        raw.append({**observation, 'benchmark_commitment': manifest['commitment'], 'evaluation_id': row['evaluation_id'], 'operating_point_commitment': raw_point['commitment']})
         if calibrated_point:
             transformed = dict(observation)
             scope = entry['template_commitment']
@@ -146,13 +151,15 @@ def run_local(manifest, rows, *, model_dir, output, backend_name='gliner', devic
                         model_bundle_id='public-general-diagnostic', template_commitment=scope, question_id=qid, language=row['language'])
                 else:
                     transformed['scores'] = scores
-            calibrated.append({**transformed, 'evaluation_id': row['evaluation_id'],
+            calibrated.append({**transformed, 'benchmark_commitment': manifest['commitment'], 'evaluation_id': row['evaluation_id'],
                                'operating_point_commitment': calibrated_point['commitment']})
     write_private(output/'raw-observations.json', raw)
     raw_report = score_general_benchmark(manifest, rows, raw_point, raw)
     report = {'schema_version': 'rateloop.general-local-experiment.v1', 'raw': raw_report,
         'calibrated': score_general_benchmark(manifest, rows, calibrated_point, calibrated) if calibrated_point else None,
         'calibration_states': dict(calibration_states), 'model_load_ms': load_ms, 'model': model,
+        'implementation_commitment': implementation_commitment(),
+        'cohort': full_cohort_report(manifest, rows, raw),
         'measurement_limits': 'Single local process, warm-model input validation/tokenization/inference latency; '
             'model load reported separately. No website/network/hosted queue or concurrency SLA. '
             'API cost zero; hardware/electricity costs are not measured. External public labels only.',

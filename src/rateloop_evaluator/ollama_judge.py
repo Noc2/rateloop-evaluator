@@ -20,6 +20,10 @@ def adapter_commitment(model):
         'maxOutputTokens':2048,'maxOutputCharacters':4000,'thinking':False},'rateloop.adaptation.v1')
 
 
+class JudgeInputOverflow(ValueError):
+    """The full prompt does not fit; never silently shorten a benchmark case."""
+
+
 class OllamaJudge:
     score_type='label_only'
     question_execution='label_only'
@@ -52,7 +56,10 @@ class OllamaJudge:
             generated=self.runtime.generate(messages,max_output_tokens=min(2048,96*len(questions)),max_output_characters=4000,
                 timeout_seconds=timeout_seconds,output_schema=schema)
             value=json.loads(generated['text'])
-        except (OllamaError,ValueError):raise ValueError('Local judge did not return a complete valid label result') from None
+        except OllamaError as error:
+            if error.code == 'context_overflow': raise JudgeInputOverflow('Full judge input exceeds context') from None
+            raise ValueError('Local judge did not return a complete valid label result') from None
+        except ValueError:raise ValueError('Local judge did not return a complete valid label result') from None
         if not isinstance(value,dict) or set(value)!={'labels'} or not isinstance(value['labels'],dict):raise ValueError('Invalid judge result shape')
         labels=value['labels']
         if set(labels)!={q['id'] for q in questions} or any(labels[q['id']] not in [label['id'] for label in q['labels']] for q in questions):

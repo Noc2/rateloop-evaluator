@@ -176,6 +176,37 @@ provenance. Public human labels retain `external_human`; owner, AI-assisted and 
 The public adapter's family is the declared rubric scope, not a claim that HelpSteer2 supplies an independent six-family
 task classification. Its absent German and source-faithfulness slices remain visibly empty.
 
+Each `run` also writes a full-cohort summary with English and German counts (including empty slices),
+family/language counts, full-input character bands, all-case and completed-only latency, and measured load/prepare/infer
+stages. The implementation commitment hashes the exact installed evaluator Python sources. These fields prevent fast
+rejections or different completed subsets from looking like a quality or inference speed improvement.
+
+An already provisioned local Ollama judge bundle can be measured on the **same manifest and rows**:
+
+```sh
+python scripts/run_general_benchmark.py run-judge --manifest /private/general-helpfulness/manifest.json --rows /private/general-helpfulness/rows.json --model-dir /private/judge-bundle --timeout-seconds 60 --output /private/general-helpfulness-judge
+```
+
+`--model-dir` points to an existing `ollama-judge.json` bundle, as created by explicit judge setup. Its complete pinned
+model, weight/template digests, runtime version and adapter are checked against the loopback runtime. Qwen is one
+possible provisioned challenger, not a validated recommendation. The command never downloads a model. It freezes its
+configuration before final predictions and reports labels, class recall, false approvals, decision coverage and
+agreement over every test representative. Overflow, malformed results and failures stay in the denominator. It does
+not invent score distributions, fit temperatures or qualify confidence. The separate runtime identity-check time is
+not a measured model-load time; first-request loading remains in observed request latency.
+
+For a matched operational comparison, create an object mapping model names to their full `raw-observations.json` or
+`judge-observations.json` arrays and run:
+
+```sh
+python scripts/run_general_benchmark.py matched --manifest /private/general-helpfulness/manifest.json --rows /private/general-helpfulness/rows.json --observations-by-model /private/observations-by-model.json --output /private/matched-report.json
+```
+
+The tool requires complete observations bound to one benchmark. It retains each full denominator and labels the
+common-completed subset as secondary. Use each model's full-cohort quality report; accuracy from different completed
+subsets is not comparable. Synthetic fixtures verify the harness only. A representative, independently reviewed EN/DE
+cohort and actual provisioned-model runs remain necessary before quality or hosted latency claims.
+
 Related source IDs must link paraphrases, translations, conversations and document families. Normalized prompt/document
 and exact/formatting-equivalent input aliases also group automatically. The frozen manifest is content-free and records
 50% development, 25% calibration and 25% test hash assignments; actual small-slice counts vary. Reserve the existing fixed

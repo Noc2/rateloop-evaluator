@@ -266,7 +266,7 @@ def prepare_inference(backend, text: str, questions: list[dict[str, Any]]) -> Pr
     is exactly the batch decoded, so no later tokenization can truncate it.
     """
     started = time.perf_counter()
-    if callable(getattr(backend, "load", None)):
+    if callable(getattr(backend, "load", None)) and getattr(backend, "score_type", None) != "label_only":
         backend.load()
     loaded = time.perf_counter()
     if callable(getattr(backend, "prepare", None)):
