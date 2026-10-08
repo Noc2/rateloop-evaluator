@@ -253,6 +253,9 @@ def run_hosted(config: dict, *, auxiliary_factory=None) -> None:
                     def manifest(self):
                         if worker.evaluate.native_backend is None: raise PermissionError("Public native model unavailable")
                         return worker.evaluate.native_backend.manifest
+                    def load(self):
+                        if worker.evaluate.native_backend is None: raise PermissionError("Public native model unavailable")
+                        return worker.evaluate.native_backend.load()
                     def prepare(self,*args):
                         if worker.evaluate.native_backend is None: raise PermissionError("Public native model unavailable")
                         from .backends import prepare_inference

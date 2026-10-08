@@ -175,7 +175,7 @@ def test_auxiliary_extension_is_serialized_and_shutdown_keeps_retained_worker(co
         from rateloop_evaluator import native_chat_pool
         config['nativeChatPool']={'baseUrl':'https://www.rateloop.ai','secret':'test-only'}
         class Native:
-            def __init__(self,**kwargs): pass
+            def __init__(self,**kwargs): kwargs['backend'].load()
             def run_once(self): events.append('native')
             def close(self): events.append('native_closed')
         monkeypatch.setattr(native_chat_pool,'NativeChatPool',Native)
@@ -204,7 +204,8 @@ def test_auxiliary_extension_is_serialized_and_shutdown_keeps_retained_worker(co
         def close(self): events.append('auxiliary_closed')
     monkeypatch.setattr(hosted,'RateLoopConnector',Connector)
     monkeypatch.setattr(hosted,'OutboundWorker',Worker)
-    monkeypatch.setattr(hosted,'prepare_evaluator',lambda *_args,**_kwargs:SimpleNamespace(close=lambda:events.append('inference_closed')))
+    monkeypatch.setattr(hosted,'prepare_evaluator',lambda *_args,**_kwargs:SimpleNamespace(close=lambda:events.append('inference_closed'),
+        native_backend=SimpleNamespace(load=lambda:events.append('native_loaded'))))
     hosted.run_hosted(config,auxiliary_factory=Auxiliary)
-    assert events==['retained',*(['native'] if native_enabled else []),'auxiliary','excluded','auxiliary_closed',
+    assert events==[*(['native_loaded'] if native_enabled else []),'retained',*(['native'] if native_enabled else []),'auxiliary','excluded','auxiliary_closed',
         *(['native_closed'] if native_enabled else []),'inference_closed','connector_closed']

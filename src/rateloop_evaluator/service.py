@@ -209,9 +209,11 @@ def create_app(*, backend: Backend, bundle: dict, learning: LearningStore, runti
         except Exception:
             raise HTTPException(503,detail="Evaluation unavailable; human review required") from None
         finally:
-            if prepared is not None: record_stages(prepared.stages_ms)
-            execution.close()
-            worker.release()
+            try:
+                if prepared is not None: record_stages(prepared.stages_ms)
+            finally:
+                execution.close()
+                worker.release()
 
     @app.post("/v2/evaluate")
     def evaluate_with_evidence(request: EvaluationRequest, identity: Principal = Depends(principal)):
