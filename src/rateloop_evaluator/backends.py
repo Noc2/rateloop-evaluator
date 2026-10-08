@@ -1,6 +1,9 @@
 """Explicitly provisioned local GLiNER classification; never a cloud fallback."""
 from __future__ import annotations
 
+from copy import deepcopy
+from dataclasses import dataclass, field
+import time
 import hashlib
 import json
 import math
@@ -241,6 +244,41 @@ def release_checkpoint_file_cache(model_dir: str | Path) -> None:
         if descriptor is not None: os.close(descriptor)
 
 
+@dataclass
+class PreparedInference:
+    """Request-local input; never cache customer text or tensors across calls."""
+    token_count: int
+    _predict: Any
+    stages_ms: dict[str, float] = field(default_factory=dict)
+
+    def predict(self, **kwargs):
+        started = time.perf_counter()
+        try:
+            return self._predict(**kwargs)
+        finally:
+            self.stages_ms["infer"] = (time.perf_counter()-started)*1000
+
+
+def prepare_inference(backend, text: str, questions: list[dict[str, Any]]) -> PreparedInference:
+    """One preflight used by serving, held-out comparisons and benchmarks.
+
+    Other adapters retain their own validated preflight. A prepared GLiNER batch
+    is exactly the batch decoded, so no later tokenization can truncate it.
+    """
+    started = time.perf_counter()
+    if callable(getattr(backend, "load", None)):
+        backend.load()
+    loaded = time.perf_counter()
+    if callable(getattr(backend, "prepare", None)):
+        prepared = backend.prepare(text, questions)
+    else:
+        questions = deepcopy(questions)
+        prepared = PreparedInference(backend.count_tokens(text, questions),
+            lambda **kwargs: backend.predict(text, questions, **kwargs))
+    prepared.stages_ms.update(load=(loaded-started)*1000, prepare=(time.perf_counter()-loaded)*1000)
+    return prepared
+
+
 class GLiNERBackend:
     """Lazy local model. One worker owns one instance; no implicit downloads."""
     question_execution = "joint_schema"
@@ -283,23 +321,42 @@ class GLiNERBackend:
         elif self.device == "cuda": torch.cuda.empty_cache()
         release_checkpoint_file_cache(self.model_dir)
 
-    def count_tokens(self, text: str, questions: list[dict[str, Any]]) -> int:
+    def prepare(self, text: str, questions: list[dict[str, Any]]) -> PreparedInference:
+        # Uses the batch decoder/formatter of the pinned gliner2==2.0.0 runtime.
+        # This mirrors its public single-input extraction without collating twice.
         model = self.load()
-        schema = question_schema(questions)
+        questions = deepcopy(questions)
+        model.eval()
+        model.processor.change_mode(is_training=False)
+        schemas, metadata = model._build_schema_dicts_and_metadata([question_schema(questions)])
         batch = model.processor.collate_fn_inference(
-            [(text, schema.schema)], error_policy="raise", max_len=None,
+            [(text, schemas[0])], error_policy="raise", max_len=None,
             architecture=model.architecture,
         )
-        return int(batch.attention_mask.sum().item())
+        token_count = int(batch.attention_mask.sum().item())
+
+        def predict():
+            if self._model is not model:
+                raise ValueError("Prepared input belongs to an unloaded checkpoint")
+            if token_count > model_token_limit(model):
+                raise ValueError("Input and question schema exceed the model context limit")
+            import torch
+            with torch.inference_mode():
+                parameter = next(model.parameters())
+                device_batch = batch.to(parameter.device, parameter.dtype if parameter.dtype != torch.float32 else None)
+                results = model._extract_from_batch(device_batch, .5, metadata, True, False)
+                if len(results) != 1:
+                    raise ValueError("Prepared inference returned an unexpected batch")
+                result = model.format_results(results[0], True, metadata[0].get("relation_order", []),
+                                              metadata[0].get("classification_tasks", []))
+            return validate_scores(result, questions)
+        return PreparedInference(token_count, predict)
+
+    def count_tokens(self, text: str, questions: list[dict[str, Any]]) -> int:
+        return self.prepare(text, questions).token_count
 
     def predict(self, text: str, questions: list[dict[str, Any]]) -> dict[str, dict[str, float]]:
-        model = self.load()
-        schema = question_schema(questions)
-        token_count = self.count_tokens(text, questions)
-        if token_count > model_token_limit(model):
-            raise ValueError("Input and question schema exceed the model context limit")
-        result = model.extract(text, schema, include_confidence=True, max_len=None)
-        return validate_scores(result, questions)
+        return self.prepare(text, questions).predict()
 
 
 GLICLASS_MODEL_ID = "knowledgator/gliclass-modern-base-v3.0"

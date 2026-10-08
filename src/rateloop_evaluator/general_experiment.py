@@ -8,7 +8,7 @@ from pathlib import Path
 import platform
 import time
 
-from .backends import GLiNERBackend, GLiClassBackend, offline_environment, render_input, tokenizer_commitment
+from .backends import prepare_inference, GLiNERBackend, GLiClassBackend, offline_environment, render_input, tokenizer_commitment
 from .calibration import apply_temperature, fit_temperature
 from .general_benchmark import digest, freeze_benchmark, verify_manifest
 from .general_qualification import freeze_operating_point, score_general_benchmark, test_representatives
@@ -64,9 +64,10 @@ def _predict(backend, row):
     started = time.perf_counter()
     try:
         text = render_input(row['input'])
-        if backend.count_tokens(text, row['template']['questions']) > row['template']['maxTokens']:
+        prepared = prepare_inference(backend, text, row['template']['questions'])
+        if prepared.token_count > row['template']['maxTokens']:
             return {'state': 'overflow', 'total_ms': (time.perf_counter() - started) * 1000, 'cost_usd': 0, 'queue_ms': 0}
-        scores = backend.predict(text, row['template']['questions'])
+        scores = prepared.predict()
         # Validate before persisting to avoid reporting malformed scores as success.
         from .quality import score_predictions
         score_predictions([row], [scores])

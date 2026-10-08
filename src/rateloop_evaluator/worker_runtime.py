@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from threading import RLock
 
-from .backends import GLiNERBackend
+from .backends import GLiNERBackend, prepare_inference
 from .service import Principal, create_app
 from .templates import overall_approval
 from .protocol import Template
@@ -39,6 +39,10 @@ class _CachedBackend:
             return self.cache.backend.manifest if self.cache.key == self.key and self.cache.backend else None
     def load(self): return self.cache.invoke(self.key,self.path,"load")
     def count_tokens(self,text,questions): return self.cache.invoke(self.key,self.path,"count_tokens",text,questions)
+    def prepare(self,text,questions):
+        with self.cache.lock:
+            self.load()
+            return prepare_inference(self.cache.backend,text,questions)
     def predict(self,text,questions): return self.cache.invoke(self.key,self.path,"predict",text,questions)
 
 

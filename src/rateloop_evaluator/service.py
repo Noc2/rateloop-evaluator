@@ -13,6 +13,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import Field
 
+from .backends import prepare_inference
 from .calibration import apply_temperature
 from .learning import LearningStore
 from .protocol import EvaluationRequest, EvaluationResult, WireModel, Identifier, Digest, commitment, make_result, utc_now
@@ -141,11 +142,12 @@ def create_app(*, backend: Backend, bundle: dict, learning: LearningStore, runti
             else:
                 questions = [q.model_dump() for q in request.template.questions]
                 text = request.input.render()
-                token_count = backend.count_tokens(text,questions)
+                prepared = prepare_inference(backend,text,questions)
+                token_count = prepared.token_count
                 if token_count > min(request.template.maxTokens,bundle.get("max_tokens",512)): reason = "input_too_long"
                 elif (time.monotonic()-start)*1000 >= request.deadlineMs: reason = "deadline_exceeded"
                 else:
-                    scores = backend.predict(text,questions,timeout_seconds=max(.001,(request.deadlineMs-(time.monotonic()-start)*1000)/1000)) if label_only else backend.predict(text,questions)
+                    scores = prepared.predict(timeout_seconds=max(.001,(request.deadlineMs-(time.monotonic()-start)*1000)/1000)) if label_only else prepared.predict()
                     if set(scores) != {q.id for q in request.template.questions}: raise ValueError("Backend question mismatch")
                     calibrations = {c["question_id"]:c for c in bundle.get("calibrations",[]) if c["template_commitment"] == template_digest and c["language"] == request.template.language}
                     for question in request.template.questions:

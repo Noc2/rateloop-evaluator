@@ -9,7 +9,7 @@ import math
 import time
 from typing import Any
 
-from .backends import render_input
+from .backends import render_input, prepare_inference
 from .execution import serialized_training
 from .learning import LearningStore, is_independent_reference, _digest
 from .protocol import validate_no_demonstration_overlap
@@ -96,7 +96,8 @@ def compare_snapshot(store: LearningStore, snapshot_id: str, workspace_id: str,
                 questions = row['template']['questions']
                 validate_no_demonstration_overlap(row['input']['text'], questions)
                 text = render_input(row['input'])
-                if backend.count_tokens(text, questions) > row['template']['maxTokens']:
+                prepared = prepare_inference(backend, text, questions)
+                if prepared.token_count > row['template']['maxTokens']:
                     raise ValueError('Comparison input exceeds the template token limit')
                 training = (getattr(backend, 'manifest', None) or {}).get('training') or {}
                 selection = training.get('selection') or {}
@@ -105,7 +106,7 @@ def compare_snapshot(store: LearningStore, snapshot_id: str, workspace_id: str,
                 if {example['evaluation_id'] for example in rows} & set(training.get('trainingExampleIds', []) + selection.get('validationExampleIds', [])):
                     raise ValueError('A compared model was trained on the held-out examples')
                 started = time.perf_counter()
-                scores = backend.predict(text, questions)
+                scores = prepared.predict()
                 durations.append((time.perf_counter()-started)*1000)
                 if set(scores) != set(question_stats):
                     raise ValueError('Model scores do not cover the exact criteria')
