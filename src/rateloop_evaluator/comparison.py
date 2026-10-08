@@ -65,7 +65,14 @@ def _verified_prediction_identity(backend):
     # the same model name, path or weight filename alone is insufficient.
     if type(backend) is not GLiNERBackend:
         return None
-    backend.manifest = validate_local_model(backend.model_dir)
+    manifest = validate_local_model(backend.model_dir)
+    if backend._model is not None and backend.manifest != manifest:
+        raise ValueError('Loaded checkpoint differs from its current artifacts')
+    backend.manifest = manifest
+    return _prediction_identity(backend)
+
+
+def _prediction_identity(backend):
     return _digest({'manifest': backend.manifest, 'adapter': GLINER_SCORE_CAPABILITY,
                     'library': 'gliner2==2.0.0', 'device': backend.device})
 
@@ -113,6 +120,8 @@ def compare_snapshot(store: LearningStore, snapshot_id: str, workspace_id: str,
                 validate_no_demonstration_overlap(row['input']['text'], questions)
                 text = render_input(row['input'])
                 prepared = None if cached else prepare_inference(backend, text, questions)
+                if prepared and identity and _prediction_identity(backend) != identity:
+                    raise ValueError('Checkpoint identity changed while loading comparison inputs')
                 if prepared and prepared.token_count > row['template']['maxTokens']:
                     raise ValueError('Comparison input exceeds the template token limit')
                 training = (getattr(backend, 'manifest', None) or {}).get('training') or {}

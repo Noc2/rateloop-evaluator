@@ -208,3 +208,24 @@ def test_reuse_rechecks_live_permission_and_full_artifact_integrity(store, tmp_p
     (path / 'model.safetensors').write_text('modified after registration')
     with pytest.raises(ValueError, match='integrity'):
         identity(GLiNERBackend(path))
+
+
+def test_prediction_reuse_identity_is_bound_to_loaded_checkpoint_not_just_disk(store, tmp_path, monkeypatch):
+    from rateloop_evaluator.backends import GLiNERBackend, PreparedInference
+    from rateloop_evaluator.comparison import _verified_prediction_identity
+    from test_backends import local_artifacts
+    _, snapshot = prepared(store)
+    path = tmp_path / 'checkpoint'; path.mkdir(); manifest_path = local_artifacts(path)
+    backend = GLiNERBackend(manifest_path)
+    backend._model = object()
+    backend.manifest = {'files': {'model.safetensors': 'old-loaded-identity'}}
+    with pytest.raises(ValueError, match='Loaded checkpoint differs'):
+        _verified_prediction_identity(backend)
+    backend._model = None
+    monkeypatch.setattr(GLiNERBackend, 'load', lambda self: self)
+    def changed_during_prepare(self, *_):
+        self.manifest = {**self.manifest, 'source': {'revision': 'changed-during-load'}}
+        return PreparedInference(30, lambda: pytest.fail('Changed model must not supply a cached prediction'))
+    monkeypatch.setattr(GLiNERBackend, 'prepare', changed_during_prepare)
+    with pytest.raises(ValueError, match='identity changed'):
+        compare_snapshot(store, snapshot['id'], 'workspace-a', {'baseline': backend})
