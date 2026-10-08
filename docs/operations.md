@@ -36,6 +36,21 @@ Back up only with workers/training stopped. Test restoring a copy onto a separat
 
 One model worker serializes inference and returns 429 when busy; callers retry with the same idempotency key. Deadlines prevent late approval but do not interrupt a GPU kernel. The initial encrypted whole-state learning store targets a single-host pilot. Its per-operation cost grows with retained data; benchmark full HTTP latency with the intended dataset and concurrency before scaling. Keep administrative training out of the inference process and schedule it separately if both share one GPU.
 
+GLiNER serving, comparisons and benchmarks prepare one exact input/schema batch for both token preflight and
+inference; overflow is rejected without truncation. Same-checkpoint baseline/incumbent comparisons may reuse predictions
+only when the complete revalidated artifact inventory, lineage, adapter and device match. Reused rows still recheck
+live permission; reports mark prediction timing unavailable for the reused model.
+
+The outbound worker alternates new training with interactive work. The hosted loop offers each interactive queue one
+serial turn before claiming new training, retaining a single resident checkpoint. Existing fenced jobs and unfinished
+model-switch recovery keep priority. Training already running can still block the worker up to its configured operation
+limit; this is not preemptive scheduling or a new latency guarantee.
+
+`OutboundWorker.last_timings` exposes only the latest process-local numeric receive/load/prepare/infer/deliver/total
+stages for operator diagnostics. No input, label or identifier is retained or sent to telemetry. Queue time is `None`
+because the worker lease does not declare queue-entry time; measure it in the owning application. Benchmark reports
+separate all-case, completed-only and stage latency. Warm-up and mocked operation counts establish no hosted speed claim.
+
 The signed model registry and evaluation gates do not replace authentication of reviewers, representative sampling, customer consent, host hardening or a customer acceptance exercise. Full offline human-review UI, federated aggregation, multimodal judgments and hosted shared training are subsequent products; no private data is transferred to implement them implicitly.
 
 ## Bounded guiding examples
