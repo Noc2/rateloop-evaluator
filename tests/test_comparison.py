@@ -157,3 +157,54 @@ def test_validation_selected_examples_cannot_be_reused_as_final_test(store,field
     backend.manifest={'training':{'selection':{field:[snapshot['test'][0][value_key]]}}}
     with pytest.raises(ValueError,match='held-out'):
         compare_snapshot(store,snapshot['id'],'workspace-a',{'contaminated':backend})
+
+
+def test_identical_full_checkpoints_reuse_predictions_but_different_artifacts_do_not(store, tmp_path, monkeypatch):
+    from rateloop_evaluator.backends import GLiNERBackend, PreparedInference, write_model_manifest
+    from test_backends import local_artifacts
+    _, snapshot = prepared(store)
+    path = tmp_path / 'checkpoint'; path.mkdir(); local_artifacts(path)
+    other = tmp_path / 'other'; other.mkdir(); local_artifacts(other)
+    # Identical names and weights, different tokenizer configuration.
+    (other / 'tokenizer_config.json').write_text('{"architecture":"boundary","extra":true}')
+    write_model_manifest(other, source={'revision': 'different-tokenizer'})
+    calls = []
+    monkeypatch.setattr(GLiNERBackend, 'load', lambda self: self)
+    def prepare(self, text, questions):
+        def predict():
+            calls.append(self.model_dir)
+            return {'faithful': {'yes': .8, 'no': .2}}
+        return PreparedInference(30, predict)
+    monkeypatch.setattr(GLiNERBackend, 'prepare', prepare)
+    result = compare_snapshot(store, snapshot['id'], 'workspace-a', {
+        'baseline': GLiNERBackend(path), 'incumbent': GLiNERBackend(path), 'other': GLiNERBackend(other)})
+    count = result['test_group_count']
+    assert len(calls) == 2 * count
+    assert result['models']['incumbent']['prediction_reused_from'] == 'baseline'
+    assert result['models']['incumbent']['prediction_count'] == 0
+    assert result['models']['incumbent']['mean_prediction_ms'] is None
+    assert result['models']['incumbent']['criteria'] == result['models']['baseline']['criteria']
+    assert result['models']['other']['prediction_reused_from'] is None
+
+
+def test_reuse_rechecks_live_permission_and_full_artifact_integrity(store, tmp_path, monkeypatch):
+    import rateloop_evaluator.comparison as comparison
+    from rateloop_evaluator.backends import GLiNERBackend, PreparedInference
+    from test_backends import local_artifacts
+    grant, snapshot = prepared(store)
+    path = tmp_path / 'checkpoint'; path.mkdir(); local_artifacts(path)
+    monkeypatch.setattr(GLiNERBackend, 'load', lambda self: self)
+    monkeypatch.setattr(GLiNERBackend, 'prepare', lambda *_: PreparedInference(30, lambda: {'faithful': {'yes': .8, 'no': .2}}))
+    identity = comparison._verified_prediction_identity
+    checked = []
+    def revoke_before_reuse(backend):
+        checked.append(True)
+        result = identity(backend)
+        if len(checked) == 2: store.revoke_grant(grant['id'], 'workspace-a')
+        return result
+    monkeypatch.setattr(comparison, '_verified_prediction_identity', revoke_before_reuse)
+    with pytest.raises(PermissionError):
+        compare_snapshot(store, snapshot['id'], 'workspace-a', {'base': GLiNERBackend(path), 'incumbent': GLiNERBackend(path)})
+    (path / 'model.safetensors').write_text('modified after registration')
+    with pytest.raises(ValueError, match='integrity'):
+        identity(GLiNERBackend(path))

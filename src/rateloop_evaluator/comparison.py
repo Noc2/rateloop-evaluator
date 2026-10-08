@@ -5,11 +5,13 @@ probability, independent-human qualification or a production deployment gate.
 """
 from __future__ import annotations
 
+from copy import deepcopy
 import math
 import time
 from typing import Any
 
-from .backends import render_input, prepare_inference
+from .backends import (GLiNERBackend, GLINER_SCORE_CAPABILITY, validate_local_model,
+                       render_input, prepare_inference)
 from .execution import serialized_training
 from .learning import LearningStore, is_independent_reference, _digest
 from .protocol import validate_no_demonstration_overlap
@@ -57,6 +59,17 @@ def label_metrics(confusion: dict[str, dict[str, int]], expected_counts: dict[st
             if sum(expected_counts.values()) else None}
 
 
+def _verified_prediction_identity(backend):
+    # Only the known deterministic raw-score adapter can share predictions.
+    # Rehash every declared artifact, including tokenizer/config and lineage;
+    # the same model name, path or weight filename alone is insufficient.
+    if type(backend) is not GLiNERBackend:
+        return None
+    backend.manifest = validate_local_model(backend.model_dir)
+    return _digest({'manifest': backend.manifest, 'adapter': GLINER_SCORE_CAPABILITY,
+                    'library': 'gliner2==2.0.0', 'device': backend.device})
+
+
 @serialized_training
 def compare_snapshot(store: LearningStore, snapshot_id: str, workspace_id: str,
                      models: dict[str, Any], *, now: float | None = None) -> dict:
@@ -82,22 +95,25 @@ def compare_snapshot(store: LearningStore, snapshot_id: str, workspace_id: str,
     rows = list(representatives.values())
     if not rows:
         raise ValueError('Comparison needs frozen held-out examples')
-    results = {}
+    results = {}; prediction_cache = {}
     for model_id, backend in models.items():
         try:
+            identity = _verified_prediction_identity(backend)
+            cached = prediction_cache.get(identity) if identity else None
+            recorded_scores = []
             question_stats = {q['id']: {'labels': [label['id'] for label in q['labels']],
                 'correct': 0, 'count': 0, 'abstentions': 0, 'false_approvals': 0, 'false_rejections': 0,
                 'expected_label_counts': {label['id']: 0 for label in q['labels']},
                 'confusion': {label['id']: {predicted['id']: 0 for predicted in q['labels']} for label in q['labels']}}
                 for q in rows[0]['template']['questions']}
             exact_agreements, durations = 0, []
-            for row in rows:
+            for index, row in enumerate(rows):
                 store.load_snapshot(snapshot_id, workspace_id, now=now)
                 questions = row['template']['questions']
                 validate_no_demonstration_overlap(row['input']['text'], questions)
                 text = render_input(row['input'])
-                prepared = prepare_inference(backend, text, questions)
-                if prepared.token_count > row['template']['maxTokens']:
+                prepared = None if cached else prepare_inference(backend, text, questions)
+                if prepared and prepared.token_count > row['template']['maxTokens']:
                     raise ValueError('Comparison input exceeds the template token limit')
                 training = (getattr(backend, 'manifest', None) or {}).get('training') or {}
                 selection = training.get('selection') or {}
@@ -105,9 +121,13 @@ def compare_snapshot(store: LearningStore, snapshot_id: str, workspace_id: str,
                     raise ValueError('A compared model was trained on the held-out source groups')
                 if {example['evaluation_id'] for example in rows} & set(training.get('trainingExampleIds', []) + selection.get('validationExampleIds', [])):
                     raise ValueError('A compared model was trained on the held-out examples')
-                started = time.perf_counter()
-                scores = prepared.predict()
-                durations.append((time.perf_counter()-started)*1000)
+                if cached:
+                    scores = deepcopy(cached['scores'][index])
+                else:
+                    started = time.perf_counter()
+                    scores = prepared.predict()
+                    durations.append((time.perf_counter()-started)*1000)
+                    recorded_scores.append(deepcopy(scores))
                 if set(scores) != set(question_stats):
                     raise ValueError('Model scores do not cover the exact criteria')
                 all_correct = True
@@ -147,7 +167,11 @@ def compare_snapshot(store: LearningStore, snapshot_id: str, workspace_id: str,
                                   **label_metrics(stats['confusion'], stats['expected_label_counts']),
                                   'label_coverage': (stats['count']-stats['abstentions'])/stats['count']}
                              for qid, stats in question_stats.items()},
-                'mean_prediction_ms': sum(durations)/len(durations)}
+                'mean_prediction_ms': sum(durations)/len(durations) if durations else None,
+                'prediction_count': len(durations),
+                'prediction_reused_from': cached['model_id'] if cached else None}
+            if identity and cached is None:
+                prediction_cache[identity] = {'model_id': model_id, 'scores': recorded_scores}
         finally:
             # Comparing candidates must not retain multiple full checkpoints.
             if hasattr(backend, "unload"):
