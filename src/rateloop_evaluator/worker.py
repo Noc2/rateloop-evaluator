@@ -20,6 +20,7 @@ from .evidence import EVIDENCE_SCHEMA, validate_evidence_binding
 from .templates import website_binary_question
 from .execution import ExecutionBusy, model_execution
 from .presence import WorkerPresence
+from .timing import capture_timings, measure_stage
 from .authorization import CLOCK_SKEW_SECONDS
 
 
@@ -50,6 +51,7 @@ class OutboundWorker:
         self.last_label_sync=0.0
         self.on_poll=on_poll or (lambda _healthy: None)
         self.training_worker=training_worker
+        self.last_timings = None
 
     def sync_labels(self) -> dict:
         """Map labels only from stored exact templates and current learning consent."""
@@ -191,10 +193,18 @@ class OutboundWorker:
             if thread.is_alive(): failed.append(ConnectorUnavailable("Lease renewal is still unavailable"))
 
     def _process(self, job: dict) -> dict:
-        body=self.connector._request("GET",f"/jobs/{job['jobId']}/content",headers={
-            "X-Evaluator-Lease":job["leaseToken"],"X-Evaluator-Worker":self.worker_id})
-        if (body.get("agentId"),body.get("agentVersionId")) != (self.connector.agent_id,self.connector.agent_version_id):
-            raise PermissionError("Worker identity does not match the submitted agent version")
+        # Only the latest numeric stages live in process memory. Nothing is
+        # persisted, added to a customer receipt, or uploaded as telemetry.
+        with capture_timings() as timings:
+            self.last_timings = timings
+            return self._process_timed(job)
+
+    def _process_timed(self, job: dict) -> dict:
+        with measure_stage("receive"):
+            body=self.connector._request("GET",f"/jobs/{job['jobId']}/content",headers={
+                "X-Evaluator-Lease":job["leaseToken"],"X-Evaluator-Worker":self.worker_id})
+            if (body.get("agentId"),body.get("agentVersionId")) != (self.connector.agent_id,self.connector.agent_version_id):
+                raise PermissionError("Worker identity does not match the submitted agent version")
         request=EvaluationRequest.model_validate(body.get("request"))
         if (request.workspaceId != self.connector.workspace_id or request.modelBundleId != job["modelBundleId"]
                 or request.input_commitment()!=job["inputCommitment"] or request.template_commitment()!=job["templateCommitment"]):
@@ -228,15 +238,16 @@ class OutboundWorker:
         with self.connector.learning.transaction() as database:
             self.connector._case_live(database,request.caseId)
             self.connector._state(database)["results"][result.inputCommitment]=result.model_dump()
-        receipt_key=self.connector.queue_result(result,evidence=evidence,job_context={"jobId":job["jobId"],"workerId":self.worker_id,"leaseToken":job["leaseToken"]})
-        acknowledgment=self.connector.runtime.acknowledgment(receipt_key)
-        if acknowledgment is None:
-            self.connector.flush()
+        with measure_stage("deliver"):
+            receipt_key=self.connector.queue_result(result,evidence=evidence,job_context={"jobId":job["jobId"],"workerId":self.worker_id,"leaseToken":job["leaseToken"]})
             acknowledgment=self.connector.runtime.acknowledgment(receipt_key)
-        if acknowledgment is None:
-            self.connector.assert_receipt_retryable(receipt_key)
-            raise ConnectorUnavailable("Result remains in the encrypted outbox")
-        require_completion_acknowledgment(self._post(job,"complete",receiptId=acknowledgment["receiptId"]))
+            if acknowledgment is None:
+                self.connector.flush()
+                acknowledgment=self.connector.runtime.acknowledgment(receipt_key)
+            if acknowledgment is None:
+                self.connector.assert_receipt_retryable(receipt_key)
+                raise ConnectorUnavailable("Result remains in the encrypted outbox")
+            require_completion_acknowledgment(self._post(job,"complete",receiptId=acknowledgment["receiptId"]))
         self._save(None)
         return {"state":"completed","jobId":job["jobId"],"modelBundleId":job["modelBundleId"],
             "humanReviewRequired":review_mode=="ai_and_human"}

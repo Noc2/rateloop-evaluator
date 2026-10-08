@@ -72,7 +72,7 @@ def _predict(backend, row):
         from .quality import score_predictions
         score_predictions([row], [scores])
         return {'state': 'completed', 'scores': scores, 'total_ms': (time.perf_counter() - started) * 1000,
-                'queue_ms': 0, 'cost_usd': 0}
+                'queue_ms': 0, 'cost_usd': 0, 'stages_ms': dict(prepared.stages_ms)}
     except (ValueError, RuntimeError):
         # No raw content or exception strings in operational reports.
         return {'state': 'failed', 'total_ms': (time.perf_counter() - started) * 1000, 'queue_ms': 0, 'cost_usd': 0}

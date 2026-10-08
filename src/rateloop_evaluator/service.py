@@ -21,6 +21,7 @@ from .storage import RuntimeStore
 from .execution import ExecutionBusy, model_execution
 from .templates import bundle_supports_template
 from .evidence import evidence_for_result, runtime_identity
+from .timing import record_stages
 from .source_evidence import is_supplied_material_template
 
 
@@ -119,6 +120,7 @@ def create_app(*, backend: Backend, bundle: dict, learning: LearningStore, runti
         template_digest = request.template_commitment(); input_digest = request.input_commitment()
         if not worker.acquire(blocking=False): raise HTTPException(429,detail="Worker busy; retry the same idempotency key")
         execution=ExitStack()
+        prepared = None
         try:
             execution.enter_context(model_execution(learning))
             deployment = validate_bundle(request) if validate_bundle else {"mode":"shadow"}
@@ -207,6 +209,7 @@ def create_app(*, backend: Backend, bundle: dict, learning: LearningStore, runti
         except Exception:
             raise HTTPException(503,detail="Evaluation unavailable; human review required") from None
         finally:
+            if prepared is not None: record_stages(prepared.stages_ms)
             execution.close()
             worker.release()
 
