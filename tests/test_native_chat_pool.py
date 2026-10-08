@@ -293,7 +293,8 @@ def test_native_pool_unavailable_does_not_revoke_retained_worker_health_and_clos
         def close(self): events.append("old-closed")
     class Worker:
         def __init__(self,*args,evaluate,**kwargs): self.evaluate=evaluate; self.last_label_sync=time.monotonic()
-        def run_once(self):
+        def run_once(self, *, include_training=True):
+            assert include_training is False
             events.append("old-poll")
             signal.getsignal(signal.SIGTERM)(signal.SIGTERM,None)
             return {"state":"idle"}
