@@ -187,7 +187,10 @@ def test_auxiliary_extension_is_serialized_and_shutdown_keeps_retained_worker(co
         def close(self): events.append('connector_closed')
     class Worker:
         def __init__(self,*args,**kwargs): self.last_label_sync=__import__('time').monotonic(); self.evaluate=kwargs['evaluate']
-        def run_once(self): events.append('retained'); return {'state':'idle'}
+        def run_once(self, *, include_training=True):
+            assert include_training is False
+            events.append('retained'); return {'state':'idle'}
+        def run_training_once(self): events.append('training'); return {'state':'idle'}
     class Auxiliary:
         def __init__(self,**kwargs): self.kwargs=kwargs
         def run_once(self):

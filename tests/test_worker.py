@@ -551,3 +551,40 @@ def test_opt_in_evidence_uses_one_inference_and_survives_metadata_receipt_transp
     receipt=next(json.loads(call.content) for call in calls if call.url.path.endswith('/receipts'))
     assert receipt['evidence']['checks'][0]['judgment']=='meets' and backend.calls==1
     assert req.input.text not in json.dumps(receipt)
+
+
+def test_interactive_and_new_training_jobs_alternate_without_starving_either(website, monkeypatch):
+    from types import SimpleNamespace
+    worker, *_ = website
+    events = []
+    worker.training_worker = SimpleNamespace(
+        has_pending_job=lambda: False,
+        sync_permissions=lambda: events.append('permissions'),
+        run_once=lambda: events.append('training') or {'state': 'training_completed'})
+    monkeypatch.setattr(worker, '_run_interactive_once', lambda: events.append('interactive') or {'state': 'completed'})
+    for _ in range(4): worker.run_once()
+    assert [event for event in events if event != 'permissions'] == ['interactive', 'training'] * 2
+    assert events[0] == 'permissions'
+
+
+def test_pending_training_recovery_still_precedes_inference(website, monkeypatch):
+    from types import SimpleNamespace
+    worker, *_ = website
+    worker.training_worker = SimpleNamespace(has_pending_job=lambda: True,
+        run_once=lambda: {'state': 'training_completed'})
+    monkeypatch.setattr(worker, '_run_interactive_once', lambda: pytest.fail('Unreconciled switch served inference'))
+    assert worker.run_once(include_training=False)['state'] == 'training_completed'
+
+
+def test_hosted_scheduler_can_offer_each_queue_a_turn_before_new_training(website, monkeypatch):
+    from types import SimpleNamespace
+    worker, *_ = website
+    events = []
+    worker.training_worker = SimpleNamespace(has_pending_job=lambda: False,
+        sync_permissions=lambda: events.append('permissions'),
+        run_once=lambda: events.append('training') or {'state': 'training_completed'})
+    monkeypatch.setattr(worker, '_run_interactive_once', lambda: events.append('interactive') or {'state': 'idle'})
+    worker.run_once(include_training=False)
+    events.extend(['native', 'auxiliary'])
+    worker.run_training_once()
+    assert events == ['permissions', 'interactive', 'native', 'auxiliary', 'training']

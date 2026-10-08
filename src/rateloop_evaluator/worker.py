@@ -52,6 +52,7 @@ class OutboundWorker:
         self.on_poll=on_poll or (lambda _healthy: None)
         self.training_worker=training_worker
         self.last_timings = None
+        self._training_turn = False
 
     def sync_labels(self) -> dict:
         """Map labels only from stored exact templates and current learning consent."""
@@ -252,10 +253,30 @@ class OutboundWorker:
         return {"state":"completed","jobId":job["jobId"],"modelBundleId":job["modelBundleId"],
             "humanReviewRequired":review_mode=="ai_and_human"}
 
-    def run_once(self) -> dict:
+    def run_training_once(self) -> dict:
+        self._training_turn = False
+        return self.training_worker.run_once() if self.training_worker is not None else {"state":"idle"}
+
+    def run_once(self, *, include_training: bool = True) -> dict:
         if self.training_worker is not None:
-            training=self.training_worker.run_once()
-            if training["state"]!="idle": return training
+            # Never serve around an unfinished model switch or an existing
+            # fenced training lease. New jobs alternate with interactive turns.
+            if self.training_worker.has_pending_job():
+                training = self.run_training_once()
+                if training["state"] != "idle": return training
+            else:
+                self.training_worker.sync_permissions()
+            if include_training and self._training_turn:
+                training = self.run_training_once()
+                if training["state"] != "idle": return training
+        result = self._run_interactive_once()
+        self._training_turn = True
+        if include_training and result["state"] == "idle":
+            training = self.run_training_once()
+            if training["state"] != "idle": return training
+        return result
+
+    def _run_interactive_once(self) -> dict:
         status=self.connector.sync_grants()
         try:
             with model_execution(self.connector.learning):

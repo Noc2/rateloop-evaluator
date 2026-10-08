@@ -273,7 +273,7 @@ def run_hosted(config: dict, *, auxiliary_factory=None) -> None:
                     while not stop.is_set():
                         # No parallel model inference/training: both queues share one serial runtime.
                         try:
-                            result=worker.run_once(); health.polled(True)
+                            result=worker.run_once(include_training=False); health.polled(True)
                             if result["state"] != "paused" and time.monotonic()-worker.last_label_sync>=60:
                                 worker.sync_labels()
                         except Exception: health.polled(False)
@@ -291,6 +291,12 @@ def run_hosted(config: dict, *, auxiliary_factory=None) -> None:
                                 from .execution import model_execution
                                 with model_execution(connector.learning): auxiliary.run_once()
                             except Exception: pass
+                        # Give each interactive queue one serial turn before
+                        # claiming a new private-training job. No extra model
+                        # process or memory reservation is introduced.
+                        if not stop.is_set():
+                            try: worker.run_training_once()
+                            except Exception: health.polled(False)
                         stop.wait(config["pollSeconds"])
             finally:
                 if auxiliary is not None: auxiliary.close()

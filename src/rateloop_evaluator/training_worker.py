@@ -513,6 +513,10 @@ class TrainingWorker:
         self._save(None)
         return {"state": "training_failed", "jobId": job["jobId"]}
 
+    def has_pending_job(self):
+        """Recovery and acknowledged switches precede new interactive work."""
+        return self._saved() is not None
+
     def run_once(self):
         self.sync_permissions()
         job=self._saved()
