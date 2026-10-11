@@ -186,6 +186,10 @@ def test_withdrawal_erases_both_versions_but_regrant_cannot_reset_holdout_tombst
     with store.transaction() as state:
         assert state["snapshots"][first["id"]]["train"] == []
         assert state["snapshots"][first["id"]]["invalidated_at"] is not None
+        for record in state["feedback_cycle_used_aliases"]["w"].values():
+            assert "caseId" not in record
+            assert len(record["caseDigest"]) == 64
+            assert len(record["identityDigest"]) == 64
 
 
 def test_legacy_snapshot_erasure_retains_unknown_role_tombstones(setup):

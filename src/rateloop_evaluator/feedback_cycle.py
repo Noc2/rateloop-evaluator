@@ -94,7 +94,7 @@ def import_feedback_snapshot(store, *, workspace_id, template, model_bundle_id, 
             keys = {_digest(alias) for alias in source_aliases}
             if keys & aliases:
                 raise ValueError("A feedback source was duplicated or used by a previous cycle")
-            identity = {"schema": SCHEMA, "partition": row["partition"], "caseId": row["caseId"],
+            identity = {"schema": SCHEMA, "partition": row["partition"], "caseDigest": _digest(row["caseId"]),
                         "evidenceFingerprint": row["evidenceFingerprint"],
                         "identityDigest": _digest({key: value for key, value in row.items() if key not in {"partition", "replayed"}})}
             if row.get("replayed") is True:
