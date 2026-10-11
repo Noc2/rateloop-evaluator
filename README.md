@@ -1,4 +1,4 @@
-![RateLoop Evaluator — Local ratings. Human feedback.](docs/assets/readme-banner.png)
+![RateLoop Evaluator with the actual RateLoop hero animation](docs/assets/readme-banner.png)
 
 # RateLoop Evaluator
 
