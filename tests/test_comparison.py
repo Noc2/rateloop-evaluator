@@ -26,6 +26,10 @@ def test_baseline_candidate_compare_same_frozen_cases_without_activation(store):
     result = compare_snapshot(store, snapshot['id'], 'workspace-a', {'base': Backend(), 'candidate': Backend()})
     assert result['test_group_count'] == len({row['group_id'] for row in snapshot['test']})
     assert result['models']['base']['agreement'] == result['models']['candidate']['agreement']
+    paired = result['paired_comparisons']['base']
+    assert paired['sample_count'] == result['test_group_count']
+    assert paired['candidate_only_correct'] == paired['baseline_only_correct'] == 0
+    assert paired['holm_adjusted_p_value'] == 1 and paired['quality_gate'] is False
     assert result['independent_reference_count'] == 0
     assert result['provenance_counts'] == {'owner': result['test_group_count']}
     assert result['quality_gate'] is False

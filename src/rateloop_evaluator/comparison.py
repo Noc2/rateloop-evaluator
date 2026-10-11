@@ -15,6 +15,7 @@ from .backends import (GLiNERBackend, GLINER_SCORE_CAPABILITY, validate_local_mo
 from .execution import serialized_training
 from .learning import LearningStore, is_independent_reference, _digest
 from .protocol import validate_no_demonstration_overlap
+from .paired_comparison import paired_correctness, holm_adjust
 
 
 def _interval(successes: int, count: int) -> dict | None:
@@ -102,7 +103,7 @@ def compare_snapshot(store: LearningStore, snapshot_id: str, workspace_id: str,
     rows = list(representatives.values())
     if not rows:
         raise ValueError('Comparison needs frozen held-out examples')
-    results = {}; prediction_cache = {}
+    results = {}; prediction_cache = {}; correctness = {}
     for model_id, backend in models.items():
         try:
             identity = _verified_prediction_identity(backend)
@@ -115,6 +116,7 @@ def compare_snapshot(store: LearningStore, snapshot_id: str, workspace_id: str,
                 'confusion': {label['id']: {predicted['id']: 0 for predicted in q['labels']} for label in q['labels']}}
                 for q in rows[0]['template']['questions']}
             exact_agreements, durations = 0, []
+            model_correctness = []
             for index, row in enumerate(rows):
                 store.load_snapshot(snapshot_id, workspace_id, now=now)
                 questions = row['template']['questions']
@@ -174,6 +176,7 @@ def compare_snapshot(store: LearningStore, snapshot_id: str, workspace_id: str,
                     stats['false_approvals'] += int(predicted in passing and expected not in passing)
                     stats['false_rejections'] += int(predicted not in passing and expected in passing)
                 exact_agreements += int(all_correct)
+                model_correctness.append(all_correct)
             # A revoked permission never produces a usable comparison report.
             store.load_snapshot(snapshot_id, workspace_id, now=now)
             manifest = getattr(backend, 'manifest', None) or {}
@@ -189,12 +192,16 @@ def compare_snapshot(store: LearningStore, snapshot_id: str, workspace_id: str,
                 'overflow_group_count': overflow_count,
                 'input_coverage': (len(rows)-overflow_count)/len(rows),
                 'prediction_reused_from': cached['model_id'] if cached else None}
+            correctness[model_id] = model_correctness
             if identity and cached is None:
                 prediction_cache[identity] = {'model_id': model_id, 'scores': recorded_scores, 'overflows': recorded_overflows}
         finally:
             # Comparing candidates must not retain multiple full checkpoints.
             if hasattr(backend, "unload"):
                 backend.unload()
+    paired = {name: paired_correctness(values, correctness["candidate"]) for name, values in correctness.items()
+        if name != "candidate" and "candidate" in correctness}
+    holm_adjust(list(paired.values()))
     provenance = {}
     for row in rows:
         kind = 'independent_human' if is_independent_reference(row) else row.get('label_provenance', 'unverified')
@@ -203,5 +210,5 @@ def compare_snapshot(store: LearningStore, snapshot_id: str, workspace_id: str,
         'snapshot_digest': snapshot['content_digest'], 'workspace_id': workspace_id,
         'test_group_count': len(rows), 'provenance_counts': provenance,
         'independent_reference_count': sum(is_independent_reference(row) for row in rows),
-        'models': results, 'quality_gate': False,
+        'models': results, 'paired_comparisons': paired, 'quality_gate': False,
         'limits': 'Frozen source-group sample; agreement with declared labels, not a truth probability. Raw scores are uncalibrated. Repeated test-set inspection can bias later model choices.'}
