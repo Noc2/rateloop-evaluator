@@ -8,9 +8,7 @@ from .protocol import validate_reference_demonstration_isolation
 from .quality import group_representatives
 
 
-def fit_snapshot_calibrations(store, snapshot_id, workspace_id, backend, *, bundle_id, weights_sha256,
-                              minimum_per_label=10):
-    snapshot = store.load_snapshot(snapshot_id, workspace_id)
+def validated_calibration_rows(snapshot):
     rows = group_representatives(snapshot['calibration'])
     if not rows or any(not is_independent_reference(row) for row in snapshot['calibration']):
         raise PermissionError('Calibration requires independently collected blind human references')
@@ -18,6 +16,13 @@ def fit_snapshot_calibrations(store, snapshot_id, workspace_id, backend, *, bund
     other_groups = {row['group_id'] for part in ('train', 'test') for row in snapshot[part]}
     if any(row['group_id'] in other_groups for row in rows):
         raise ValueError('Calibration source groups overlap training or final evidence')
+    return rows
+
+
+def fit_snapshot_calibrations(store, snapshot_id, workspace_id, backend, *, bundle_id, weights_sha256,
+                              minimum_per_label=10):
+    snapshot = store.load_snapshot(snapshot_id, workspace_id)
+    rows = validated_calibration_rows(snapshot)
     predictions, eligible = [], []
     try:
         excluded = set()

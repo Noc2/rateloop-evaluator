@@ -358,8 +358,9 @@ def run(args):
         return {"modelDir":report["modelDir"],"optimizerSteps":report["training"]["optimizerSteps"],"qualityClaim":False}
     if args.command == "calibrate":
         from .backends import GLiNERBackend, validate_local_model
-        from .calibration_snapshot import fit_snapshot_calibrations
+        from .calibration_snapshot import fit_snapshot_calibrations, validated_calibration_rows
         from .training import assert_public_training_base
+        validated_calibration_rows(store.load_snapshot(args.snapshot_id, workspace))
         model_files = validate_local_model(args.model_dir)
         training = model_files.get("training")
         if training and (training.get("bundleId"), training.get("snapshotId"), training.get("workspaceId")) != (args.bundle_id, args.snapshot_id, workspace):

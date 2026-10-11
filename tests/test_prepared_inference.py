@@ -51,7 +51,7 @@ def fake_gliner(monkeypatch, token_count=512):
         def format_results(self, result, confidence, relations, tasks):
             assert confidence and relations == [] and tasks == ['tone']
             return result
-    monkeypatch.setattr(backends, 'question_schema', lambda questions: deepcopy(questions))
+    monkeypatch.setattr(backends, 'question_schema', lambda questions, adapter_version=1: deepcopy(questions))
     backend = GLiNERBackend('/unused'); backend._model = Model()
     return backend
 
@@ -106,9 +106,11 @@ def test_all_consumers_use_prepared_tokens_without_second_prediction_path(setup,
         return value
     store.load_snapshot = limited
     if tokens > 512:
-        with pytest.raises(ValueError, match='token limit'):
-            compare_snapshot(store, snapshot['id'], 'workspace-a', {'base': service_backend})
-        assert calls == ['prepare'] * 3
+        result = compare_snapshot(store, snapshot['id'], 'workspace-a', {'base': service_backend})
+        assert result['models']['base']['overflow_group_count'] == result['test_group_count']
+        assert result['models']['base']['agreement']['sample_count'] == result['test_group_count']
+        assert result['models']['base']['agreement']['estimate'] == 0
+        assert calls == ['prepare'] * (2 + result['test_group_count'])
     else:
         result = compare_snapshot(store, snapshot['id'], 'workspace-a', {'base': service_backend})
         assert calls.count('prepare') == calls.count('infer') == 2 + result['test_group_count']
