@@ -2,6 +2,96 @@
 
 Use a dedicated account and an encrypted disk. Keep model files, state, credentials, exports and backups outside the source checkout. The learning store, cache and outbox encrypt their payloads; model weights and exported reports rely on the encrypted volume. Protect encryption and signing keys separately in your backup system. Loss of the encryption key makes records unrecoverable.
 
+## Run locally
+
+Complete the [quick-start installation and model provisioning](../README.md#quick-start), then run these commands from the repository root. Inference and training use local files without a cloud fallback.
+
+```sh
+.venv/bin/rateloop-evaluator init --workspace example-workspace
+.venv/bin/rateloop-evaluator grant --right ai_use --template customer-reply-tone --hours 24 --evidence 'Owner enables local evaluation of this template'
+.venv/bin/rateloop-evaluator register --activate --model-dir "$HOME/rateloop-models/gliner25" --request examples/reply-request.json
+.venv/bin/rateloop-evaluator serve --bundle-id gliner25-multi-shadow-v1 --device mps
+```
+
+Replace `mps` with `cpu` on a machine without Apple GPU support. Use your actual workspace ID in both initialization and requests when connecting RateLoop. `init` writes a private local client credential to `~/.local/share/rateloop-evaluator/client.json`; do not paste it into logs or browser code. No training permission is created by initialization or AI opt-in.
+
+From a second terminal, run a synthetic request without printing the token:
+
+```sh
+.venv/bin/python - <<'PY'
+import json
+from pathlib import Path
+import httpx
+credentials = json.loads((Path.home()/'.local/share/rateloop-evaluator/client.json').read_text())
+request = json.loads(Path('examples/reply-request.json').read_text())
+with httpx.Client(trust_env=False) as client:
+    response = client.post('http://127.0.0.1:8765/v1/evaluate', json=request,
+        headers={'Authorization':'Bearer '+credentials['token']})
+    response.raise_for_status()
+    print(response.json())
+PY
+```
+
+The initial result contains typed labels and raw scores, with `outcome: uncertain` and `abstainReason: uncalibrated`. Template changes require a new registration and calibration scope. Missing scope, excessive length and unmet deadlines produce abstention; required evidence is never silently truncated. A request carries a stable case ID and optional conversation/source group ID, so related examples can stay in the same training split. Reuse its idempotency key only for the same case and input.
+
+## Connect your computer
+
+Install from this public repository using [the installation commands](../README.md#quick-start), then provision the pinned rating model once. In RateLoop, create a device pairing code. Use a fresh private state directory for each device/workspace connection:
+
+```sh
+.venv/bin/rateloop-evaluator --state-dir "$HOME/.local/share/rateloop-office" connect \
+  --model-dir "$HOME/rateloop-models/gliner25" --device mps
+.venv/bin/rateloop-evaluator --state-dir "$HOME/.local/share/rateloop-office" start
+```
+
+The connection command privately prompts for the short-lived code; never include it in shell arguments. `--token-stdin` is available for an explicit private pipe. The command registers the exact existing English/German approval and custom-text models and stores its scoped device credential with owner-only permissions. It grants no processing or training rights. Select this device for AI ratings in RateLoop after the worker starts. The worker opens no inbound port.
+
+For operation while you are logged in to your Mac, replace `start` with `install --load`. Keep the model, state directory and Python environment in place. This is a login service: a sleeping or powered-off Mac cannot accept work. Use `start --once` for a one-poll diagnostic. CPU and CUDA are explicit alternatives to `--device mps`.
+
+A missing response during the one-use claim has an unknown outcome. Revoke that device in RateLoop, create another pairing code, and use a new private state directory. The connector never silently retries the consumed code or prints the device credential.
+
+## Generate with your local Ollama model
+
+The same paired connector can generate text through an already installed local Ollama model. Select generation when creating the device in RateLoop; rating and generation permissions are independent. This first adapter has been exercised with Ollama 0.35.1 and Qwen3.5 4B Q4_K_M on an Apple GPU. It accepts the 0.35.x API family and pins the exact installed version; another runtime version or model update requires a new approved registration.
+
+Provision the model explicitly before pairing, with Ollama cloud features disabled on your local server:
+
+```sh
+OLLAMA_NO_CLOUD=1 ollama serve
+# In another terminal:
+ollama pull qwen3.5:4b
+.venv/bin/rateloop-evaluator --state-dir "$HOME/.local/share/rateloop-generation" connect \
+  --generation-model qwen3.5:4b
+.venv/bin/rateloop-evaluator --state-dir "$HOME/.local/share/rateloop-generation" start
+```
+
+Add `--model-dir "$HOME/rateloop-models/gliner25" --device mps` to pair both capabilities. `install --load` uses the same configuration on macOS. `--ollama-url` selects a loopback origin on this machine and is stored locally; website jobs cannot choose an endpoint. `--context-tokens` defaults to 8192 and is capped at 32768. Model downloads are never performed by the worker.
+
+The adapter binds the actual model-weight blob, the full manifest and template defaults, quantization, context size and exact runtime version. It checks that identity before and after inference. Its local render preflight requires Ollama's `_debug_render_only` response; it conservatively bounds the complete rendered UTF-8 bytes plus the output budget, then sends `truncate:false` and `shift:false`. An unsupported preflight, changed model, excess context, missing terminal response, tool call, or output limit becomes an explicit failure. There is no provider fallback. Reasoning output is disabled, tool execution is unavailable, and the worker never treats a partial answer as complete.
+
+The connector polls over HTTPS, renews each fenced job, and reports bounded partial output at most once per second. Final text is encrypted locally only while awaiting a completion acknowledgment, then removed. Prompts are not persisted by this generation worker. The cloud-connected RateLoop workspace still handles chat inputs and final outputs; running the model locally does not make that workspace fully offline.
+
+## Experimental local generative judge
+
+An existing Ollama 0.35.x model can provide advisory labels for the fixed English and
+German overall-approval questions. Provision the model separately and choose AI ratings
+when creating the device pairing code in RateLoop:
+
+```sh
+.venv/bin/rateloop-evaluator --state-dir "$HOME/Library/Application Support/RateLoop Local Judge" connect --judge-model qwen3.5:4b
+.venv/bin/rateloop-evaluator --state-dir "$HOME/Library/Application Support/RateLoop Local Judge" start
+```
+
+The pairing code is entered privately. Add `--generation-model qwen3.5:4b` to the same
+connect command only when that device was also authorized for answer generation.
+Selecting a model does not grant redistribution rights: inspect its own license.
+
+Judgments contain labels with no numeric confidence. They remain uncalibrated and
+cannot reduce required human review. This is an experimental adapter; successful local
+execution is not evidence of evaluation quality. Training inputs are not retained.
+The source installation and optional launchd setup are the supported beta path;
+this repository does not currently ship a signed, notarized Mac installer.
+
 ## Installation choices
 
 - **Mac:** native Python 3.12 and `.[model]`, with `--device mps`. Edit absolute paths in `deploy/ai.rateloop.evaluator.plist`, place it in the service user's LaunchAgents directory and load it using `launchctl bootstrap gui/UID PATH`. Native MPS inference and training were verified on the maintainer's M5 Max; the launchd template itself is an installation example, not a completed enterprise installation.
@@ -52,6 +142,16 @@ because the worker lease does not declare queue-entry time; measure it in the ow
 separate all-case, completed-only and stage latency. Warm-up and mocked operation counts establish no hosted speed claim.
 
 The signed model registry and evaluation gates do not replace authentication of reviewers, representative sampling, customer consent, host hardening or a customer acceptance exercise. Full offline human-review UI, federated aggregation, multimodal judgments and hosted shared training are subsequent products; no private data is transferred to implement them implicitly.
+
+## Custom text questions without training
+
+The pinned public GLiNER model can answer custom binary text questions in English or German without a dataset or training run. Build a canonical template with `custom_text_evaluation(language, prompt, positive_label, negative_label)`: one question (up to 500 UTF-16 code units), two distinct answer descriptions (up to 40 each), and a 512-token combined input budget. Input text, optional context, and evidence remain separate fields. The helper normalizes wording; the wire contract requires that exact normalized template.
+
+Optionally supply up to four labeled guiding examples through `examples=[{"text": "...", "labelId": "approved"}]`. They become part of the immutable question and its token budget; they do not train the model. See the [bounded-example workflow](operations.md#bounded-guiding-examples) before reusing calibration or importing a dataset.
+
+Register a **new** public-base bundle using `register --custom-text --activate --model-dir <local-model> --request <seed-request>`. Its signed `task_capability` and exported `taskCapability` use `rateloop.evaluator.custom-binary-text.v1`. Exported metadata includes the complete template. Every task still requires consent for its exact template commitment and model identity; a capability alone grants no processing or training rights. Changing the question or labels changes that commitment. The worker returns an advisory label and raw scores with `uncertain` / `uncalibrated`; no probability of correctness or automatic approval is asserted.
+
+Hosted configurations may add new capability bundles to the existing volume while preserving all existing bundle entries, workspace, worker, model path and agent identity. Add `"taskCapability":{"schemaVersion":"rateloop.evaluator.custom-binary-text.v1"}` to each new English/German bundle entry. Old registrations stay immutable and queued jobs keep their original identity. All registrations reuse the same verified local weights. Training-derived bundles stay bound to their exact rubric and never receive this general base-model capability.
 
 ## Bounded guiding examples
 
@@ -313,3 +413,9 @@ a qualified adapted model needs an explicitly provisioned compatible runtime and
 Supplied-material judgments require actual `input.evidence`. Custom wording never inherits built-in calibration.
 Calibrated probabilities remain advisory: the native service uses shadow mode, preserves human-review requirements,
 and grants no sending or other action permission. Raw native inputs are ephemeral and are not retained for learning.
+
+## Hardware and verification
+
+On an M5 Max with 128 GB unified memory, actual GLiNER inference, full fine-tuning, LoRA training, save/reload, and offline execution passed. A synthetic one-question local HTTP check measured about **20 ms warm p95** over 20 samples. This is not an accuracy result or service SLA. Model-only GLiNER warm p95 was roughly 9/30/103 ms for 1/5/20 short repeated questions. GLiClass's corresponding measurements were 12/16/45 ms. See [exact revisions, software versions and limits](verification.md).
+
+The compact model does not need 128 GB for inference; the measured process used only a few GB. A 64 GB Mac provides substantial room for this initial model and experiments, but batch size and sequence length still determine training memory. Training peak RAM, sustained concurrency, Linux/CUDA and customer hardware remain deployment measurements to perform. Mac Docker does not provide native MPS: use the native installation for Apple GPU acceleration.

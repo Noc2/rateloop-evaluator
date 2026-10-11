@@ -4,6 +4,50 @@ The evaluator works without a RateLoop account. The rating connector adds outbou
 
 RateLoop's evaluator connection supports **off, shadow and paused**. Separately, each website case selects **Human**, **AI** or **AI + human**. AI-only returns an advisory result without creating human review; AI + human withholds that result until the independent human answer freezes. Hosted receipts cannot automatically satisfy required human review, regardless of the evaluator's local deployment mode.
 
+## Register a model with RateLoop
+
+`register` creates a candidate by default. Training, registering, and exporting metadata do not switch the active model. Use `promote --mode shadow` after reviewing the candidate, or deliberately choose `register --activate` for the initial base model. Promotion changes the default; already queued jobs continue using their original activated bundle only while it remains configured and its exact consent is current. Revocation and expired evidence still block those jobs. Never-activated candidates cannot serve inference.
+
+Export the registered bundle's metadata:
+
+```sh
+.venv/bin/rateloop-evaluator export-registration --bundle-id gliner25-multi-shadow-v1 --request examples/reply-request.json --output /private/path/bundle-registration.json
+```
+
+In the updated RateLoop workspace's **Agents → Results** tab, open **Set up AI** (or **AI settings**), import this file and enable the evaluator. Use a workspace API key with evaluation and telemetry scopes. For website jobs, use `examples/approval-request-en.json` or `examples/approval-request-de.json`, containing the same overall approval question as the human review; replace placeholder workspace and bundle IDs before registration.
+
+The registration export now includes `scoreCapability` version `rateloop.evaluator-score-capability.v1` for
+`rateloop-evaluator/gliner2`, adapter version 1, with `mutually_exclusive_softmax` semantics. This identifies the
+adapter's complete raw class-score vector; it does not certify calibration or correctness. A compatible RateLoop
+application can display its normalized entropy as experimental score spread without another inference call. Signed
+receipts and result commitments are unchanged.
+
+Upgrade the application before importing this metadata. Existing server bundle registrations are immutable and keep
+their original capabilities: exporting new metadata does not upgrade an already registered bundle. For an unchanged
+public base model, register and select a new bundle identity with the same intended question and weights, then export
+and import that registration. Keep old bundles available for already queued jobs. For privately trained bundles,
+preserve the training lineage and consent scope through the normal managed bundle workflow; do not rename or edit
+a trained manifest to bypass identity checks. Historical results without the capability remain unmeasured. The
+website rollout is controlled separately by its server-side workspace pilot flag.
+
+Select the review option before submitting a case:
+
+| Choice | Result |
+| --- | --- |
+| Human review | Human review; no AI job or AI-processing permission required. |
+| Rating AI | AI rating as soon as the configured worker completes; no human review or human training label. |
+| AI + human | Both ratings, with the AI answer withheld until the independent human answer freezes. |
+
+AI choices require an authorized, registered model and a running worker. AI-only cases do not retain inputs for training, even when workspace learning is enabled. Use AI + human with separate learning consent to collect independent labels for improvement. Existing required human reviews remain in force.
+
+The outbound `worker` command pulls authorized website cases over HTTPS, runs the pinned local model, posts fenced advisory results and synchronizes independently frozen human judgments. No public Mac port is opened. The website can route permitted cases to its configured RateLoop-operated worker or the explicitly selected customer device; this is not a fully offline website. An always-on Linux CPU worker uses the same outbound protocol and shared English/German weights. [Hosted setup and readiness checks](operations.md#always-on-hosted-cpu-worker). Results and provenance return as metadata; private training examples and weights stay local. [Install and run the worker](operations.md#outbound-website-worker).
+
+AI processing and private learning are separate durable owner permissions with exact credential, model and template scopes. Execution leases last at most 15 minutes and renew while connected. Enabling learning later does not retain previously queued inputs. Withdrawal retires affected models; case-erasure tombstones delete their retained examples. Legacy grants keep their original finite expiry.
+
+The sections below explain configuration, durable receipt delivery, blind audit selection and importing human outcomes. The [TypeScript client](../clients/typescript/index.ts) calls your local service directly from a trusted server or agent. The [versioned interface](../contracts/INTERFACE.md) and JSON schemas define cross-language commitments. The RateLoop SDK carries the same result contract.
+
+Local AI inference does not make a cloud-connected RateLoop installation fully on-premises. Existing human-review submissions remain separately authorized and follow RateLoop's content policy. A complete customer-hosted human-review platform is outside this evaluator repository.
+
 ## Configuration
 
 Create `RateLoopConnector` with:

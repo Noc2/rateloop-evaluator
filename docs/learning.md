@@ -276,3 +276,34 @@ operator. No qualifying independent cohort has been produced by the public diagn
 `revoke --grant-id GRANT` invalidates dependent snapshots and retires managed derived models. `delete-case --case-id CASE` removes controlled learning records and retires affected lineage. Deployment rechecks grants and bundle validity before and after inference, including on cached requests. `rollback --template-commitment DIGEST --language en` restores only a still-authorized, unexpired prior deployment.
 
 Stop workers before restoring an encrypted backup. Restore state, encryption and signing keys, and the exact model files together; recheck permissions and current upstream grants before serving. Never reactivate stale grants from a backup. Keep retirement and backup expiration in the customer's retention process; already copied weights require controlled deletion and replacement training.
+
+## Public datasets and local diagnostics
+
+Prepare a **local, explicitly obtained training-split JSONL export** with `prepare-public-dataset` before importing it in RateLoop. Supported adapters cover [HelpSteer2](https://huggingface.co/datasets/nvidia/HelpSteer2), [HelpSteer3 Principle](https://huggingface.co/datasets/nvidia/HelpSteer3#principle), and [OpenPII 1M](https://huggingface.co/datasets/ai4privacy/pii-masking-openpii-1m). Their published dataset licenses are CC-BY-4.0; retain attribution and review the selected material. Other similarly named PII datasets can have different terms.
+
+```sh
+rateloop-evaluator prepare-public-dataset \
+  --dataset helpsteer2 --file /private/path/helpsteer2-sample.jsonl \
+  --revision <full-source-commit-sha> --source-sha256 <local-file-sha256> \
+  --source-split train --language en --score correctness \
+  --positive-min 3 --negative-max 1 --output-dir /private/path/prepared
+```
+
+The new private directory contains `examples.jsonl`, `template.json`, `manifest.json` and `excluded.jsonl`. Use the generated question and labels when importing `examples.jsonl` under **AI settings → Improve AI**. Keep the manifest and exclusions with the experiment. Select the manifest's `import_provenance` (`owner`, `ai_assisted`, or `synthetic`); external human annotations remain imported labels, not independent blind RateLoop reviews. The command does not download data, grant permissions, train, or activate a model.
+
+- **HelpSteer2:** choose helpfulness, correctness or coherence and explicit score thresholds. Intermediate scores are preserved in exclusions for separate review, never silently relabeled.
+- **HelpSteer3 Principle:** use `--dataset helpsteer3-principle --principle '<exact source principle>'` instead of score options. One criterion and one language per export; labels are AI-assisted.
+- **OpenPII 1M:** use `--dataset openpii1m --entity EMAIL` instead of score options; English and German are supported. Positives and negatives follow the selected entity's validated annotations. No artificial clean negatives are generated; absence of one entity is not a privacy or legal-compliance verdict.
+
+The converter accepts at most 64 MiB / 50,000 input rows and emits at most 2 MiB / 2,000 rows, selecting complete source groups deterministically. It refuses upstream validation/test splits so they cannot silently enter training. The existing snapshot flow freezes train/calibration/test assignments, keeping shared prompts, masked templates and formatting duplicates together. Review semantic relatives that source identifiers cannot detect. Exact model token limits still apply; no content is shortened automatically. File hashes identify the export; they do not prove who published it.
+
+Run the small bilingual regression suite against an already provisioned local model:
+
+```sh
+rateloop-evaluator diagnose --model-dir /absolute/local/model --device mps \
+  --output /private/path/diagnostics.json
+```
+
+Its 24 synthetic cases cover criterion compliance, evidence support and email presence, including negation and missing evidence. Reports include per-task/language errors, per-label recall, balanced agreement and prediction latency. These are execution/regression measurements, not representative accuracy, calibrated confidence or deployment qualification. Compare candidates on authorized, frozen held-out data with `compare`; imported labels cannot satisfy independent-human qualification gates. Training and activation remain separate explicit actions.
+
+The [27 September comparison](verification.md#bilingual-diagnostics-and-guiding-examples--27-september-2026) found 11/24 correct labels for the current base, 10/24 for the pinned Decide challenger, and 11/24 for the base with two guiding examples. Groundedness and email-presence cases exposed substantial errors, including confident errors. The hosted model remains unchanged; guidance and a newer checkpoint are not demonstrated general improvements. Decide is available only for [explicit local comparison](operations.md#compare-the-pinned-decide-challenger).
