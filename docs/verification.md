@@ -799,3 +799,49 @@ The inspected Mac had an Apple Development identity but no Developer ID Applicat
 or Installer identity; no signed, notarized installer was produced. A sleeping Mac
 is not an always-on service. Model licensing remains specific to the operator's
 selected weights; the Apache-2.0 evaluator license does not grant model redistribution.
+
+
+## Evaluator research corrections and frozen coverage — 11 October 2026
+
+Implementation `acd3bf1` includes the shared inner-split readiness rule, separate encoder/head learning rates,
+whole-group overflow handling, independent calibration fitting and explicit calibration-only lineage,
+positive-slope binary Platt calibration, v2 semantic label mapping, paired diagnostics and the coverage harness.
+The complete Python suite passed **806 tests**, with **six explicit optional checks skipped**. Loopback health-server
+tests required running outside the filesystem/network sandbox; no external network data or customer inputs were used.
+Replay tombstone privacy follow-up `9d43bc1` additionally passed its 25 feedback tests. Existing final-test activation
+and native qualification gates remain in force; no test here establishes a quality gain or activates a model.
+
+The unchanged HelpSteer2 helpfulness final cohort frozen on 5 October was re-tokenized on CPU. The old observations
+had no token-count fields, so this diagnostic used the same complete rubric and the original v1 score adapter against
+the already-provisioned pinned GLiNER2.5 checkpoint. It did not execute predictions, truncate text, download artifacts,
+write old reports, fit a threshold or alter any deployed template. NVIDIA HelpSteer2 remains external English human
+reference data under CC-BY-4.0, revision `990b2711a36180dd19d9c94b8627844866f8982a`; it does not supply authenticated
+RateLoop blind-human deployment evidence. The fixed cohort has 125 approved and 23 rejected references.
+
+| Token budget | Within budget / all 148 groups | Coverage | Rejected references within budget |
+| --- | --- | --- | --- |
+| 512 (current template) | 43 / 148 | 29.1% | 6 / 23 |
+| 1,024 | 121 / 148 | 81.8% | 19 / 23 |
+| 2,048 | 148 / 148 | 100% | 23 / 23 |
+| 4,096 | 148 / 148 | 100% | 23 / 23 |
+| 8,192 (outside architecture) | 148 / 148 | 100% descriptive only | 23 / 23 |
+
+The loaded architecture limit is 4,096 tokens. This reproduces the original 105/148 overflow count and identifies a
+2,048-token experiment as a sufficient next context-budget test on this cohort. It does **not** show that predictions
+beyond 512 tokens are accurate, calibrated, affordable or suitable for a production cap increase. Neither this English
+cohort nor token coverage justifies replacing the model, a new multilingual claim or a deployment confidence claim.
+
+Reproduction uses `scripts/diagnose_coverage.py` and the existing frozen manifest, rows and original operating point.
+The sanitized report excludes raw prompts, answers, weights and credentials. Its bindings are:
+
+- Benchmark commitment: `32d1c5618a74b297f0106a471ad0db0c4aaff1b3b3c491081a5fc0ed35369d05`.
+- Original operating point: `f209fbea052ba05355c9a6c53f9dfb010553faac4682d785205d39aefa656c5d`.
+- Model weights SHA-256: `c1ff4ec0bc00031c15530b8f3c33d3677f27949e6a0cb52e1247a6224b6c5395`.
+- Tokenizer commitment: `931fc5c4bb25b54a7299f63de37557254e38ca007fa42b5a1ac23fc27cf5216c`.
+- Ordered final token-count commitment: `19d04f7702617c0e3d4166f0777d937a69eaa69edab51e66bbf0e4082a145bc3`.
+- Sanitized report SHA-256: `15f15e2e879ce3dad5dbdfcd70a52a343557759c78a103cf20a17065c8258005`.
+
+MPS was unavailable to the sandboxed test process. CPU checks separately exercised the semantic adapter on synthetic
+text and a real one-step LoRA update, merged save/reload, portable registration, synthetic calibration-support
+rejection and permission revocation: **three tests passed in 31.57 seconds** at `9d43bc1`. Those are mechanical software
+checks, not measurements of model quality.
