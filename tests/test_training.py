@@ -109,3 +109,23 @@ def test_optimizer_receives_distinct_encoder_and_head_rates(tmp_path, monkeypatc
     training.make_trainer(SimpleNamespace(processor=object()), tmp_path, TrainOptions())
     assert captured['encoder_lr'] == 1e-5
     assert captured['task_lr'] == 5e-4
+
+
+def test_overflow_filter_excludes_whole_groups_before_worker_validation_and_optimizer():
+    from copy import deepcopy
+    from test_quality import snapshot
+    from rateloop_evaluator.quality import validation_partition
+    from rateloop_evaluator.training import supported_training_groups
+    source = snapshot()
+    for row in source['train']: row['template']['maxTokens'] = 512
+    repeated = deepcopy(source['train'][0]); repeated['input']['text'] = 'overlong'
+    source['train'].append(repeated)
+    class Backend:
+        def count_tokens(self, text, questions): return 513 if 'overlong' in text else 512
+    filtered, excluded = supported_training_groups(source['train'], Backend(), 4096)
+    assert excluded == {repeated['group_id']}
+    assert not any(row['group_id'] in excluded for row in filtered)
+    train, validation = validation_partition({**source, 'train': filtered})
+    assert all('overlong' not in record['input'] for record in training_records(train+validation))
+    with pytest.raises(ValueError, match='Insufficient'):
+        supported_training_groups(source['train'], Backend(), 511)

@@ -332,6 +332,24 @@ def preserve_tokenizer_assets(source_dir: Path, artifact_dir: Path, source_manif
         shutil.copyfile(source_files[name], target)
 
 
+def supported_training_groups(rows: list[dict], backend: Any, token_limit: int, *, check=lambda: None):
+    """Exclude whole unsupported source families before freezing validation.
+
+    The original authorized snapshot and its held-out rows remain immutable.
+    Filtering never changes the template cap or invokes a truncated optimizer.
+    """
+    excluded = set()
+    for row in rows:
+        check()
+        count = backend.count_tokens(render_input(row['input']), row['template']['questions'])
+        if count > min(row['template']['maxTokens'], token_limit):
+            excluded.add(row['group_id'])
+    eligible = [row for row in rows if row['group_id'] not in excluded]
+    if not eligible:
+        raise ValueError('Insufficient training data within the template and model token limits')
+    return eligible, excluded
+
+
 @serialized_training
 def train_snapshot(store: Any, snapshot_id: str, workspace_id: str,
                    model_dir: str | Path, output_dir: str | Path, *, bundle_id: str,
@@ -345,6 +363,17 @@ def train_snapshot(store: Any, snapshot_id: str, workspace_id: str,
     options = options or TrainOptions()
     options.validate()
     snapshot = store.load_snapshot(snapshot_id, workspace_id)
+    output_dir = Path(output_dir).expanduser().resolve()
+    if output_dir.exists() and any(output_dir.iterdir()):
+        raise ValueError("Training output directory must be empty")
+    offline_environment()
+    assert_public_training_base(validate_local_model(model_dir))
+    backend = GLiNERBackend(model_dir, options.device)
+    model = backend.load()
+    original_tokenizer = tokenizer_semantics(model)
+    eligible, overflow_groups = supported_training_groups(snapshot["train"], backend,
+        model_token_limit(model), check=lambda: store.load_snapshot(snapshot_id, workspace_id))
+    snapshot = {**snapshot, "train": eligible}
     validation_examples = []
     examples = snapshot["train"]
     if options.validation_fraction:
@@ -354,19 +383,6 @@ def train_snapshot(store: Any, snapshot_id: str, workspace_id: str,
     optimizer_examples = balanced_optimizer_examples(examples) if validation_examples else examples
     records = training_records(optimizer_examples)
     validation_records = training_records(validation_examples) if validation_examples else None
-    output_dir = Path(output_dir).expanduser().resolve()
-    if output_dir.exists() and any(output_dir.iterdir()):
-        raise ValueError("Training output directory must be empty")
-    offline_environment()
-    assert_public_training_base(validate_local_model(model_dir))
-    backend = GLiNERBackend(model_dir, options.device)
-    model = backend.load()
-    original_tokenizer = tokenizer_semantics(model)
-    for example, record in zip(optimizer_examples + validation_examples, records + (validation_records or [])):
-        count = backend.count_tokens(record["input"], example["template"]["questions"])
-        limit = min(example["template"]["maxTokens"], model_token_limit(model))
-        if count > limit:
-            raise ValueError("Training example exceeds the template or model token limit")
     store.load_snapshot(snapshot_id, workspace_id)
     output_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
     trainer = make_trainer(model, output_dir / "checkpoints", options, validation_examples)
@@ -416,6 +432,7 @@ def train_snapshot(store: Any, snapshot_id: str, workspace_id: str,
         "bundleId": bundle_id, "workspaceId": workspace_id, "snapshotId": snapshot_id,
         "trainedAt": datetime.now(timezone.utc).isoformat(), "options": asdict(options),
         "optimizerSteps": trainer.global_step, "trainExamples": len(examples),
+        "overflowExcludedGroupCount": len(overflow_groups),
         "optimizerRowsPerEpoch": len(optimizer_examples),
         "optimizerSampling": "balanced_source_groups" if validation_examples else "as_supplied",
         "classificationSchemaPolicy": "immutable-inference-schema-v1",

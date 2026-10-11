@@ -107,7 +107,8 @@ def compare_snapshot(store: LearningStore, snapshot_id: str, workspace_id: str,
         try:
             identity = _verified_prediction_identity(backend)
             cached = prediction_cache.get(identity) if identity else None
-            recorded_scores = []
+            recorded_scores, recorded_overflows = [], []
+            overflow_count = 0
             question_stats = {q['id']: {'labels': [label['id'] for label in q['labels']],
                 'correct': 0, 'count': 0, 'abstentions': 0, 'false_approvals': 0, 'false_rejections': 0,
                 'expected_label_counts': {label['id']: 0 for label in q['labels']},
@@ -122,8 +123,9 @@ def compare_snapshot(store: LearningStore, snapshot_id: str, workspace_id: str,
                 prepared = None if cached else prepare_inference(backend, text, questions)
                 if prepared and identity and _prediction_identity(backend) != identity:
                     raise ValueError('Checkpoint identity changed while loading comparison inputs')
-                if prepared and prepared.token_count > row['template']['maxTokens']:
-                    raise ValueError('Comparison input exceeds the template token limit')
+                overflow = cached['overflows'][index] if cached else prepared.token_count > min(
+                    row['template']['maxTokens'], prepared.token_limit or row['template']['maxTokens'])
+                overflow_count += int(overflow)
                 training = (getattr(backend, 'manifest', None) or {}).get('training') or {}
                 selection = training.get('selection') or {}
                 if held_out & set(training.get('trainingGroupIds', []) + selection.get('validationGroupIds', [])):
@@ -132,11 +134,17 @@ def compare_snapshot(store: LearningStore, snapshot_id: str, workspace_id: str,
                     raise ValueError('A compared model was trained on the held-out examples')
                 if cached:
                     scores = deepcopy(cached['scores'][index])
+                elif overflow:
+                    # An unsupported final input is an abstention on the original
+                    # denominator, never a dropped row or a truncated prediction.
+                    scores = {q['id']: {label['id']: 1/len(q['labels']) for label in q['labels']} for q in questions}
                 else:
                     started = time.perf_counter()
                     scores = prepared.predict()
                     durations.append((time.perf_counter()-started)*1000)
+                if not cached:
                     recorded_scores.append(deepcopy(scores))
+                    recorded_overflows.append(overflow)
                 if set(scores) != set(question_stats):
                     raise ValueError('Model scores do not cover the exact criteria')
                 all_correct = True
@@ -178,9 +186,11 @@ def compare_snapshot(store: LearningStore, snapshot_id: str, workspace_id: str,
                              for qid, stats in question_stats.items()},
                 'mean_prediction_ms': sum(durations)/len(durations) if durations else None,
                 'prediction_count': len(durations),
+                'overflow_group_count': overflow_count,
+                'input_coverage': (len(rows)-overflow_count)/len(rows),
                 'prediction_reused_from': cached['model_id'] if cached else None}
             if identity and cached is None:
-                prediction_cache[identity] = {'model_id': model_id, 'scores': recorded_scores}
+                prediction_cache[identity] = {'model_id': model_id, 'scores': recorded_scores, 'overflows': recorded_overflows}
         finally:
             # Comparing candidates must not retain multiple full checkpoints.
             if hasattr(backend, "unload"):

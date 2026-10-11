@@ -250,6 +250,7 @@ class PreparedInference:
     token_count: int
     _predict: Any
     stages_ms: dict[str, float] = field(default_factory=dict)
+    token_limit: int | None = None
 
     def predict(self, **kwargs):
         started = time.perf_counter()
@@ -350,7 +351,7 @@ class GLiNERBackend:
                 result = model.format_results(results[0], True, metadata[0].get("relation_order", []),
                                               metadata[0].get("classification_tasks", []))
             return validate_scores(result, questions)
-        return PreparedInference(token_count, predict)
+        return PreparedInference(token_count, predict, token_limit=model_token_limit(model))
 
     def count_tokens(self, text: str, questions: list[dict[str, Any]]) -> int:
         return self.prepare(text, questions).token_count

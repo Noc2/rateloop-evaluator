@@ -229,3 +229,39 @@ def test_prediction_reuse_identity_is_bound_to_loaded_checkpoint_not_just_disk(s
     monkeypatch.setattr(GLiNERBackend, 'prepare', changed_during_prepare)
     with pytest.raises(ValueError, match='identity changed'):
         compare_snapshot(store, snapshot['id'], 'workspace-a', {'baseline': backend})
+
+
+@pytest.mark.parametrize('all_overflow', [False, True])
+def test_overflow_preserves_final_denominator_and_counts_as_abstention(store, all_overflow):
+    _, snapshot = prepared(store)
+    from rateloop_evaluator.backends import render_input
+    first = render_input(sorted(snapshot['test'], key=lambda row: row['evaluation_id'])[0]['input'])
+    class Overflow(Backend):
+        def count_tokens(self, text, questions): return 100000 if all_overflow or text == first else 30
+        def predict(self, text, questions):
+            assert not all_overflow and text != first
+            return super().predict(text, questions)
+    result = compare_snapshot(store, snapshot['id'], 'workspace-a', {'base': Overflow(), 'candidate': Overflow()})
+    count = result['test_group_count']
+    for metrics in result['models'].values():
+        overflow = count if all_overflow else 1
+        assert metrics['agreement']['sample_count'] == count
+        assert metrics['overflow_group_count'] == overflow
+        assert metrics['input_coverage'] == (count-overflow)/count
+        criterion = metrics['criteria']['faithful']
+        assert criterion['count'] == count and criterion['abstentions'] == overflow
+        assert sum(label['support'] for label in criterion['per_label'].values()) == count
+        if all_overflow:
+            assert metrics['agreement']['estimate'] == 0
+            assert criterion['false_approvals'] == 0
+            assert criterion['label_coverage'] == 0
+
+
+def test_model_context_overflow_also_abstains_without_calling_predict(store):
+    from rateloop_evaluator.backends import PreparedInference
+    _, snapshot = prepared(store)
+    class Limited(Backend):
+        def prepare(self, *_):
+            return PreparedInference(40, lambda: pytest.fail('Overflow must not infer'), token_limit=32)
+    result = compare_snapshot(store, snapshot['id'], 'workspace-a', {'limited': Limited()})
+    assert result['models']['limited']['input_coverage'] == 0
