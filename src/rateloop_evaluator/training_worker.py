@@ -20,6 +20,7 @@ import uuid
 from . import cli
 from .backends import GLiNERBackend, MODEL_ID, MODEL_REVISION, MANIFEST_NAME, validate_local_model
 from .comparison import compare_snapshot
+from .calibration_snapshot import fit_snapshot_calibrations, CalibratedComparisonBackend
 from .connector import ConnectorRejected, ConnectorUnavailable, _hash, _opaque, _timestamp
 from .datasets import import_dataset, erase_dataset_version, MAX_BYTES, MAX_ROWS
 from .execution import model_execution, ExecutionBusy
@@ -421,8 +422,16 @@ class TrainingWorker:
                 request=EvaluationRequest(workspaceId=self.connector.workspace_id,caseId="training-registration",idempotencyKey="training-registration",
                     modelBundleId=candidate_id,template=template,input={"text":"Synthetic metadata export"})
                 request_file=directory/"registration-request.json"; cli.write_private(request_file,request.model_dump())
+                calibration_path = None
+                if content["dataset"]["provenance"] == "independent_human":
+                    calibration_artifacts, coverage = fit_snapshot_calibrations(checked_store, snapshot["id"],
+                        self.connector.workspace_id, GLiNERBackend(artifact, self.device), bundle_id=candidate_id,
+                        weights_sha256=validate_local_model(artifact)["files"]["model.safetensors"])
+                    calibration_path = directory / "calibrations.json"
+                    cli.write_private(calibration_path, calibration_artifacts)
+                    result["calibrationCoverage"] = coverage
                 cli.run(Namespace(command="register",state_dir=str(self.root),model_dir=str(artifact),request=str(request_file),
-                    snapshot_id=snapshot["id"],calibrations=None,real_data=content["dataset"]["provenance"] == "independent_human",selective_policy=None,custom_text=False,activate=False))
+                    snapshot_id=snapshot["id"],calibrations=str(calibration_path) if calibration_path else None,real_data=content["dataset"]["provenance"] == "independent_human",selective_policy=None,custom_text=False,activate=False))
             candidate=self.registry.get(candidate_id,self.connector.workspace_id)
             if candidate["manifest"].get("snapshot_id")!=snapshot["id"] or candidate["artifact_root"]!=str(artifact.resolve()):
                 raise ValueError("Registered candidate differs from this exact training artifact")
@@ -438,7 +447,9 @@ class TrainingWorker:
             candidate=self.registry.get(candidate_id,self.connector.workspace_id)
             if candidate["manifest"]["template_commitments"]!=[job["templateCommitment"]]:
                 raise ValueError("Comparison candidate belongs to another exact task")
-            models["candidate"]=GLiNERBackend(candidate["artifact_root"],self.device)
+            candidate_backend=GLiNERBackend(candidate["artifact_root"],self.device)
+            models["candidate"]=(CalibratedComparisonBackend(candidate_backend,candidate["manifest"])
+                if candidate["manifest"]["calibrations"] else candidate_backend)
         if content["dataset"]["provenance"] == "independent_human":
             expected_incumbent=content.get("comparisonModelBundleId")
             if not isinstance(expected_incumbent,str) or not expected_incumbent:
@@ -448,7 +459,9 @@ class TrainingWorker:
                 if active["bundle_id"] != expected_incumbent:
                     raise ValueError("The incumbent changed after feedback was frozen")
                 incumbent=self.registry.get(active["bundle_id"],self.connector.workspace_id)
-                models["incumbent"]=GLiNERBackend(incumbent["artifact_root"],self.device)
+                incumbent_backend=GLiNERBackend(incumbent["artifact_root"],self.device)
+                models["incumbent"]=(CalibratedComparisonBackend(incumbent_backend,incumbent["manifest"])
+                    if incumbent["manifest"]["calibrations"] else incumbent_backend)
             except KeyError:
                 if expected_incumbent != job["modelBundleId"]:
                     raise ValueError("The frozen incumbent is unavailable") from None

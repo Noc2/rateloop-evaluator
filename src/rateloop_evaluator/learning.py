@@ -570,7 +570,9 @@ class LearningStore:
             self._validate_snapshot(state, snapshot, workspace_id, time.time() if now is None else now)
             return deepcopy(snapshot)
 
-    def register_model_lineage(self, bundle_id: str, snapshot_id: str, workspace_id: str, *, now: float | None = None) -> None:
+    def register_model_lineage(self, bundle_id: str, snapshot_id: str, workspace_id: str, *, now: float | None = None, adaptation_kind: str = "training") -> None:
+        if adaptation_kind not in ("training", "calibration_only"):
+            raise ValueError("Unsupported adaptation lineage")
         current = time.time() if now is None else now
         with self.transaction() as state:
             snapshot = state["snapshots"].get(snapshot_id)
@@ -580,7 +582,7 @@ class LearningStore:
             if bundle_id in state["lineage"]:
                 raise ValueError("Bundle lineage is immutable")
             state["lineage"][bundle_id] = {"workspace_id": workspace_id, "snapshot_id": snapshot_id,
-                                           "registered_at": current, "retired_at": None}
+                                           "registered_at": current, "retired_at": None, "adaptation_kind": adaptation_kind}
 
     @staticmethod
     def _validate_lineage(state: dict, bundle_id: str, workspace_id: str, now: float) -> None:

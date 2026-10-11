@@ -96,20 +96,18 @@ def test_real_train_optimizer_save_reload_and_revocation(tmp_path, monkeypatch, 
             assert code == expected, output.err
             return output.err if expected else json.loads(output.out)
         calibration_path = tmp_path / "calibrations.json"
-        command("calibrate", "--snapshot-id", snapshot["id"], "--model-dir", result["modelDir"],
+        rejected = command("calibrate", "--snapshot-id", snapshot["id"], "--model-dir", result["modelDir"],
                 "--bundle-id", "smoke-lora", "--output", calibration_path,
-                "--device", os.environ.get("RATELOOP_TEST_DEVICE", "cpu"))
-        calibrations = json.loads(calibration_path.read_text())
-        assert all(item["model_weights_sha256"] == result["manifest"]["files"]["model.safetensors"]
-                   for item in calibrations)
-        assert set(calibrations[0]["example_ids"]) == {row["group_id"] for row in snapshot["calibration"]}
+                "--device", os.environ.get("RATELOOP_TEST_DEVICE", "cpu"), expected=1)
+        assert "Insufficient calibration" in rejected
+        assert not calibration_path.exists(), "A six-row smoke fixture cannot establish calibration support"
         request_path = tmp_path / "request.json"
         cli.write_private(request_path, request.model_copy(update={"modelBundleId": "smoke-lora"}).model_dump())
         policy_path = tmp_path / "selective-policy.json"
         cli.write_private(policy_path, {"threshold": .95, "max_false_approval_rate": .01,
                                         "minimum_coverage": .3, "confidence": .95})
         registered = command("register", "--activate", "--model-dir", result["modelDir"], "--request", request_path,
-            "--snapshot-id", snapshot["id"], "--calibrations", calibration_path, "--selective-policy", policy_path)
+            "--snapshot-id", snapshot["id"], "--selective-policy", policy_path)
         assert registered["mode"] == "shadow"
         registration_path = tmp_path / "website-registration.json"
         command("export-registration", "--bundle-id", "smoke-lora", "--request", request_path,

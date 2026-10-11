@@ -152,10 +152,12 @@ class BundleRegistry:
                 raise ValueError("Bundle IDs are immutable")
             if manifest.get("snapshot_id"):
                 LearningStore._validate_lineage(state, manifest["id"], workspace_id, current)
+                if state["lineage"][manifest["id"]].get("adaptation_kind", "training") != manifest.get("adaptation_kind", "training"):
+                    raise ValueError("Bundle adaptation kind does not match its authorized lineage")
                 if state["lineage"][manifest["id"]]["snapshot_id"] != manifest["snapshot_id"]:
                     raise ValueError("Bundle snapshot does not match its registered lineage")
             elif manifest["calibrations"]:
-                raise ValueError("Calibrated bundles require training snapshot lineage")
+                raise ValueError("Calibrated bundles require authorized learning snapshot lineage")
             state["bundles"][manifest["id"]] = {"envelope": envelope, "artifact_root": str(Path(artifact_root).resolve())}
         self._verified_files[manifest["id"]] = verified_files
         return deepcopy(envelope)

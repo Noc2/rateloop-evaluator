@@ -147,6 +147,8 @@ def test_independent_feedback_cycle_compares_frozen_incumbent_and_erases_withdra
     assert result["comparison"]["incumbent_model_bundle_id"]=="base"
     assert set(result["comparison"]["models"])=={"baseline","candidate","incumbent","reference"}
     assert result["signedManifest"]["manifest"]["synthetic"] is False
+    assert len(result["signedManifest"]["manifest"]["calibrations"]) == 1
+    assert result["calibrationCoverage"]["fitted_group_count"] == 30
     assert not changed, "Training never activates a candidate"
     assert "Independent example" not in json.dumps(result)
     behavior["permission"]=False

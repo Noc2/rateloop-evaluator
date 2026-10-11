@@ -358,30 +358,20 @@ def run(args):
         return {"modelDir":report["modelDir"],"optimizerSteps":report["training"]["optimizerSteps"],"qualityClaim":False}
     if args.command == "calibrate":
         from .backends import GLiNERBackend, validate_local_model
-        from .calibration import fit_temperature
-        snapshot = store.load_snapshot(args.snapshot_id,workspace)
+        from .calibration_snapshot import fit_snapshot_calibrations
+        from .training import assert_public_training_base
         model_files = validate_local_model(args.model_dir)
-        if model_files.get("training",{}).get("bundleId") != args.bundle_id or model_files.get("training",{}).get("snapshotId") != args.snapshot_id or model_files.get("training",{}).get("workspaceId") != workspace:
+        training = model_files.get("training")
+        if training and (training.get("bundleId"), training.get("snapshotId"), training.get("workspaceId")) != (args.bundle_id, args.snapshot_id, workspace):
             raise ValueError("Calibration requires the matching trained bundle and snapshot")
-        representatives = {}
-        for row in sorted(snapshot["calibration"],key=lambda r:r["evaluation_id"]): representatives.setdefault(row["group_id"],row)
-        rows = list(representatives.values())
-        if not rows: raise ValueError("Calibration groups are required")
-        if any(not is_independent_reference(row) for row in snapshot["calibration"]):
-            raise PermissionError("Calibration requires independently collected blind human references")
-        validate_reference_demonstration_isolation(snapshot["calibration"])
-        backend = GLiNERBackend(args.model_dir,args.device)
-        predictions = []
-        for row in rows:
-            text = CaseInput.model_validate(row["input"]).render()
-            if backend.count_tokens(text,row["template"]["questions"]) > row["template"]["maxTokens"]:
-                raise ValueError("Calibration input exceeds its template token limit")
-            predictions.append(backend.predict(text,row["template"]["questions"]))
-        artifacts = [fit_temperature([p[q["id"]] for p in predictions],[r["labels"][q["id"]] for r in rows],model_bundle_id=args.bundle_id,
-            template_commitment=rows[0]["template_commitment"],question_id=q["id"],language=rows[0]["template"]["language"],example_ids=[r["group_id"] for r in rows],model_weights_sha256=model_files["files"]["model.safetensors"]) for q in rows[0]["template"]["questions"]]
-        store.load_snapshot(args.snapshot_id,workspace)
-        write_private(args.output,artifacts)
-        return {"calibrations":str(Path(args.output).resolve()),"groups":len(rows),"qualityClaim":False}
+        if not training: assert_public_training_base(model_files)
+        artifacts, coverage = fit_snapshot_calibrations(store, args.snapshot_id, workspace,
+            GLiNERBackend(args.model_dir, args.device), bundle_id=args.bundle_id,
+            weights_sha256=model_files["files"]["model.safetensors"])
+        if not training:
+            store.register_model_lineage(args.bundle_id, args.snapshot_id, workspace, adaptation_kind="calibration_only")
+        write_private(args.output, artifacts)
+        return {"calibrations": str(Path(args.output).resolve()), **coverage, "qualityClaim": False}
     if args.command == "score-test":
         from .backends import GLiNERBackend
         if not 0 < args.valid_hours <= 30*24: raise ValueError("Evidence validity must be within 30 days")
@@ -428,6 +418,7 @@ def run(args):
             from .templates import CUSTOM_TEXT_CAPABILITY
             manifest.update(task_capability=dict(CUSTOM_TEXT_CAPABILITY),template=req.template.model_dump())
         if args.snapshot_id: manifest["snapshot_id"] = args.snapshot_id
+        if args.calibrations and not training: manifest["adaptation_kind"] = "calibration_only"
         if args.selective_policy: manifest["selective_policy"] = read_json(args.selective_policy)
         if getattr(args,"native_scope",None): manifest["native_scope"] = read_json(args.native_scope)
         registry.register(manifest,workspace,args.model_dir)
