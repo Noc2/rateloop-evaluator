@@ -13,6 +13,12 @@ from .comparison import _interval, label_metrics
 from .learning import _digest, _source_aliases
 
 
+def validation_role(group: str) -> str:
+    """Portable exact 20% split shared with feedback readiness before queueing."""
+    digest = int(hashlib.sha256(('rateloop.validation.v1:' + group).encode()).hexdigest(), 16)
+    return 'validation' if digest * 5 < 2**256 else 'train'
+
+
 def validation_partition(snapshot: dict, *, fraction: float = .2,
                          minimum_per_label: int = 5, assignments: dict | None = None) -> tuple[list[dict], list[dict]]:
     """Use a fixed hash assignment, independent of optimizer seeds and row order.
@@ -43,8 +49,7 @@ def validation_partition(snapshot: dict, *, fraction: float = .2,
         known = {assigned[alias] for alias in aliases if alias in assigned}
         if len(known) > 1 or known - {'train', 'validation'}:
             raise ValueError('A source family bridges frozen optimizer and validation groups')
-        value = int(hashlib.sha256(('rateloop.validation.v1:' + group).encode()).hexdigest(), 16) / 2**256
-        role = next(iter(known)) if known else ('validation' if value < fraction else 'train')
+        role = next(iter(known)) if known else validation_role(group)
         partitions[role].extend(rows)
         assigned.update({alias: role for alias in aliases})
     for rows in partitions.values():

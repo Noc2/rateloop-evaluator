@@ -132,3 +132,13 @@ def test_validation_gate_rejects_accuracy_illusion_and_class_regressions():
     improved = report(['yes']*8+['yes', 'no'])
     assert validation_improved(base, improved) is True
     assert validation_improved(improved, base) is False
+
+
+def test_validation_roles_match_cross_runtime_readiness_vectors():
+    import json
+    from pathlib import Path
+    from rateloop_evaluator.quality import validation_role
+    vectors = json.loads((Path(__file__).parent / 'fixtures/validation-roles.json').read_text())
+    assert {row['role'] for row in vectors} == {'train', 'validation'}
+    for vector in vectors:
+        assert validation_role(vector['groupId']) == vector['role']

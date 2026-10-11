@@ -1,0 +1,174 @@
+[
+  {
+    "groupId": "source-0",
+    "role": "validation"
+  },
+  {
+    "groupId": "source-1",
+    "role": "train"
+  },
+  {
+    "groupId": "source-2",
+    "role": "train"
+  },
+  {
+    "groupId": "source-3",
+    "role": "train"
+  },
+  {
+    "groupId": "source-4",
+    "role": "train"
+  },
+  {
+    "groupId": "source-5",
+    "role": "train"
+  },
+  {
+    "groupId": "source-6",
+    "role": "train"
+  },
+  {
+    "groupId": "source-7",
+    "role": "train"
+  },
+  {
+    "groupId": "source-8",
+    "role": "train"
+  },
+  {
+    "groupId": "source-9",
+    "role": "train"
+  },
+  {
+    "groupId": "source-10",
+    "role": "train"
+  },
+  {
+    "groupId": "source-11",
+    "role": "train"
+  },
+  {
+    "groupId": "source-12",
+    "role": "train"
+  },
+  {
+    "groupId": "source-13",
+    "role": "train"
+  },
+  {
+    "groupId": "source-14",
+    "role": "train"
+  },
+  {
+    "groupId": "source-15",
+    "role": "validation"
+  },
+  {
+    "groupId": "source-16",
+    "role": "train"
+  },
+  {
+    "groupId": "source-17",
+    "role": "train"
+  },
+  {
+    "groupId": "source-18",
+    "role": "train"
+  },
+  {
+    "groupId": "source-19",
+    "role": "train"
+  },
+  {
+    "groupId": "source-20",
+    "role": "train"
+  },
+  {
+    "groupId": "source-21",
+    "role": "train"
+  },
+  {
+    "groupId": "source-22",
+    "role": "train"
+  },
+  {
+    "groupId": "source-23",
+    "role": "train"
+  },
+  {
+    "groupId": "source-24",
+    "role": "train"
+  },
+  {
+    "groupId": "source-25",
+    "role": "train"
+  },
+  {
+    "groupId": "source-26",
+    "role": "train"
+  },
+  {
+    "groupId": "source-27",
+    "role": "train"
+  },
+  {
+    "groupId": "source-28",
+    "role": "train"
+  },
+  {
+    "groupId": "source-29",
+    "role": "train"
+  },
+  {
+    "groupId": "source-30",
+    "role": "validation"
+  },
+  {
+    "groupId": "source-31",
+    "role": "train"
+  },
+  {
+    "groupId": "source-32",
+    "role": "train"
+  },
+  {
+    "groupId": "source-33",
+    "role": "train"
+  },
+  {
+    "groupId": "source-34",
+    "role": "validation"
+  },
+  {
+    "groupId": "source-35",
+    "role": "train"
+  },
+  {
+    "groupId": "source-36",
+    "role": "validation"
+  },
+  {
+    "groupId": "source-37",
+    "role": "train"
+  },
+  {
+    "groupId": "source-38",
+    "role": "train"
+  },
+  {
+    "groupId": "source-39",
+    "role": "train"
+  },
+  {
+    "groupId": "unicode-\u00e9",
+    "role": "train"
+  },
+  {
+    "groupId": "source-\ud83d\ude00",
+    "role": "validation"
+  },
+  {
+    "groupId": "\u96f6",
+    "role": "train"
+  }
+]

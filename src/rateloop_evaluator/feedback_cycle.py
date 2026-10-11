@@ -91,6 +91,9 @@ def import_feedback_snapshot(store, *, workspace_id, template, model_bundle_id, 
         if not (max(row["created_at"] for row in partitions["train"]) < min(row["created_at"] for row in partitions["calibration"])
                 and max(row["created_at"] for row in partitions["calibration"]) < min(row["created_at"] for row in partitions["test"])):
             raise ValueError("Final feedback must be strictly later than training and calibration")
+        # Reject sparse optimizer/validation support before consuming aliases.
+        from .quality import validation_partition
+        validation_partition(partitions)
         validate_reference_demonstration_isolation(row for part in partitions.values() for row in part)
         snapshot = {"id": "snapshot_"+uuid.uuid4().hex, "workspace_id": workspace_id,
             "template_id": template.id, "template_version": template.version, "purpose": "private_training",
