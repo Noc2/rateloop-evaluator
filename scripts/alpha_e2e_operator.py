@@ -40,6 +40,49 @@ def call(state_dir: Path, *args) -> dict:
     raise RuntimeError("Operator command returned no result")
 
 
+def expect_refusal(state_dir: Path, expected: str, *args) -> None:
+    """An expected policy refusal must not swallow another failure or a success."""
+    output, errors = io.StringIO(), io.StringIO()
+    with contextlib.redirect_stdout(output), contextlib.redirect_stderr(errors):
+        code = cli(["--state-dir", str(state_dir), *map(str, args)])
+    diagnostics = errors.getvalue().strip().splitlines()
+    if code != 1 or not diagnostics or diagnostics[-1] != "Evaluator: " + expected:
+        raise RuntimeError("Expected acceptance refusal was not observed: " + str(args[0]))
+
+
+def verify_small_calibration_refusal(state_dir, snapshot_id, model_dir, bundle_id, output, device):
+    """The three-group lifecycle fixture cannot support a fitted calibrator."""
+    output = Path(output)
+    if output.exists():
+        raise ValueError("Calibration refusal requires a fresh output path")
+    expect_refusal(state_dir,
+        "Insufficient calibration data: every label needs supported human source groups",
+        "calibrate", "--snapshot-id", snapshot_id, "--model-dir", model_dir,
+        "--bundle-id", bundle_id, "--output", output, "--device", device)
+    if output.exists():
+        raise RuntimeError("Refused calibration wrote an artifact")
+    return {"status": "refused_insufficient_support", "fitted": False, "qualityClaim": False}
+
+
+def activate_shadow(connector, state_dir, request):
+    """Explicit disposable-workspace activation, after renewed exact AI rights."""
+    with model_execution(connector.learning):
+        if connector.sync_grants()["mode"] != "shadow":
+            raise PermissionError("Connected activation requires current shadow-mode authorization")
+        connector.learning.check_right(workspace_id=request.workspaceId, right="ai_use", case_id=request.caseId,
+            template_id=request.template.id, template_commitment=request.template_commitment(),
+            model_bundle_id=request.modelBundleId, fields=["input.text", "input.context"])
+        result = call(state_dir, "promote", "--bundle-id", request.modelBundleId,
+            "--template-commitment", request.template_commitment(), "--language", request.template.language,
+            "--mode", "shadow")
+        if (result["bundle_id"], result["template_commitment"], result["language"], result["mode"], result["gate"]) != (
+                request.modelBundleId, request.template_commitment(), request.template.language, "shadow", None):
+            raise RuntimeError("Activation did not preserve the expected shadow binding")
+        return {"modelBundleId": result["bundle_id"], "activeModelBundleId": result["bundle_id"],
+            "templateCommitment": result["template_commitment"], "language": result["language"],
+            "mode": "shadow", "qualityClaim": False}
+
+
 def connect(config: dict, state_dir: Path) -> RateLoopConnector:
     local=json.loads(read_secret(state_dir/"config.json")); remote=config["connector"]
     return RateLoopConnector(base_url=remote["baseUrl"],api_key=remote["apiKey"],api_key_id=remote["apiKeyId"],
@@ -92,6 +135,12 @@ def run(args):
         return call(state_dir,"worker","--config",connector_file,"--worker-id","alpha-e2e-mac","--device",config["device"],"--once",*flags)
     connector=connect(config,state_dir)
     try:
+        if args.command=="activate-shadow":
+            if len(args.bundle_id)!=1: raise ValueError("Choose exactly one candidate bundle")
+            request=EvaluationRequest.model_validate(json.loads(read_secret(operator_dir/(args.bundle_id[0]+"-request.json"))))
+            if request.modelBundleId != args.bundle_id[0] or request.workspaceId != config["workspaceId"]:
+                raise ValueError("Candidate activation request does not match this workspace and bundle")
+            return activate_shadow(connector,state_dir,request)
         if args.command=="rollback":
             if len(args.bundle_id)!=1: raise ValueError("Choose exactly one rollback bundle")
             with model_execution(connector.learning):
@@ -155,23 +204,27 @@ def run(args):
                     "--output",candidate_dir,"--bundle-id",args.bundle_id[0],"--device",config["device"],"--method","lora","--epochs","1","--max-steps","1")
                 check()
                 calibrations=operator_dir/(args.bundle_id[0]+"-calibrations.json")
-                call(state_dir,"calibrate","--snapshot-id",snapshot["snapshotId"],"--model-dir",trained["modelDir"],
-                    "--bundle-id",args.bundle_id[0],"--output",calibrations,"--device",config["device"])
+                calibration=verify_small_calibration_refusal(state_dir,snapshot["snapshotId"],trained["modelDir"],
+                    args.bundle_id[0],calibrations,config["device"])
                 check()
                 request_file=operator_dir/(args.bundle_id[0]+"-request.json"); write_private(request_file,template_request)
                 policy=operator_dir/(args.bundle_id[0]+"-policy.json")
                 write_private(policy,{"threshold":0.9,"max_false_approval_rate":0.01,"confidence":0.95,"minimum_coverage":0.1})
                 call(state_dir,"register","--model-dir",trained["modelDir"],"--request",request_file,
-                    "--snapshot-id",snapshot["snapshotId"],"--calibrations",calibrations,"--selective-policy",policy)
+                    "--snapshot-id",snapshot["snapshotId"],"--selective-policy",policy)
                 check()
                 evidence=operator_dir/(args.bundle_id[0]+"-evidence.json")
                 call(state_dir,"score-test","--bundle-id",args.bundle_id[0],"--output",evidence,"--device",config["device"])
                 check()
+                expect_refusal(state_dir,"Synthetic pilots cannot qualify real selective automation",
+                    "promote","--bundle-id",args.bundle_id[0],"--template-commitment",request.template_commitment(),
+                    "--language",args.language,"--mode","selective","--evidence",evidence)
                 registration=operator_dir/(args.bundle_id[0]+"-registration.json")
                 call(state_dir,"export-registration","--bundle-id",args.bundle_id[0],"--request",request_file,"--output",registration)
                 return {"registration":json.loads(read_secret(registration)),"modelBundleId":args.bundle_id[0],
                     "snapshotId":snapshot["snapshotId"],"optimizerSteps":trained["optimizerSteps"],"synthetic":True,
-                    "mode":"candidate","qualityClaim":False,"evidenceFile":str(evidence)}
+                    "mode":"candidate","qualityClaim":False,"calibration":calibration,
+                    "selectiveAutomationRefused":True,"evidenceFile":str(evidence)}
         raise ValueError("Unknown operator command")
     finally: connector.close()
 
@@ -184,6 +237,7 @@ if __name__=="__main__":
     erase=commands.add_parser("verify-erasure");erase.add_argument("--case-id",required=True)
     ai_only=commands.add_parser("verify-ai-only");ai_only.add_argument("--case-id",required=True)
     worker=commands.add_parser("worker-once");worker.add_argument("--bundle-id",action="append")
+    activation=commands.add_parser("activate-shadow");activation.add_argument("--bundle-id",action="append",required=True)
     train=commands.add_parser("train-candidate");train.add_argument("--language",choices=["en","de"],default="en")
     train.add_argument("--bundle-id",action="append",required=True)
     rollback=commands.add_parser("rollback");rollback.add_argument("--language",choices=["en","de"],default="en")
