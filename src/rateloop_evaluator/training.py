@@ -18,7 +18,7 @@ from .quality import (balanced_optimizer_examples, freeze_validation_partition, 
                       validation_improved)
 
 from .backends import (GLiNERBackend, MODEL_ID, MODEL_REVISION, offline_environment,
-                       question_schema, question_examples, render_input, validate_scores, write_model_manifest, model_token_limit, file_hash, MANIFEST_NAME, validate_local_model, artifact_inventory, tokenizer_commitment)
+                       question_schema, question_examples, model_label_tokens, render_input, validate_scores, write_model_manifest, model_token_limit, file_hash, MANIFEST_NAME, validate_local_model, artifact_inventory, tokenizer_commitment)
 
 
 REVIEWED_BASE_WEIGHTS_SHA256 = "c1ff4ec0bc00031c15530b8f3c33d3677f27949e6a0cb52e1247a6224b6c5395"
@@ -51,6 +51,7 @@ class TrainOptions:
     batch_size: int = 1
     learning_rate: float = 1e-5
     task_learning_rate: float = 5e-4
+    score_adapter_version: int = 2
     lora_rank: int = 8
     seed: int = 42
     validation_fraction: float = 0
@@ -59,6 +60,8 @@ class TrainOptions:
     min_validation_per_label: int = 5
 
     def validate(self) -> None:
+        if type(self.score_adapter_version) is not int or self.score_adapter_version not in (1, 2):
+            raise ValueError("Unsupported score adapter version")
         if self.method not in {"full", "lora"}:
             raise ValueError("Training method must be full or lora")
         if self.device not in {"cpu", "mps", "cuda"}:
@@ -78,7 +81,7 @@ class TrainOptions:
                 raise ValueError("Validation training needs LoRA, bounded steps, and valid validation limits")
 
 
-def training_records(examples: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def training_records(examples: list[dict[str, Any]], adapter_version: int = 1) -> list[dict[str, Any]]:
     """Produce upstream training records without changing the label vocabulary."""
     if not examples:
         raise ValueError("Snapshot has no eligible training examples")
@@ -90,15 +93,16 @@ def training_records(examples: list[dict[str, Any]]) -> list[dict[str, Any]]:
             raise ValueError("Training example lacks a complete declared judgment")
         classifications = []
         for question in questions:
-            labels = {item["id"]: item["description"] for item in question["labels"]}
+            tokens = model_label_tokens(question, adapter_version)
+            labels = {tokens[item["id"]]: item["description"] for item in question["labels"]}
             label = example["labels"][question["id"]]
-            if label not in labels:
+            if label not in tokens:
                 raise ValueError("Training label does not belong to this template")
             classifications.append({
                 "task": question["id"], "labels": list(labels),
-                "true_label": [label], "multi_label": False,
+                "true_label": [tokens[label]], "multi_label": False,
                 "prompt": question["text"], "label_descriptions": labels,
-                **question_examples(question),
+                **question_examples(question, adapter_version),
             })
         records.append({"input": render_input(example["input"]),
                         "output": {"classifications": classifications}})
@@ -199,7 +203,7 @@ def make_trainer(model: Any, output_dir: Path, options: TrainOptions,
                         self.authorization_check()
                     questions = row['template']['questions']
                     predictions.append(validate_scores(self.model.extract(render_input(row['input']),
-                        question_schema(questions), include_confidence=True), questions))
+                        question_schema(questions, options.score_adapter_version), include_confidence=True), questions, options.score_adapter_version))
             report = score_predictions(rows, predictions)
             score = report['balanced_agreement']
             if score is None:
@@ -368,7 +372,7 @@ def train_snapshot(store: Any, snapshot_id: str, workspace_id: str,
         raise ValueError("Training output directory must be empty")
     offline_environment()
     assert_public_training_base(validate_local_model(model_dir))
-    backend = GLiNERBackend(model_dir, options.device)
+    backend = GLiNERBackend(model_dir, options.device, adapter_version=options.score_adapter_version)
     model = backend.load()
     original_tokenizer = tokenizer_semantics(model)
     eligible, overflow_groups = supported_training_groups(snapshot["train"], backend,
@@ -381,8 +385,8 @@ def train_snapshot(store: Any, snapshot_id: str, workspace_id: str,
             minimum_per_label=options.min_validation_per_label)
         examples = group_representatives(examples)
     optimizer_examples = balanced_optimizer_examples(examples) if validation_examples else examples
-    records = training_records(optimizer_examples)
-    validation_records = training_records(validation_examples) if validation_examples else None
+    records = training_records(optimizer_examples, options.score_adapter_version)
+    validation_records = training_records(validation_examples, options.score_adapter_version) if validation_examples else None
     store.load_snapshot(snapshot_id, workspace_id)
     output_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
     trainer = make_trainer(model, output_dir / "checkpoints", options, validation_examples)
@@ -423,8 +427,8 @@ def train_snapshot(store: Any, snapshot_id: str, workspace_id: str,
     probe = examples[0]
     text = records[0]["input"]
     questions = probe["template"]["questions"]
-    expected = validate_scores(trained.extract(text, question_schema(questions),
-                                              include_confidence=True), questions)
+    expected = validate_scores(trained.extract(text, question_schema(questions, options.score_adapter_version),
+                                              include_confidence=True), questions, options.score_adapter_version)
     artifact_dir = output_dir / "model"
     trained.save_pretrained(str(artifact_dir))
     preserve_tokenizer_assets(Path(model_dir), artifact_dir, backend.manifest)
@@ -436,6 +440,7 @@ def train_snapshot(store: Any, snapshot_id: str, workspace_id: str,
         "optimizerRowsPerEpoch": len(optimizer_examples),
         "optimizerSampling": "balanced_source_groups" if validation_examples else "as_supplied",
         "classificationSchemaPolicy": "immutable-inference-schema-v1",
+        "scoreAdapterVersion": options.score_adapter_version,
         "trainableParametersChanged": before_fingerprint != after_fingerprint,
         "trainingGroupIds": sorted({example["group_id"] for example in examples}),
         "trainingExampleIds": sorted({example["evaluation_id"] for example in examples}),

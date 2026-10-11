@@ -73,7 +73,7 @@ def _verified_prediction_identity(backend):
 
 
 def _prediction_identity(backend):
-    return _digest({'manifest': backend.manifest, 'adapter': GLINER_SCORE_CAPABILITY,
+    return _digest({'manifest': backend.manifest, 'adapter': {**GLINER_SCORE_CAPABILITY, 'adapterVersion': backend.adapter_version},
                     'library': 'gliner2==2.0.0', 'device': backend.device})
 
 

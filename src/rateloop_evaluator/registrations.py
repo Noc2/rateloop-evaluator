@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 import json
 from pathlib import Path
 
-from .backends import MANIFEST_NAME, GLINER_SCORE_CAPABILITY, tokenizer_commitment
+from .backends import MANIFEST_NAME, gliner_score_capability, tokenizer_commitment
 from .protocol import commitment
 from .templates import bundle_supports_template, is_custom_text_template
 
@@ -47,13 +47,14 @@ def export_registration(registry, store, workspace, bundle_id, request):
         snapshot_digest = 'sha256:' + store.load_snapshot(manifest['snapshot_id'], workspace)['content_digest']
     registration = {'modelBundleId': bundle_id, 'templateCommitment': request.template_commitment(),
         'language': request.template.language, 'baseWeightsCommitment': 'sha256:' + base_hash,
-        'adapterCommitment': commitment(model['files'], 'rateloop.adaptation.v1') if model.get('training') else None,
+        'adapterCommitment': commitment(model['files'] if gliner_score_capability(model)['adapterVersion'] == 1 else
+            {'files': model['files'], 'scoreCapability': gliner_score_capability(model)}, 'rateloop.adaptation.v1') if model.get('training') else None,
         'tokenizerCommitment': tokenizer_commitment(model), 'quantization': 'fp32',
         'trainingSnapshotCommitment': snapshot_digest,
         'evaluationReportCommitment': commitment(active, 'rateloop.deployment-evidence.v1'),
         'licenseManifestCommitment': commitment({'software': 'Apache-2.0', 'weights': model['source'].get('license', 'Apache-2.0'),
             'model': manifest['model_id'], 'revision': manifest['model_revision']}, 'rateloop.licenses.v1'),
-        'maxTokens': manifest['max_tokens'], 'criteria': criteria, 'scoreCapability': dict(GLINER_SCORE_CAPABILITY)}
+        'maxTokens': manifest['max_tokens'], 'criteria': criteria, 'scoreCapability': gliner_score_capability(model)}
     if manifest.get('task_capability'):
         registration['taskCapability'] = manifest['task_capability']
     if is_custom_text_template(request.template):

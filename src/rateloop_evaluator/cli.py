@@ -399,7 +399,7 @@ def run(args):
         write_private(args.output,evidence)
         return {"evidenceFile":str(Path(args.output).resolve()),"groups":len(rows),"qualityClaim":False,"next":"Promotion recomputes the acceptance bound; scoring alone does not enable automation."}
     if args.command == "register":
-        from .backends import MANIFEST_NAME, file_hash, validate_local_model
+        from .backends import MANIFEST_NAME, file_hash, validate_local_model, gliner_score_capability
         req = EvaluationRequest.model_validate(read_json(args.request))
         if req.workspaceId != workspace: raise ValueError("Request workspace does not match local configuration")
         source = validate_local_model(args.model_dir)
@@ -412,6 +412,8 @@ def run(args):
         manifest = {"id":req.modelBundleId,"model_id":source["source"]["repository"],"model_revision":source["source"]["revision"],
             "files":{**source["files"],MANIFEST_NAME:file_hash(Path(args.model_dir) / MANIFEST_NAME)},"template_commitments":[req.template_commitment()],"languages":[req.template.language],
             "calibrations":read_json(args.calibrations) if args.calibrations else [],"synthetic":not args.real_data,"max_tokens":req.template.maxTokens}
+        if gliner_score_capability(source)["adapterVersion"] != 1:
+            manifest["score_capability"] = gliner_score_capability(source)
         from .templates import is_custom_text_template
         if is_custom_text_template(req.template): manifest["template"]=req.template.model_dump()
         if getattr(args,"custom_text",False):

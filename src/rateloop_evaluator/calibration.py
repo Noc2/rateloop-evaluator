@@ -42,6 +42,7 @@ def fit_temperature(
     scores: list[dict[str, float]], labels: list[str], *, model_bundle_id: str,
     template_commitment: str, question_id: str, language: str,
     example_ids: list[str], score_type: str = "probabilities", model_weights_sha256: str | None = None,
+    score_adapter_version: int | None = None,
 ) -> dict[str, Any]:
     """Fit a scalar temperature on calibration-only human labels.
 
@@ -83,6 +84,10 @@ def fit_temperature(
     }
     if model_weights_sha256 is not None:
         artifact["model_weights_sha256"] = model_weights_sha256
+    if score_adapter_version is not None:
+        if type(score_adapter_version) is not int or score_adapter_version not in (1, 2):
+            raise ValueError("Unsupported calibration score adapter")
+        artifact["score_adapter_version"] = score_adapter_version
     artifact["id"] = "cal_" + hashlib.sha256(json.dumps(artifact, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()).hexdigest()
     return artifact
 
@@ -134,6 +139,9 @@ def validate_calibration(artifact: dict[str, Any]) -> None:
     weights = candidate.get("model_weights_sha256")
     if weights is not None and (not isinstance(weights, str) or not re.fullmatch(r"[0-9a-f]{64}", weights)):
         raise ValueError("Calibration model weight digest must be SHA-256")
+    adapter = candidate.get("score_adapter_version", 1)
+    if type(adapter) is not int or adapter not in (1, 2):
+        raise ValueError("Unsupported calibration score adapter")
     labels = candidate.get("label_ids", [])
     if candidate['schema_version'] == 'rateloop.calibration.v2':
         if (candidate.get('method') != 'binary_platt' or len(set(labels)) != 2

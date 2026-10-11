@@ -46,7 +46,7 @@ def fit_snapshot_calibrations(store, snapshot_id, workspace_id, backend, *, bund
         artifacts = [fit_binary_platt([p[q['id']] for p in predictions], [r['labels'][q['id']] for r in eligible],
             model_bundle_id=bundle_id, template_commitment=first['template_commitment'], question_id=q['id'],
             language=first['template']['language'], example_ids=[r['group_id'] for r in eligible],
-            model_weights_sha256=weights_sha256) for q in first['template']['questions']]
+            model_weights_sha256=weights_sha256, score_adapter_version=getattr(backend, "adapter_version", 1)) for q in first['template']['questions']]
         store.load_snapshot(snapshot_id, workspace_id)
         return artifacts, {'calibration_group_count': len(rows), 'fitted_group_count': len(eligible),
             'overflow_group_count': len(rows)-len(eligible), 'quality_gate': False}
@@ -66,6 +66,8 @@ class CalibratedComparisonBackend:
         def predict():
             scores = original()
             for artifact in self.bundle['calibrations']:
+                if artifact.get('score_adapter_version', 1) != getattr(self.backend, 'adapter_version', 1):
+                    raise ValueError('Calibration score adapter differs from the checkpoint')
                 qid = artifact['question_id']
                 scores[qid] = apply_temperature(scores[qid], artifact, model_bundle_id=self.bundle['id'],
                     template_commitment=artifact['template_commitment'], question_id=qid, language=artifact['language'])

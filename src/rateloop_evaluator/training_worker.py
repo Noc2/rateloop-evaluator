@@ -47,7 +47,7 @@ def training_options(recipe, device):
         if (recipe["method"]!="lora" or type(recipe["epochs"]) is not int or recipe["epochs"]!=1
                 or type(recipe["maxSteps"]) is not int or not 1<=recipe["maxSteps"]<=CAPABILITY["maxSteps"]):
             raise ValueError("Invalid legacy private LoRA recipe")
-        return TrainOptions(method="lora",device=device,epochs=1,max_steps=recipe["maxSteps"], task_learning_rate=1e-5)
+        return TrainOptions(method="lora",device=device,epochs=1,max_steps=recipe["maxSteps"], task_learning_rate=1e-5, score_adapter_version=1)
     legacy = recipe.get("schemaVersion") == "rateloop.evaluator.training-recipe.v2"
     expected={"schemaVersion":"rateloop.evaluator.training-recipe.v2" if legacy else RECIPE_SCHEMA,"method":"lora","epochs":5,"validationFraction":.2,
         "validationInterval":25,"earlyStoppingPatience":3,"minValidationPerLabel":5,
@@ -58,7 +58,7 @@ def training_options(recipe, device):
         raise ValueError("Unsupported validation-selected private LoRA recipe")
     options=TrainOptions(method="lora",device=device,epochs=5,max_steps=recipe["maxSteps"],
         validation_fraction=.2,validation_interval=25,early_stopping_patience=3,min_validation_per_label=5,
-        learning_rate=.0001 if legacy else .00001, task_learning_rate=.0001 if legacy else .0005)
+        learning_rate=.0001 if legacy else .00001, task_learning_rate=.0001 if legacy else .0005, score_adapter_version=1 if legacy else 2)
     options.validate()
     return options
 

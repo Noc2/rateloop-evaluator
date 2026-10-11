@@ -32,6 +32,27 @@ GLINER_SCORE_CAPABILITY = {
 }
 
 
+def score_adapter_version(manifest: dict | None) -> int:
+    version = ((manifest or {}).get('training') or {}).get('scoreAdapterVersion', 1)
+    if type(version) is not int or version not in (1, 2):
+        raise ValueError('Unsupported score adapter version')
+    return version
+
+
+def gliner_score_capability(manifest: dict | None) -> dict:
+    return {**GLINER_SCORE_CAPABILITY, 'adapterVersion': score_adapter_version(manifest)}
+
+
+def model_label_tokens(question: dict, adapter_version: int = 1) -> dict[str, str]:
+    """Transport IDs remain stable; v2 labels express the criterion and answer."""
+    if adapter_version not in (1, 2): raise ValueError('Unsupported score adapter version')
+    tokens = {label['id']: label['id'] if adapter_version == 1 else
+        question['text'] + ' Answer: ' + label['description'] for label in question['labels']}
+    if len(tokens) != len(question['labels']) or len(set(tokens.values())) != len(tokens):
+        raise ValueError('Model-facing answer meanings must be distinct')
+    return tokens
+
+
 def offline_environment() -> None:
     """Set library offline/telemetry controls before importing the ML libraries.
 
@@ -162,15 +183,16 @@ def provision_model(destination: str | Path, *, revision: str | None = None,
     return manifest
 
 
-def question_examples(question: dict[str, Any]) -> dict[str, Any]:
+def question_examples(question: dict[str, Any], adapter_version: int = 1) -> dict[str, Any]:
     """The same validated upstream demonstration pairs for inference and training."""
     from .protocol import Question
     validated = Question.model_validate(question)
-    return ({"examples": [[example.text, example.labelId] for example in validated.examples]}
+    tokens = model_label_tokens(question, adapter_version)
+    return ({"examples": [[example.text, tokens[example.labelId]] for example in validated.examples]}
             if validated.examples else {})
 
 
-def question_schema(questions: list[dict[str, Any]]) -> Any:
+def question_schema(questions: list[dict[str, Any]], adapter_version: int = 1) -> Any:
     from gliner2 import Schema
     schema = Schema()
     seen = set()
@@ -179,7 +201,8 @@ def question_schema(questions: list[dict[str, Any]]) -> Any:
         if qid in seen:
             raise ValueError("Question IDs must be unique")
         seen.add(qid)
-        labels = {label["id"]: label["description"] for label in question["labels"]}
+        tokens = model_label_tokens(question, adapter_version)
+        labels = {tokens[label["id"]]: label["description"] for label in question["labels"]}
         if len(labels) != len(question["labels"]) or len(labels) < 2:
             raise ValueError("Questions require at least two distinct labels")
         # multi_label requests every score from upstream's decoder. Explicit
@@ -187,7 +210,7 @@ def question_schema(questions: list[dict[str, Any]]) -> Any:
         # the upstream classification loss itself uses binary cross entropy.
         schema.classification(qid, labels, prompt=question["text"],
                               multi_label=True, class_act="softmax", cls_threshold=0.0,
-                              **question_examples(question))
+                              **question_examples(question, adapter_version))
     return schema
 
 
@@ -197,10 +220,11 @@ def render_input(value: dict[str, Any]) -> str:
     return CaseInput.model_validate(value).render()
 
 
-def validate_scores(result: dict[str, Any], questions: list[dict[str, Any]]) -> dict[str, dict[str, float]]:
+def validate_scores(result: dict[str, Any], questions: list[dict[str, Any]], adapter_version: int = 1) -> dict[str, dict[str, float]]:
     scores = {}
     for question in questions:
-        expected = {label["id"] for label in question["labels"]}
+        tokens = model_label_tokens(question, adapter_version)
+        expected = set(tokens.values())
         rows = result.get(question["id"])
         if not isinstance(rows, list):
             raise ValueError("GLiNER did not return all classification scores")
@@ -211,7 +235,7 @@ def validate_scores(result: dict[str, Any], questions: list[dict[str, Any]]) -> 
             raise ValueError("GLiNER returned invalid classification scores")
         if not math.isclose(sum(values.values()), 1.0, abs_tol=1e-4):
             raise ValueError("GLiNER did not return mutually exclusive softmax scores")
-        scores[question["id"]] = values
+        scores[question["id"]] = {label: values[token] for label, token in tokens.items()}
     return scores
 
 
@@ -284,17 +308,28 @@ class GLiNERBackend:
     """Lazy local model. One worker owns one instance; no implicit downloads."""
     question_execution = "joint_schema"
 
-    def __init__(self, model_dir: str | Path, device: str = "cpu") -> None:
+    def __init__(self, model_dir: str | Path, device: str = "cpu", *, adapter_version: int | None = None) -> None:
         if device not in {"cpu", "mps", "cuda"}:
             raise ValueError("Device must be cpu, mps or cuda")
         self.model_dir = Path(model_dir).expanduser().resolve()
         self.device = device
         self._model = None
         self.manifest: dict[str, Any] | None = None
+        if adapter_version is not None and (type(adapter_version) is not int or adapter_version not in (1, 2)):
+            raise ValueError('Unsupported score adapter version')
+        self._adapter_version = adapter_version
+
+    @property
+    def adapter_version(self):
+        saved = score_adapter_version(self.manifest)
+        if (self.manifest or {}).get('training') and self._adapter_version not in (None, saved):
+            raise ValueError('Checkpoint score adapter cannot be changed')
+        return saved if self._adapter_version is None else self._adapter_version
 
     def load(self) -> Any:
         if self._model is None:
             self.manifest = validate_local_model(self.model_dir)
+            self.adapter_version  # Validate pinned adapter before loading model code.
             offline_environment()
             import torch
             from gliner2 import AutoExtractor
@@ -329,7 +364,7 @@ class GLiNERBackend:
         questions = deepcopy(questions)
         model.eval()
         model.processor.change_mode(is_training=False)
-        schemas, metadata = model._build_schema_dicts_and_metadata([question_schema(questions)])
+        schemas, metadata = model._build_schema_dicts_and_metadata([question_schema(questions, self.adapter_version)])
         batch = model.processor.collate_fn_inference(
             [(text, schemas[0])], error_policy="raise", max_len=None,
             architecture=model.architecture,
@@ -350,7 +385,7 @@ class GLiNERBackend:
                     raise ValueError("Prepared inference returned an unexpected batch")
                 result = model.format_results(results[0], True, metadata[0].get("relation_order", []),
                                               metadata[0].get("classification_tasks", []))
-            return validate_scores(result, questions)
+            return validate_scores(result, questions, self.adapter_version)
         return PreparedInference(token_count, predict, token_limit=model_token_limit(model))
 
     def count_tokens(self, text: str, questions: list[dict[str, Any]]) -> int:

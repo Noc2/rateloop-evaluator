@@ -174,3 +174,42 @@ def test_unsupported_checkpoint_cache_hint_does_not_change_inference_contract(tm
     from rateloop_evaluator import backends
     monkeypatch.setattr(backends.os,'posix_fadvise',None,raising=False)
     backends.release_checkpoint_file_cache(tmp_path)
+
+
+def test_semantic_labels_bind_question_answer_training_examples_and_decoding(monkeypatch):
+    from copy import deepcopy
+    from rateloop_evaluator.backends import model_label_tokens, question_schema, question_examples, score_adapter_version
+    from rateloop_evaluator.training import training_records
+    question = deepcopy(QUESTIONS[0])
+    question['labels'] = [{'id':'approved','description':'Yes'}, {'id':'rejected','description':'No'}]
+    question['examples'] = [{'text':'A synthetic demonstration','labelId':'approved'}]
+    question['passLabels'] = ['approved']
+    tokens = model_label_tokens(question, 2)
+    assert tokens['approved'] == 'Is the reply polite? Answer: Yes'
+    assert tokens['rejected'] == 'Is the reply polite? Answer: No'
+    assert model_label_tokens(question, 1) == {'approved':'approved','rejected':'rejected'}
+    class Schema:
+        def classification(self, task, labels, **kwargs): self.task, self.labels, self.options = task, labels, kwargs
+    monkeypatch.setitem(sys.modules, 'gliner2', SimpleNamespace(Schema=Schema))
+    schema = question_schema([question], 2)
+    record = training_records([{'input':{'text':'An independent training reply'},'template':{'questions':[question]},'labels':{'tone':'approved'}}], 2)[0]
+    classification = record['output']['classifications'][0]
+    assert set(schema.labels) == set(classification['labels']) == set(tokens.values())
+    assert classification['true_label'] == [tokens['approved']]
+    assert schema.options['examples'] == classification['examples'] == question_examples(question, 2)['examples']
+    scores = validate_scores({'tone':[{'label':tokens['approved'],'confidence':.7},{'label':tokens['rejected'],'confidence':.3}]},[question],2)
+    assert scores == {'tone':{'approved':.7,'rejected':.3}}
+    changed = {**question,'text':'Is the reply factually correct?'}
+    assert model_label_tokens(changed, 2) != tokens
+    for version in (0, 3, True):
+        with pytest.raises(ValueError, match='adapter'): score_adapter_version({'training':{'scoreAdapterVersion':version}})
+
+
+@pytest.mark.skipif(not os.environ.get('RATELOOP_TEST_MODEL_DIR'), reason='Explicit pinned local checkpoint required')
+def test_real_semantic_adapter_keeps_transport_labels_and_complete_scores():
+    backend = GLiNERBackend(os.environ['RATELOOP_TEST_MODEL_DIR'], os.environ.get('RATELOOP_TEST_DEVICE','cpu'), adapter_version=2)
+    scores = backend.predict('Thank you for your patience. I will help you now.', QUESTIONS)
+    assert set(scores['tone']) == {'yes','no'}
+    assert sum(scores['tone'].values()) == pytest.approx(1., abs=1e-4)
+    assert backend.adapter_version == 2
+    backend.unload()

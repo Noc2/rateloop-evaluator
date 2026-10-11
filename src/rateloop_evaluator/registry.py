@@ -129,10 +129,18 @@ class BundleRegistry:
                 raise ValueError("Custom task capability requires the pinned untrained public model and canonical seed")
         from .qualified_native import validate_native_registration_manifest
         validate_native_registration_manifest(manifest)
+        from .backends import GLINER_SCORE_CAPABILITY, MANIFEST_NAME, gliner_score_capability, validate_local_model
+        score_capability = manifest.get('score_capability', GLINER_SCORE_CAPABILITY)
+        if MANIFEST_NAME in manifest['files']:
+            expected_capability = gliner_score_capability(validate_local_model(artifact_root))
+            if score_capability != expected_capability:
+                raise ValueError('Bundle score adapter does not match its immutable checkpoint')
         ids = set()
         bindings = set()
         for artifact in manifest["calibrations"]:
             validate_calibration(artifact)
+            if artifact.get("score_adapter_version", 1) != score_capability.get("adapterVersion"):
+                raise ValueError("Calibration score adapter differs from its bundle")
             weight_hash = manifest["files"].get("model.safetensors")
             if not weight_hash or artifact.get("model_weights_sha256") != weight_hash:
                 raise ValueError("Calibration checkpoint digest does not match bundle weights")
