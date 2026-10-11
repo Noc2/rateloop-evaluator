@@ -2,7 +2,7 @@
 from copy import deepcopy
 
 from .backends import prepare_inference, render_input
-from .calibration import apply_temperature, fit_temperature
+from .calibration import apply_temperature, fit_binary_platt
 from .learning import is_independent_reference
 from .protocol import validate_reference_demonstration_isolation
 from .quality import group_representatives
@@ -43,7 +43,7 @@ def fit_snapshot_calibrations(store, snapshot_id, workspace_id, backend, *, bund
             if any(sum(row['labels'][question['id']] == label['id'] for row in eligible) < minimum_per_label
                    for label in question['labels']):
                 raise ValueError('Insufficient calibration data: every label needs supported human source groups')
-        artifacts = [fit_temperature([p[q['id']] for p in predictions], [r['labels'][q['id']] for r in eligible],
+        artifacts = [fit_binary_platt([p[q['id']] for p in predictions], [r['labels'][q['id']] for r in eligible],
             model_bundle_id=bundle_id, template_commitment=first['template_commitment'], question_id=q['id'],
             language=first['template']['language'], example_ids=[r['group_id'] for r in eligible],
             model_weights_sha256=weights_sha256) for q in first['template']['questions']]

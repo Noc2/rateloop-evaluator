@@ -29,7 +29,8 @@ def test_only_calibration_groups_fit_and_same_mapping_reaches_comparison(setup):
     wrapper = CalibratedComparisonBackend(backend, {'id':'candidate','calibrations':artifacts})
     row = snapshot['test'][0]
     calibrated = prepare_inference(wrapper, render_input(row['input']), row['template']['questions']).predict()
-    assert .5 < calibrated['judgment']['approved'] < .8
+    assert calibrated['judgment']['approved'] == pytest.approx(.5, abs=1e-5)
+    assert artifacts[0]['schema_version'] == 'rateloop.calibration.v2'
 
 
 def test_calibration_whole_group_overflow_preserves_coverage_and_rechecks_support(setup, monkeypatch):

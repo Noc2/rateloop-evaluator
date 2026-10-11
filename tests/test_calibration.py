@@ -61,3 +61,33 @@ def test_calibration_digest_binds_actual_model_weights():
     for digest in ("main", "a" * 63, 123):
         with pytest.raises(ValueError, match="SHA-256"):
             fit(model_weights_sha256=digest)
+
+
+def test_binary_platt_corrects_prior_bias_preserving_ranking_and_binding():
+    from rateloop_evaluator.calibration import fit_binary_platt
+    scores = [{'yes': .8, 'no': .2}]*8 + [{'yes': .9, 'no': .1}]*2
+    labels = ['no']*8 + ['yes']*2
+    artifact = fit_binary_platt(scores, labels, model_bundle_id='bundle', template_commitment='template',
+        question_id='q', language='en', example_ids=[f'g{i}' for i in range(10)], model_weights_sha256='a'*64)
+    validate_calibration(artifact)
+    assert artifact['schema_version'] == 'rateloop.calibration.v2'
+    assert artifact['slope'] > 0 and artifact['intercept'] < 0
+    assert artifact['nll_after'] < artifact['nll_before']
+    binding = dict(model_bundle_id='bundle', template_commitment='template', question_id='q', language='en')
+    before = apply_temperature(scores[0], artifact, **binding)
+    after = apply_temperature(scores[-1], artifact, **binding)
+    assert before['yes'] < .5 < after['yes']
+    assert before['yes'] < after['yes']
+    for key in binding:
+        with pytest.raises(ValueError, match='mismatch'):
+            apply_temperature(scores[0], artifact, **{**binding,key:'different'})
+    changed = {**artifact, 'intercept': 0}
+    with pytest.raises(ValueError, match='digest'): validate_calibration(changed)
+
+
+@pytest.mark.parametrize('labels', [['yes']*4, ['yes']*3+['no']])
+def test_platt_rejects_missing_or_singleton_class_support(labels):
+    from rateloop_evaluator.calibration import fit_binary_platt
+    with pytest.raises(ValueError, match='support'):
+        fit_binary_platt([{'yes': .8, 'no': .2}]*4, labels, model_bundle_id='b', template_commitment='t',
+            question_id='q', language='en', example_ids=list('abcd'))

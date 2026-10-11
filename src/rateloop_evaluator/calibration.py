@@ -87,17 +87,62 @@ def fit_temperature(
     return artifact
 
 
+def fit_binary_platt(scores: list[dict[str, float]], labels: list[str], **binding) -> dict[str, Any]:
+    """Fit a bounded positive slope plus intercept on calibration-only labels.
+
+    Positive slope preserves ranking while the intercept can correct prior bias.
+    Independent final evidence still certifies any operating threshold.
+    """
+    artifact = fit_temperature(scores, labels, **binding)
+    keys = artifact['label_ids']
+    if len(keys) != 2 or any(labels.count(label) < 2 for label in keys):
+        raise ValueError('Binary Platt calibration requires both labels with repeated source support')
+    positive = keys[1]
+    logits = [_logits(row, artifact['score_type']) for row in scores]
+    xs = [row[positive]-row[keys[0]] for row in logits]
+    ys = [float(label == positive) for label in labels]
+    def loss(slope, intercept):
+        zs = [slope*x+intercept for x in xs]
+        return sum(max(z, 0)+math.log1p(math.exp(-abs(z)))-y*z for z,y in zip(zs,ys))/len(zs)
+    def minimize(function, lo, hi):
+        for _ in range(80):
+            a, b = lo+(hi-lo)/3, hi-(hi-lo)/3
+            if function(a) <= function(b): hi = b
+            else: lo = a
+        return (lo+hi)/2
+    slope, intercept = 1., 0.
+    before = loss(slope, intercept)
+    for _ in range(80):
+        previous = loss(slope, intercept)
+        intercept = minimize(lambda value: loss(slope, value), -20., 20.)
+        slope = minimize(lambda value: loss(value, intercept), .05, 20.)
+        if previous-loss(slope, intercept) < 1e-10: break
+    artifact.pop('id'); artifact.pop('temperature')
+    artifact.update(schema_version='rateloop.calibration.v2', method='binary_platt',
+        positive_label=positive, slope=slope, intercept=intercept,
+        nll_before=before, nll_after=loss(slope, intercept))
+    artifact['id'] = 'cal_' + hashlib.sha256(json.dumps(artifact, sort_keys=True, separators=(',', ':'), allow_nan=False).encode()).hexdigest()
+    return artifact
+
+
 def validate_calibration(artifact: dict[str, Any]) -> None:
     candidate = dict(artifact)
     artifact_id = candidate.pop("id", None)
     expected = "cal_" + hashlib.sha256(json.dumps(candidate, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()).hexdigest()
-    if artifact_id != expected or candidate.get("schema_version") != "rateloop.calibration.v1":
+    if artifact_id != expected or candidate.get("schema_version") not in ("rateloop.calibration.v1", "rateloop.calibration.v2"):
         raise ValueError("Calibration digest or schema is invalid")
     weights = candidate.get("model_weights_sha256")
     if weights is not None and (not isinstance(weights, str) or not re.fullmatch(r"[0-9a-f]{64}", weights)):
         raise ValueError("Calibration model weight digest must be SHA-256")
-    t = _number(candidate.get("temperature"))
-    if not .05 <= t <= 20 or len(set(candidate.get("label_ids", []))) < 2:
+    labels = candidate.get("label_ids", [])
+    if candidate['schema_version'] == 'rateloop.calibration.v2':
+        if (candidate.get('method') != 'binary_platt' or len(set(labels)) != 2
+                or candidate.get('positive_label') not in labels
+                or not .05 <= _number(candidate.get('slope')) <= 20
+                or not -20 <= _number(candidate.get('intercept')) <= 20
+                or 'temperature' in candidate):
+            raise ValueError('Calibration parameters are invalid')
+    elif not .05 <= _number(candidate.get('temperature')) <= 20 or len(set(labels)) < 2:
         raise ValueError("Calibration parameters are invalid")
     ids = candidate.get("example_ids", [])
     if not ids or len(ids) != len(set(ids)) or candidate.get("sample_count") != len(ids):
@@ -121,7 +166,13 @@ def apply_temperature(scores: dict[str, float], artifact: dict[str, Any], *, mod
             raise ValueError(f"Calibration {key} mismatch")
     if sorted(scores) != artifact["label_ids"]:
         raise ValueError("Calibration label set mismatch")
-    return _softmax(_logits(scores, artifact["score_type"]), artifact["temperature"])
+    logits = _logits(scores, artifact['score_type'])
+    if artifact['schema_version'] == 'rateloop.calibration.v2':
+        positive = artifact['positive_label']
+        negative = next(label for label in logits if label != positive)
+        z = artifact['slope']*(logits[positive]-logits[negative])+artifact['intercept']
+        return _softmax({positive: z, negative: 0.}, 1.)
+    return _softmax(logits, artifact["temperature"])
 
 
 def false_approval_upper_bound(errors: int, total: int, confidence: float = .95) -> float:
