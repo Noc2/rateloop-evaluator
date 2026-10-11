@@ -11,7 +11,8 @@ import uuid
 from .learning import _digest, _source_aliases
 from .protocol import commitment, validate_reference_demonstration_isolation
 
-SCHEMA = "rateloop.evaluator.feedback-cycle.v1"
+SCHEMA = "rateloop.evaluator.feedback-cycle.v2"
+LEGACY_SCHEMA = "rateloop.evaluator.feedback-cycle.v1"
 
 
 def _timestamp(value):
@@ -24,6 +25,10 @@ def import_feedback_snapshot(store, *, workspace_id, template, model_bundle_id, 
     current = time.time() if now is None else now
     if not isinstance(rows, list) or not 200 <= len(rows) <= 1000:
         raise ValueError("Feedback cycles need 200–1,000 fresh source groups")
+    modern = any(isinstance(row, dict) and "replayed" in row for row in rows)
+    replay_count = sum(isinstance(row, dict) and row.get("replayed") is True for row in rows)
+    if replay_count > 500 or len(rows) - replay_count < 200:
+        raise ValueError("Feedback cycles need 200 fresh groups and at most 500 replay groups")
     if len(template.questions) != 1:
         raise ValueError("Feedback cycles require one exact binary criterion")
     question = template.questions[0]
@@ -42,9 +47,12 @@ def import_feedback_snapshot(store, *, workspace_id, template, model_bundle_id, 
             return deepcopy(snapshot)
         used = state.setdefault("feedback_cycle_used_aliases", {}).setdefault(workspace_id, {})
         aliases = set()
+        records = {}
         for row in rows:
             expected = {"caseId", "sourceGroupId", "input", "labels", "inputCommitment", "createdAt", "observedAt", "lineage", "evidenceFingerprint", "partition"}
-            if not isinstance(row, dict) or set(row) != expected or row["partition"] not in partitions:
+            if modern:
+                expected.add("replayed")
+            if not isinstance(row, dict) or set(row) != expected or row["partition"] not in partitions or (modern and type(row["replayed"]) is not bool):
                 raise ValueError("Feedback row contract mismatch")
             if (set(row["input"]) != {"text", "context", "evidence"}
                     or any(not isinstance(v, str) for v in row["input"].values())
@@ -77,10 +85,25 @@ def import_feedback_snapshot(store, *, workspace_id, template, model_bundle_id, 
                 "grant_ids": [grant_id], "created_at": created, "source_kind": "evaluation",
                 "human_labels": [{"independent_human": True, "exposed_to_ai": False, "quarantine_reasons": [],
                     "labels": deepcopy(row["labels"]), "source_evidence": deepcopy(lineage)}]}
-            keys = {_digest(alias) for alias in _source_aliases(example)}
-            if keys & (aliases | set(used)):
+            source_aliases = set(_source_aliases(example))
+            source_hash = lineage.get("sourceContentHash")
+            if isinstance(source_hash, str) and source_hash:
+                # Older imports used content hashes as group IDs. Preserve that
+                # alias alongside the explicit content alias after regrouping.
+                source_aliases.update(("source_content:" + source_hash, "group:" + source_hash))
+            keys = {_digest(alias) for alias in source_aliases}
+            if keys & aliases:
+                raise ValueError("A feedback source was duplicated or used by a previous cycle")
+            identity = {"schema": SCHEMA, "partition": row["partition"], "caseId": row["caseId"],
+                        "evidenceFingerprint": row["evidenceFingerprint"],
+                        "identityDigest": _digest({key: value for key, value in row.items() if key not in {"partition", "replayed"}})}
+            if row.get("replayed") is True:
+                if row["partition"] != "train" or any(not isinstance(used.get(key), dict) or used[key] != identity for key in keys):
+                    raise ValueError("Only unchanged previous training sources may be replayed")
+            elif keys & set(used):
                 raise ValueError("A feedback source was duplicated or used by a previous cycle")
             aliases.update(keys)
+            records.update({key: identity if modern else None for key in keys})
             partitions[row["partition"]].append(example)
         for partition, examples in partitions.items():
             if len(examples) < (30 if partition == "test" else 1):
@@ -97,14 +120,14 @@ def import_feedback_snapshot(store, *, workspace_id, template, model_bundle_id, 
         validate_reference_demonstration_isolation(row for part in partitions.values() for row in part)
         snapshot = {"id": "snapshot_"+uuid.uuid4().hex, "workspace_id": workspace_id,
             "template_id": template.id, "template_version": template.version, "purpose": "private_training",
-            "created_at": current, "seed": SCHEMA, "grant_ids": [grant_id], "invalidated_at": None,
+            "created_at": current, "seed": SCHEMA if modern else LEGACY_SCHEMA, "grant_ids": [grant_id], "invalidated_at": None,
             "group_count": len(rows), **partitions}
         snapshot["content_digest"] = _digest({key: snapshot[key] for key in ("workspace_id", "template_id", "template_version", "purpose", "train", "calibration", "test")})
         state["snapshots"][snapshot["id"]] = snapshot
         if request_key:
             state["feedback_cycle_requests"][request_key] = {"digest": request_digest, "snapshot_id": snapshot["id"]}
         for alias in aliases:
-            used[alias] = snapshot["id"]
+            used[alias] = records[alias] if records[alias] is not None else snapshot["id"]
         return deepcopy(snapshot)
 
 
@@ -128,7 +151,7 @@ def erase_feedback_permission(store, *, workspace_id, grant_id, now=None):
     with store.transaction() as state:
         affected = set()
         for snapshot_id, snapshot in state["snapshots"].items():
-            if snapshot["workspace_id"] == workspace_id and snapshot.get("seed") == SCHEMA and grant_id in snapshot["grant_ids"]:
+            if snapshot["workspace_id"] == workspace_id and snapshot.get("seed") in {SCHEMA, LEGACY_SCHEMA} and grant_id in snapshot["grant_ids"]:
                 snapshot.update(invalidated_at=current, invalidation_reason="source_erased")
                 for partition in ("train", "calibration", "test"):
                     snapshot[partition] = []
