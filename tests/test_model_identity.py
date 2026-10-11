@@ -79,7 +79,7 @@ def test_actual_loader_and_cache_emit_only_after_success_and_on_every_reload(tmp
     assert len(identities) == 2 and cache.backend is None
 
 
-@pytest.mark.parametrize("broken_stderr", [False, True])
+@pytest.mark.parametrize("broken_stderr", [None, BrokenPipeError, ValueError])
 def test_callback_failure_cannot_change_serving_or_disclose_exception(monkeypatch, capsys, broken_stderr):
     class Backend:
         manifest = manifest()
@@ -90,7 +90,7 @@ def test_callback_failure_cannot_change_serving_or_disclose_exception(monkeypatc
     def fail(_): raise RuntimeError("private-api-key")
     if broken_stderr:
         class BrokenPipe:
-            def write(self, *_): raise BrokenPipeError("private-log-pipe")
+            def write(self, *_): raise broken_stderr("private-log-pipe")
         monkeypatch.setattr(worker_runtime.sys, "stderr", BrokenPipe())
     cache = worker_runtime._CheckpointCache("cpu", fail)
     assert cache.invoke("key", "/private/path", "load") == "loaded-model"

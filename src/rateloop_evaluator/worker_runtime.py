@@ -37,8 +37,8 @@ class _CheckpointCache:
                         # an exception containing a private path or credential.
                         try:
                             print('{"event":"evaluator_model_identity_unavailable"}', file=sys.stderr, flush=True)
-                        except OSError:
-                            pass  # A broken log pipe must not break inference.
+                        except Exception:
+                            pass  # Broken or closed log streams must not break inference.
                 if operation == "load": return loaded
             return getattr(self.backend,operation)(*args)
 
