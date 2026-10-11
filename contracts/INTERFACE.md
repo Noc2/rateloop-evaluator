@@ -115,3 +115,26 @@ weights/template identity. No model downloads, remote URL selection, cloud fallb
 tools, model-generated explanations or model-supplied confidence are accepted.
 This adapter is experimental until independent, task-specific human-reference evaluation
 establishes its quality. Mechanical execution tests do not establish judge competence.
+
+### Stable learning input aliases
+
+`rateloop.learning-text-normalization.v1` uses the Unicode 14.0.0 assigned
+repertoire: NFKC, full default case folding, then Python's 29 whitespace
+characters collapsed to ASCII spaces and stripped at the ends. Newer or
+unassigned scalars stay opaque, so Python 3.10–3.13 and newer Node runtimes agree.
+This detects formatting duplicates; it does not establish semantic equivalence.
+`src/rateloop_evaluator/unicode14.json` pins 1,530 case folds and 698 unassigned
+ranges from the official [UnicodeData](https://www.unicode.org/Public/14.0.0/ucd/UnicodeData.txt)
+and [CaseFolding](https://www.unicode.org/Public/14.0.0/ucd/CaseFolding.txt) files,
+with their SHA256 digests and the Unicode data license. Assigned characters use
+Unicode's normalization stability guarantee. The shared
+`learning-input-normalization.v1.json` fixture checks all 6,278 nonidentity
+scalar normalizations/folds against an independent Python Unicode oracle on
+this frozen repertoire, plus combining sequences, whitespace boundaries and
+newer opaque scalars. App commitments use the existing
+`rateloop.evaluator.learning-input.v1` domain.
+
+Previously stored aliases remain permanent exclusions. Workers also check their
+historical runtime NFKC/casefold alias, and applications retain their historical
+lowercase alias. Replay must match every persisted alias; an old ambiguous
+record fails closed. Erasure never removes these hashed split exclusions.

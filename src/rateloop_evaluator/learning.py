@@ -23,6 +23,7 @@ import uuid
 
 from cryptography.fernet import Fernet
 from .authorization import AUTHORIZATION_SECONDS
+from .text_normalization import normalize_learning_text
 
 RIGHTS = frozenset({"ai_use", "private_training", "shared_contribution", "public_weight_distribution"})
 COLLECTIONS = ("grants", "evaluations", "feedback", "snapshots", "lineage", "bundles", "deployments")
@@ -48,10 +49,16 @@ def _label_field(row: dict) -> str:
 def _source_aliases(row: dict) -> tuple[str, ...]:
     # Detect exact and formatting-only near duplicates without a model or an
     # unbounded similarity search. Semantic paraphrases still need source IDs.
-    normalized = {key: " ".join(unicodedata.normalize("NFKC", value).casefold().split())
-                  if isinstance(value, str) else value for key, value in row["input"].items()}
+    normalized = {key: normalize_learning_text(value) if isinstance(value, str) else value
+                  for key, value in row["input"].items()}
+    # Historical exclusions remain authoritative when runtime Unicode support
+    # knew newer characters than the shared pinned normalization contract.
+    legacy = {key: " ".join(unicodedata.normalize("NFKC", value).casefold().split())
+              if isinstance(value, str) else value for key, value in row["input"].items()}
+    canonical = "normalized_input:"+_digest(normalized)
+    old = "normalized_input:"+_digest(legacy)
     return ("case:"+row["case_id"], "group:"+row.get("source_group_id", row["group_id"]),
-            "input:"+_digest(row["input"]), "normalized_input:"+_digest(normalized))
+            "input:"+_digest(row["input"]), *((old,) if old != canonical else ()), canonical)
 
 
 def provision_key(path: str | Path) -> None:
@@ -493,10 +500,12 @@ class LearningStore:
                     # Only identical material with contradictory labels conflicts.
                     by_input = {}
                     for row in rows:
-                        key = _source_aliases(row)[-1]
-                        if key in by_input and by_input[key] != row["labels"]:
-                            raise ValueError("Duplicate material has conflicting labels; resolve labels before training")
-                        by_input[key] = row["labels"]
+                        for key in _source_aliases(row):
+                            if not key.startswith("normalized_input:"):
+                                continue
+                            if key in by_input and by_input[key] != row["labels"]:
+                                raise ValueError("Duplicate material has conflicting labels; resolve labels before training")
+                            by_input[key] = row["labels"]
                 aliases = sorted({_digest(alias) for row in rows for alias in _source_aliases(row)})
                 known = [ledger["aliases"][key] for key in aliases if key in ledger["aliases"]]
                 if len({entry["partition"] for entry in known}) > 1:

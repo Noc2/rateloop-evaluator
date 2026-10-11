@@ -222,3 +222,31 @@ def test_replay_limit_and_conflicting_prior_alias_fail_closed(setup):
         import_feedback_snapshot(store, **with_replay(args, fresh_cycle(args)))
     with store.transaction() as state:
         assert state["feedback_cycle_used_aliases"]["w"] == protected
+
+@pytest.mark.parametrize("pair", [("Straße", "STRASSE"), ("ΟΣ", "ος"), ("A\u0085B", "a b")])
+def test_cross_runtime_normalized_duplicates_never_cross_feedback_partitions(setup, pair):
+    store, original = setup
+    args = modern_args(original)
+    args["rows"][0]["input"]["text"] = pair[0]
+    args["rows"][-1]["input"]["text"] = pair[1]
+    with pytest.raises(ValueError, match="duplicated"):
+        import_feedback_snapshot(store, **args)
+    with store.transaction() as state:
+        assert not state["snapshots"]
+
+
+def test_old_runtime_normalized_alias_remains_spent_without_source_content(setup):
+    from rateloop_evaluator.learning import _digest
+    store, original = setup
+    args = modern_args(original)
+    # Unicode15's Cyrillic modifier letter was absent in pinned Unicode14.
+    # A persisted historical normalized alias alone must still exclude it.
+    args["rows"][0]["input"]["text"] = "\U0001e030"
+    previous_input = {"text": "а", "context": "", "evidence": ""}
+    alias = _digest("normalized_input:" + _digest(previous_input))
+    with store.transaction() as state:
+        state.setdefault("feedback_cycle_used_aliases", {})["w"] = {alias: "erased-legacy-snapshot"}
+    with pytest.raises(ValueError, match="previous cycle"):
+        import_feedback_snapshot(store, **args)
+    with store.transaction() as state:
+        assert state["feedback_cycle_used_aliases"]["w"] == {alias: "erased-legacy-snapshot"}
