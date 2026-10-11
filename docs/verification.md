@@ -806,7 +806,10 @@ selected weights; the Apache-2.0 evaluator license does not grant model redistri
 Implementation `acd3bf1` includes the shared inner-split readiness rule, separate encoder/head learning rates,
 whole-group overflow handling, independent calibration fitting and explicit calibration-only lineage,
 positive-slope binary Platt calibration, v2 semantic label mapping, paired diagnostics and the coverage harness.
-The complete Python suite passed **806 tests**, with **six explicit optional checks skipped**. Loopback health-server
+The complete Python suite passed **806 tests**, with **six explicit optional checks skipped**: real v1 checkpoint scoring,
+real semantic-adapter scoring, real demonstration inference, real full fine-tuning, real LoRA training, and the
+separately provisioned GLiClass comparison. The first five require `RATELOOP_TEST_MODEL_DIR`; GLiClass requires
+`RATELOOP_TEST_GLICLASS_DIR`. Loopback health-server
 tests required running outside the filesystem/network sandbox; no external network data or customer inputs were used.
 Replay tombstone privacy follow-up `9d43bc1` additionally passed its 25 feedback tests. Existing final-test activation
 and native qualification gates remain in force; no test here establishes a quality gain or activates a model.
