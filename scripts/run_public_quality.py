@@ -93,7 +93,7 @@ def run(args):
     unload(backend, args.device)
     print(json.dumps({'stage': 'baseline', 'balanced_agreement': base['balanced_agreement']}), flush=True)
     options = TrainOptions(method='lora', device=args.device, epochs=5, max_steps=200,
-        batch_size=2, learning_rate=.0001, validation_fraction=.2, validation_interval=25,
+        batch_size=2, learning_rate=.00001, task_learning_rate=.0005, validation_fraction=.2, validation_interval=25,
         early_stopping_patience=3, min_validation_per_label=5)
     try:
         result = train_snapshot(store, snapshot['id'], 'public-quality', args.model_dir,

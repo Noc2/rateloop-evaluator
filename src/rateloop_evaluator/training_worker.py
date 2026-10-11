@@ -29,7 +29,7 @@ from .templates import is_custom_text_template, overall_approval
 from .training import TrainOptions, train_snapshot
 from .feedback_cycle import SCHEMA as FEEDBACK_SCHEMA, import_feedback_snapshot, erase_feedback_permission, TrainingMajorityReference
 
-RECIPE_SCHEMA="rateloop.evaluator.training-recipe.v2"
+RECIPE_SCHEMA="rateloop.evaluator.training-recipe.v3"
 CAPABILITY={"schemaVersion":"rateloop.evaluator.training-worker.v1","maxRows":MAX_ROWS,"maxSteps":200,
     "recipeSchemaVersion":RECIPE_SCHEMA,"feedbackSchemaVersion":FEEDBACK_SCHEMA}
 _JOB_FIELDS={"jobId","action","modelBundleId","candidateBundleId","templateCommitment","datasetVersionId",
@@ -46,16 +46,18 @@ def training_options(recipe, device):
         if (recipe["method"]!="lora" or type(recipe["epochs"]) is not int or recipe["epochs"]!=1
                 or type(recipe["maxSteps"]) is not int or not 1<=recipe["maxSteps"]<=CAPABILITY["maxSteps"]):
             raise ValueError("Invalid legacy private LoRA recipe")
-        return TrainOptions(method="lora",device=device,epochs=1,max_steps=recipe["maxSteps"])
-    expected={"schemaVersion":RECIPE_SCHEMA,"method":"lora","epochs":5,"validationFraction":.2,
-        "validationInterval":25,"earlyStoppingPatience":3,"minValidationPerLabel":5,"learningRate":.0001}
+        return TrainOptions(method="lora",device=device,epochs=1,max_steps=recipe["maxSteps"], task_learning_rate=1e-5)
+    legacy = recipe.get("schemaVersion") == "rateloop.evaluator.training-recipe.v2"
+    expected={"schemaVersion":"rateloop.evaluator.training-recipe.v2" if legacy else RECIPE_SCHEMA,"method":"lora","epochs":5,"validationFraction":.2,
+        "validationInterval":25,"earlyStoppingPatience":3,"minValidationPerLabel":5,
+        **({"learningRate":.0001} if legacy else {"encoderLearningRate":.00001,"taskLearningRate":.0005})}
     if (set(recipe)!=set(expected)|{"maxSteps"}
             or any(type(recipe[key]) is not type(value) or recipe[key]!=value for key,value in expected.items())
             or type(recipe["maxSteps"]) is not int or not 25<=recipe["maxSteps"]<=CAPABILITY["maxSteps"]):
         raise ValueError("Unsupported validation-selected private LoRA recipe")
     options=TrainOptions(method="lora",device=device,epochs=5,max_steps=recipe["maxSteps"],
         validation_fraction=.2,validation_interval=25,early_stopping_patience=3,min_validation_per_label=5,
-        learning_rate=.0001)
+        learning_rate=.0001 if legacy else .00001, task_learning_rate=.0001 if legacy else .0005)
     options.validate()
     return options
 

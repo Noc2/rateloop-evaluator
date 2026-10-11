@@ -137,7 +137,7 @@ def test_independent_feedback_cycle_compares_frozen_incumbent_and_erases_withdra
     behavior.update(expected_epochs=5,expected_steps=25)
     def mutate(content):
         content["dataset"]={"versionId":job["datasetVersionId"],"provenance":"independent_human","rows":deepcopy(rows)}
-        content["recipe"]={"schemaVersion":training_worker.RECIPE_SCHEMA,"method":"lora","epochs":5,"maxSteps":25,"learningRate":.0001,
+        content["recipe"]={"schemaVersion":training_worker.RECIPE_SCHEMA,"method":"lora","epochs":5,"maxSteps":25,"encoderLearningRate":.00001,"taskLearningRate":.0005,
             "validationFraction":.2,"validationInterval":25,"earlyStoppingPatience":3,"minValidationPerLabel":5}
         content["comparisonModelBundleId"]="base"
     behavior["content_mutator"]=mutate
@@ -390,12 +390,12 @@ def test_reclaimed_failed_operation_retains_terminal_intent(runner):
 
 def test_reviewed_validation_recipe_cannot_expand_compute_or_change_selection():
     recipe={"schemaVersion":training_worker.RECIPE_SCHEMA,"method":"lora","epochs":5,"maxSteps":200,
-        "validationFraction":.2,"validationInterval":25,"earlyStoppingPatience":3,"minValidationPerLabel":5,"learningRate":.0001}
+        "validationFraction":.2,"validationInterval":25,"earlyStoppingPatience":3,"minValidationPerLabel":5,"encoderLearningRate":.00001,"taskLearningRate":.0005}
     options=training_worker.training_options(recipe,"cpu")
     assert options.max_steps==200 and options.validation_fraction==.2 and options.min_validation_per_label==5
     assert training_worker.CAPABILITY["recipeSchemaVersion"]==recipe["schemaVersion"]
     for field,bad in (("maxSteps",201),("maxSteps",24),("maxSteps",True),("epochs",1),("validationFraction",0),
-        ("learningRate",.1),("validationInterval",1),("minValidationPerLabel",1),("schemaVersion","other")):
+        ("encoderLearningRate",.1),("taskLearningRate",.1),("validationInterval",1),("minValidationPerLabel",1),("schemaVersion","other")):
         with pytest.raises(ValueError): training_worker.training_options({**recipe,field:bad},"cpu")
     with pytest.raises(ValueError): training_worker.training_options({**recipe,"path":"/arbitrary"},"cpu")
 
@@ -455,3 +455,15 @@ def test_restart_distinguishes_initial_manifest_from_reload_verified_finalizatio
     assert worker.run_once()['state']=='training_completed'
     assert behavior['train_calls']==(1 if reload_verified else 2)
     assert registry.get('candidate','workspace-test')['manifest']['snapshot_id']==behavior['completed'][0]['snapshotId']
+
+
+def test_v2_inflight_recipe_keeps_its_original_equal_learning_rates():
+    recipe = {"schemaVersion": "rateloop.evaluator.training-recipe.v2", "method": "lora", "epochs": 5,
+        "maxSteps": 200, "validationFraction": .2, "validationInterval": 25,
+        "earlyStoppingPatience": 3, "minValidationPerLabel": 5, "learningRate": .0001}
+    options = training_worker.training_options(recipe, "cpu")
+    assert options.learning_rate == options.task_learning_rate == .0001
+    modern = {**recipe, "schemaVersion": training_worker.RECIPE_SCHEMA, "encoderLearningRate": .00001, "taskLearningRate": .0005}
+    del modern["learningRate"]
+    options = training_worker.training_options(modern, "cpu")
+    assert options.learning_rate == .00001 and options.task_learning_rate == .0005

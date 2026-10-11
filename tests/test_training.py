@@ -42,7 +42,7 @@ def test_revocation_checked_before_any_model_load_or_output(tmp_path):
 
 
 @pytest.mark.parametrize("options", [TrainOptions(method="unknown"), TrainOptions(max_steps=0),
-                                      TrainOptions(learning_rate=float("nan")), TrainOptions(epochs=0)])
+                                      TrainOptions(learning_rate=float("nan")), TrainOptions(task_learning_rate=float("nan")), TrainOptions(task_learning_rate=0), TrainOptions(epochs=0)])
 def test_invalid_training_options_are_rejected(options):
     with pytest.raises(ValueError):
         options.validate()
@@ -91,3 +91,21 @@ def test_checkpoint_preserves_base_tokenizer_assets_and_removes_new_sidecars(tmp
     (source / "tokenizer.json").write_text('{}')
     with pytest.raises(ValueError, match="changed during training"):
         preserve_tokenizer_assets(source, output, manifest)
+
+
+def test_optimizer_receives_distinct_encoder_and_head_rates(tmp_path, monkeypatch):
+    import sys
+    from types import SimpleNamespace, ModuleType
+    from rateloop_evaluator import training
+    captured = {}
+    class Config:
+        def __init__(self, **kwargs): captured.update(kwargs)
+    class Trainer:
+        def __init__(self, model, config, **kwargs): pass
+    upstream = ModuleType('gliner2.training.trainer')
+    upstream.TrainingConfig, upstream.GLiNER2Trainer = Config, Trainer
+    monkeypatch.setitem(sys.modules, 'gliner2.training.trainer', upstream)
+    monkeypatch.setattr(training, 'exact_classification_processor', lambda value: value)
+    training.make_trainer(SimpleNamespace(processor=object()), tmp_path, TrainOptions())
+    assert captured['encoder_lr'] == 1e-5
+    assert captured['task_lr'] == 5e-4

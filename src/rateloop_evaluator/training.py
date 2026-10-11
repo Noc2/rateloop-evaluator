@@ -50,6 +50,7 @@ class TrainOptions:
     max_steps: int = -1
     batch_size: int = 1
     learning_rate: float = 1e-5
+    task_learning_rate: float = 5e-4
     lora_rank: int = 8
     seed: int = 42
     validation_fraction: float = 0
@@ -66,7 +67,7 @@ class TrainOptions:
             raise ValueError("Epochs, batch size and LoRA rank must be positive")
         if self.max_steps == 0 or self.max_steps < -1:
             raise ValueError("max_steps must be -1 or a positive number")
-        if not math.isfinite(self.learning_rate) or not 0 < self.learning_rate < 1:
+        if any(not math.isfinite(rate) or not 0 < rate < 1 for rate in (self.learning_rate, self.task_learning_rate)):
             raise ValueError("Invalid learning rate")
         if self.validation_fraction:
             if (self.method != "lora" or self.validation_fraction != .2
@@ -248,7 +249,7 @@ def make_trainer(model: Any, output_dir: Path, options: TrainOptions,
         output_dir=str(output_dir), experiment_name="rateloop-local",
         num_epochs=options.epochs, max_steps=options.max_steps,
         batch_size=options.batch_size, eval_batch_size=options.batch_size,
-        encoder_lr=options.learning_rate, task_lr=options.learning_rate,
+        encoder_lr=options.learning_rate, task_lr=options.task_learning_rate,
         fp16=False, bf16=False, num_workers=0, pin_memory=False,
         fused_optimizer=False, report_to_wandb=False,
         eval_strategy="steps" if validation_examples else "no",

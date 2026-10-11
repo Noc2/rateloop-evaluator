@@ -80,7 +80,7 @@ def train_child(model_dir, root, steps, stress, channel):
     started=time.monotonic()
     with open(os.devnull,'w') as sink,redirect_stdout(sink),redirect_stderr(sink):
         trained=train_snapshot(store,snapshot['id'],'synthetic-sizing',model_dir,root/'candidate',bundle_id='candidate',
-            options=TrainOptions(device='cpu',epochs=5,max_steps=steps,learning_rate=.0001,
+            options=TrainOptions(device='cpu',epochs=5,max_steps=steps,learning_rate=.00001, task_learning_rate=.0005,
                 validation_fraction=0,validation_interval=25,early_stopping_patience=3,min_validation_per_label=5))
         comparison=compare_snapshot(store,snapshot['id'],'synthetic-sizing',{
             'baseline':GLiNERBackend(model_dir),'candidate':GLiNERBackend(trained['modelDir'])})

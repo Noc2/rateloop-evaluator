@@ -111,7 +111,8 @@ def main(argv=None):
     compare.add_argument("--output",required=True)
     train = commands.add_parser("train"); train.add_argument("--snapshot-id",required=True); train.add_argument("--model-dir",required=True); train.add_argument("--output",required=True); train.add_argument("--bundle-id",required=True)
     train.add_argument("--device",choices=["cpu","mps","cuda"],default="cpu"); train.add_argument("--method",choices=["full","lora"],default="lora"); train.add_argument("--epochs",type=int,default=3); train.add_argument("--max-steps",type=int,default=-1)
-    train.add_argument("--learning-rate", type=float, default=1e-5)
+    train.add_argument("--learning-rate", type=float, default=1e-5, help="Encoder learning rate")
+    train.add_argument("--task-learning-rate", type=float, default=5e-4, help="Task head learning rate")
     train.add_argument("--validation-fraction", type=float, default=0,
                        help="Use the fixed 0.2 validation split; 0 is a mechanical smoke run")
     train.add_argument("--validation-interval", type=int, default=25)
@@ -351,7 +352,7 @@ def run(args):
         from .training import TrainOptions, train_snapshot
         report = train_snapshot(store,args.snapshot_id,workspace,args.model_dir,args.output,bundle_id=args.bundle_id,
             options=TrainOptions(method=args.method,device=args.device,epochs=args.epochs,max_steps=args.max_steps,
-                learning_rate=args.learning_rate, validation_fraction=args.validation_fraction,
+                learning_rate=args.learning_rate, task_learning_rate=args.task_learning_rate, validation_fraction=args.validation_fraction,
                 validation_interval=args.validation_interval, early_stopping_patience=args.early_stopping_patience,
                 min_validation_per_label=args.min_validation_per_label))
         return {"modelDir":report["modelDir"],"optimizerSteps":report["training"]["optimizerSteps"],"qualityClaim":False}

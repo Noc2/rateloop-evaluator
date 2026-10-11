@@ -74,11 +74,11 @@ def test_cli_forwards_bounded_validation_recipe_to_shared_trainer(initialized, t
     monkeypatch.setattr(training, 'train_snapshot', train_double)
     result = invoke(capsys, initialized, 'train', '--snapshot-id', 'snapshot',
         '--model-dir', tmp_path/'base', '--output', tmp_path/'output', '--bundle-id', 'candidate',
-        '--max-steps', '200', '--learning-rate', '.0001', '--validation-fraction', '.2',
+        '--max-steps', '200', '--learning-rate', '.00001', '--task-learning-rate', '.0005', '--validation-fraction', '.2',
         '--validation-interval', '25', '--early-stopping-patience', '3', '--min-validation-per-label', '5')
     options = captured[0]
-    assert (options.max_steps, options.learning_rate, options.validation_fraction,
-            options.validation_interval, options.early_stopping_patience, options.min_validation_per_label) == (200, .0001, .2, 25, 3, 5)
+    assert (options.max_steps, options.learning_rate, options.task_learning_rate, options.validation_fraction,
+            options.validation_interval, options.early_stopping_patience, options.min_validation_per_label) == (200, .00001, .0005, .2, 25, 3, 5)
     assert result['qualityClaim'] is False
 
 
