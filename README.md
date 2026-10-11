@@ -1,3 +1,5 @@
+![RateLoop Evaluator — Local ratings. Human feedback.](docs/assets/readme-banner.png)
+
 # RateLoop Evaluator
 
 **Rate text against your own questions. Learn from human feedback. Run on your hardware.**
