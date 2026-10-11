@@ -23,6 +23,7 @@ from .storage import RuntimeStore
 from .templates import CUSTOM_TEXT_CAPABILITY, overall_approval, custom_text_seed
 from .worker import OutboundWorker, single_worker
 from .worker_runtime import prepare_evaluator
+from .model_identity import emit_loaded_model
 
 
 def read_config(path: str | Path) -> dict:
@@ -227,7 +228,7 @@ def run_hosted(config: dict, *, auxiliary_factory=None) -> None:
                     release_inference=lambda:worker.evaluate.close(),stop=stop,on_poll=health.polled)
                 trainer.sync_permissions()
                 bundles=trainer.configured_bundles()
-            evaluate=prepare_evaluator(connector,registry,bundles,device="cpu")
+            evaluate=prepare_evaluator(connector,registry,bundles,device="cpu",on_model_loaded=emit_loaded_model)
             health.warm=True
             worker=OutboundWorker(connector,worker_id=config["workerId"],model_bundle_ids=bundles,evaluate=evaluate,
                 poll_seconds=config["pollSeconds"],on_poll=health.polled,training_worker=trainer)
@@ -235,7 +236,7 @@ def run_hosted(config: dict, *, auxiliary_factory=None) -> None:
             if trainer:
                 def reload_models(updated):
                     worker.evaluate.close()
-                    worker.evaluate=prepare_evaluator(connector,registry,updated,device="cpu")
+                    worker.evaluate=prepare_evaluator(connector,registry,updated,device="cpu",on_model_loaded=emit_loaded_model)
                     worker.model_bundle_ids=list(updated)
                     worker.presence.model_bundle_ids=list(updated)
                 trainer.on_models_changed=reload_models

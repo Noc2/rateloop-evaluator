@@ -2,17 +2,20 @@
 from __future__ import annotations
 
 from threading import RLock
+import sys
 
 from .backends import GLiNERBackend, prepare_inference
 from .service import Principal, create_app
 from .templates import overall_approval
 from .protocol import Template
+from .model_identity import loaded_model_identity
 
 
 class _CheckpointCache:
     """Keep one checkpoint resident, including public bases and private candidates."""
-    def __init__(self, device):
+    def __init__(self, device, on_model_loaded=None):
         self.device=device; self.key=None; self.backend=None; self.lock=RLock()
+        self.on_model_loaded=on_model_loaded
 
     def close(self):
         with self.lock:
@@ -26,6 +29,16 @@ class _CheckpointCache:
                 backend=GLiNERBackend(path,self.device)
                 loaded=backend.load()
                 self.backend=backend; self.key=key
+                if self.on_model_loaded is not None:
+                    try:
+                        self.on_model_loaded(loaded_model_identity(backend.manifest))
+                    except Exception:
+                        # Telemetry failures must not change serving or expose
+                        # an exception containing a private path or credential.
+                        try:
+                            print('{"event":"evaluator_model_identity_unavailable"}', file=sys.stderr, flush=True)
+                        except OSError:
+                            pass  # A broken log pipe must not break inference.
                 if operation == "load": return loaded
             return getattr(self.backend,operation)(*args)
 
@@ -46,7 +59,7 @@ class _CachedBackend:
     def predict(self,text,questions): return self.cache.invoke(self.key,self.path,"predict",text,questions)
 
 
-def prepare_evaluator(connector, registry, bundle_ids: list[str], *, device: str = "cpu"):
+def prepare_evaluator(connector, registry, bundle_ids: list[str], *, device: str = "cpu", on_model_loaded=None):
     """Validate and warm every bundle before any presence heartbeat is possible.
 
     Language-specific registrations share identical artifacts. All models
@@ -55,7 +68,7 @@ def prepare_evaluator(connector, registry, bundle_ids: list[str], *, device: str
     """
     workspace=connector.workspace_id
     identity=Principal(workspace,frozenset({"evaluate"}))
-    apps={}; backends={}; judges=[]; cache=_CheckpointCache(device); public_backend=None
+    apps={}; backends={}; judges=[]; cache=_CheckpointCache(device,on_model_loaded); public_backend=None
     for bundle_id in bundle_ids:
         record=registry.get(bundle_id,workspace)
         manifest=record["manifest"]

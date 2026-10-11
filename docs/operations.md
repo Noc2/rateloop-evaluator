@@ -246,6 +246,17 @@ For an explicit first-installation handoff, set server-only `RATELOOP_HOSTED_EXP
 
 Readiness stays HTTP 503 until all model warmups finish and the worker completes a successful authenticated poll and heartbeat. It returns only `{"status":"ready"}` while that connection is fresh; failed polls, stale polling or shutdown restore 503. A paused or off workspace can be healthy because presence itself grants no content access. SIGTERM stops polling cleanly; failed requests use bounded retry delays. A volume/worker lock prevents duplicate processes from sharing the same durable identity.
 
+Hosted GLiNER loads also emit `evaluator_model_loaded` after the verified checkpoint has loaded successfully,
+including on-demand reloads and allowlist changes. `rateloop.loaded-model.v1` identifies the public model and
+source revision only when they match the reviewed public base; other sources are `local` with no revision.
+`trained` distinguishes derived weights. `weightsSha256` is the verified `model.safetensors` hash;
+`filesSha256` hashes the complete verified file-name/hash mapping encoded as sorted, compact, ASCII-escaped
+JSON in UTF-8. No paths, bundle/workspace identifiers, prompts, training metadata or credentials are logged.
+The event proves a successful load at its timestamp, not continuous residency, inference correctness or quality.
+Compare the weight hash with independent provisioning evidence when accepting a release. Missing events or
+`evaluator_model_identity_unavailable` leave model identity unverified even when health is ready. Logging failures
+do not change inference behavior. The local CLI and metadata-only health response remain unchanged.
+
 Before release, run the normal tests and the opt-in container acceptance check:
 
 ```sh

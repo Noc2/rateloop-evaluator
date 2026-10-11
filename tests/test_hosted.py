@@ -126,6 +126,34 @@ def test_cli_errors_do_not_disclose_secret_config(config,tmp_path,capsys,monkeyp
     assert "private-test-api-key" not in out.out+out.err
 
 
+def test_hosted_initial_and_changed_allowlist_keep_the_same_identity_observer(config, monkeypatch):
+    from rateloop_evaluator import hosted_training
+    config["privateTraining"] = True
+    observers = []
+    monkeypatch.setitem(sys.modules, "torch", SimpleNamespace(set_num_threads=lambda _: None,
+        set_num_interop_threads=lambda _: None))
+    monkeypatch.setattr(hosted, "health_server", lambda *_: __import__("contextlib").nullcontext())
+    monkeypatch.setattr(hosted, "RateLoopConnector", lambda **_: SimpleNamespace(close=lambda: None))
+    class Trainer:
+        def __init__(self, *_args, **_kwargs): pass
+        def sync_permissions(self): pass
+        def configured_bundles(self): return ["hosted-en", "hosted-de"]
+    class Worker:
+        def __init__(self, *_args, **kwargs):
+            self.evaluate = kwargs["evaluate"]; self.trainer = kwargs["training_worker"]
+            self.presence = SimpleNamespace(model_bundle_ids=[])
+        def run(self): self.trainer.on_models_changed(["replacement"])
+    def prepare(_connector, _registry, bundles, **kwargs):
+        observers.append((list(bundles), kwargs["on_model_loaded"]))
+        return SimpleNamespace(close=lambda: None)
+    monkeypatch.setattr(hosted_training, "IsolatedHostedTrainingWorker", Trainer)
+    monkeypatch.setattr(hosted, "OutboundWorker", Worker)
+    monkeypatch.setattr(hosted, "prepare_evaluator", prepare)
+    hosted.run_hosted(config)
+    assert observers == [(["hosted-en", "hosted-de"], hosted.emit_loaded_model),
+                         (["replacement"], hosted.emit_loaded_model)]
+
+
 def test_explicit_registration_export_matches_volume_without_secrets(config,capsys):
     hosted.emit_registrations(config)
     first=capsys.readouterr().out
