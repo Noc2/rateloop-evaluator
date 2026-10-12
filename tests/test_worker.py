@@ -28,7 +28,7 @@ def website(setup):
     job={"jobId":"job-1","modelBundleId":req.modelBundleId,"inputCommitment":req.input_commitment(),
         "templateCommitment":req.template_commitment(),"leaseToken":"secret-fencing-token-"+"a"*32,"leaseExpiresAt":iso(time.time()+120)}
     audit={"auditId":"audit-job-1","selected":True,"kind":"mandatory","aiExposed":False,"selectionProbabilityBps":10000,
-        "blindingAssurance":"server_enforced","selectedAt":iso(time.time()),"sourceContentHash":"sha256:"+hashlib.sha256(req.input.context.encode()).hexdigest(),
+        "blindingAssurance":"server_enforced","opportunityId":"human-opportunity-1","selectedAt":iso(time.time()),"sourceContentHash":"sha256:"+hashlib.sha256(req.input.context.encode()).hexdigest(),
         "suggestedContentHash":"sha256:"+hashlib.sha256(req.input.text.encode()).hexdigest(),"frozenQuestionHash":"sha256:"+"d"*64}
     body={"request":req.model_dump(),"reviewContext":review_context(),"audit":audit,"agentId":"agent-1","agentVersionId":"version-1",
           "createdAt":iso(time.time()),"retainForTraining":True}
@@ -243,7 +243,10 @@ def test_worker_and_connector_share_audit_selection_validation(website,monkeypat
         with pytest.raises(ValueError): connector_intake()
 
 
-def blinded_website_label_export(worker,req,remote,server_audit):
+LABEL_SEMANTICS = json.loads((Path(__file__).parents[1]/"contracts/evaluator-label-semantics.v1.json").read_text())
+
+
+def blinded_website_label_export(worker,req,remote,server_audit,*,criterion=None):
     with worker.connector.learning.transaction() as db:
         result=deepcopy(worker.connector._state(db)["results"][req.input_commitment()])
     now=utc_now()
@@ -260,6 +263,17 @@ def blinded_website_label_export(worker,req,remote,server_audit):
                 "selectionProbabilityBps":server_audit["selectionProbabilityBps"],"aiExposed":False,
                 "blindingAssurance":"server_enforced","reviewFrozenAt":now,"resultsReleasedAt":now,"independent":True},
             "disagreement":None}],"truncated":False}
+    if criterion is not None:
+        item=body["items"][0]
+        item.update(deepcopy(criterion))
+        with worker.connector.learning.transaction() as db:
+            collection=deepcopy(worker.connector._state(db)["collections"][req.input_commitment()])
+        item["evidenceLineage"]={"permissionId":remote["consents"][0]["consentId"],
+            "opportunityId":server_audit["opportunityId"],
+            **{key:item[key] for key in ("sourceContentHash","suggestedContentHash","humanResultCommitment")},
+            "requestProfileHash":"sha256:"+"c"*64,"resultEnvelopeCommitment":"sha256:"+"e"*64,
+            "lifecycleRevision":1,"observedAt":now,"collectedAt":collection["createdAt"],
+            "auditIds":[server_audit["auditId"]],"aiExposed":False}
     return {**body,"exportDigest":commitment(body,"rateloop.product-evaluator.v2")}
 
 
@@ -281,6 +295,119 @@ def test_sampled_website_audit_survives_inference_and_blinded_label_import(websi
         audit=worker.connector._state(db)["audits"][req.input_commitment()]["response"]
         assert (audit["kind"],audit["selectionProbabilityBps"])==(kind,probability)
         assert len(db["feedback"])==1
+
+
+@pytest.mark.parametrize("criterion",LABEL_SEMANTICS["criterion"],ids=["positive","negative"])
+def test_current_criterion_export_shared_with_authenticated_app_route_imports_once(website,criterion):
+    worker,req,_,remote,behavior,_=website
+    server_audit=deepcopy(behavior["content"]["audit"])
+    assert worker.run_once()["state"]=="completed"
+    behavior["labels"]=blinded_website_label_export(worker,req,remote,server_audit,criterion=criterion)
+    assert worker.sync_labels()=={"imported":1,"rejected":0,"truncated":False}
+    replay=worker.connector.fetch_and_import_labels("permission-1",question_id="overall_approval",
+        template_commitment=req.template_commitment(),outcome_labels={"positive":"approved","negative":"rejected"})
+    assert replay["duplicates"]==1 and replay["imported"]==0 and not replay["rejected"]
+    with worker.connector.learning.transaction() as db:
+        assert len(db["feedback"])==1
+        feedback=next(iter(db["feedback"].values()))
+        assert feedback["labels"]=={"overall_approval":criterion["criterionLabel"]}
+        assert feedback["independent_human"] is True and feedback["quarantine_reasons"]==[]
+
+
+@pytest.mark.parametrize("path,value",[
+    ("labelScope","overall_human_verdict"),
+    ("criterionTrainingRequiresAdjudication",True),
+    ("criterionTrainingRequiresAdjudication",0),
+    ("learningEligibility",None),
+    ("learningEligibility.eligible",False),
+    ("learningEligibility.eligible",1),
+    ("learningEligibility.exclusionReasons",["criterion_adjudication_required"]),
+    ("questionId","another-question"),
+    ("criterionLabel","rejected"),
+    ("humanOutcome","negative"),
+    ("caseId","another-case"),
+    ("modelBundleId","another-model"),
+    ("templateCommitment","sha256:"+"0"*64),
+    ("inputCommitment","sha256:"+"0"*64),
+    ("resultCommitment","sha256:"+"0"*64),
+    ("frozenQuestionHash","sha256:"+"0"*64),
+    ("sourceContentHash","sha256:"+"0"*64),
+    ("suggestedContentHash","sha256:"+"0"*64),
+    ("audit.blindingAssurance","connector_attested"),
+    ("audit.independent",False),
+    ("audit.aiExposed",True),
+    ("audit.auditId","another-audit"),
+    ("audit.resultsReleasedAt","2000-01-01T00:00:00.000Z"),
+    ("evidenceLineage",None),
+    ("evidenceLineage.permissionId","another-permission"),
+    ("evidenceLineage.opportunityId","another-opportunity"),
+    ("evidenceLineage.sourceContentHash","sha256:"+"0"*64),
+    ("evidenceLineage.suggestedContentHash","sha256:"+"0"*64),
+    ("evidenceLineage.humanResultCommitment","sha256:"+"0"*64),
+    ("evidenceLineage.requestProfileHash",None),
+    ("evidenceLineage.resultEnvelopeCommitment",None),
+    ("evidenceLineage.auditIds",[]),
+    ("evidenceLineage.aiExposed",True),
+    ("evidenceLineage.lifecycleRevision",True),
+    ("evidenceLineage.lifecycleRevision",0),
+    ("evidenceLineage.observedAt","2000-01-01T00:00:00.000Z"),
+    ("evidenceLineage.collectedAt","2000-01-01T00:00:00.000Z"),
+])
+def test_criterion_import_rejects_changed_semantics_binding_or_ineligible_lineage(website,path,value):
+    worker,req,_,remote,behavior,_=website
+    server_audit=deepcopy(behavior["content"]["audit"])
+    assert worker.run_once()["state"]=="completed"
+    body=blinded_website_label_export(worker,req,remote,server_audit,criterion=LABEL_SEMANTICS["criterion"][0])
+    target=body["items"][0]
+    parts=path.split(".")
+    for part in parts[:-1]: target=target[part]
+    target[parts[-1]]=value
+    body["exportDigest"]=commitment({key:value for key,value in body.items() if key!="exportDigest"},"rateloop.product-evaluator.v2")
+    behavior["labels"]=body
+    assert worker.sync_labels()=={"imported":0,"rejected":1,"truncated":False}
+    with worker.connector.learning.transaction() as db:
+        assert db["feedback"]=={} and worker.connector._state(db)["imports"]=={}
+
+
+def test_criterion_polarity_cannot_be_reversed_by_explicit_mapping(website):
+    worker,req,_,remote,behavior,_=website
+    server_audit=deepcopy(behavior["content"]["audit"])
+    assert worker.run_once()["state"]=="completed"
+    criterion={**LABEL_SEMANTICS["criterion"][0],"criterionLabel":"rejected"}
+    behavior["labels"]=blinded_website_label_export(worker,req,remote,server_audit,criterion=criterion)
+    report=worker.connector.fetch_and_import_labels("permission-1",question_id="overall_approval",
+        template_commitment=req.template_commitment(),outcome_labels={"positive":"rejected","negative":"approved"})
+    assert report["imported"]==0 and len(report["rejected"])==1
+    with worker.connector.learning.transaction() as db: assert db["feedback"]=={}
+
+
+def test_explicit_ineligible_legacy_export_cannot_bypass_learning_exclusions(website):
+    worker,req,_,remote,behavior,_=website
+    server_audit=deepcopy(behavior["content"]["audit"])
+    assert worker.run_once()["state"]=="completed"
+    body=blinded_website_label_export(worker,req,remote,server_audit)
+    body["items"][0]["learningEligibility"]={"eligible":False,"exclusionReasons":["criterion_adjudication_required"]}
+    body["exportDigest"]=commitment({key:value for key,value in body.items() if key!="exportDigest"},"rateloop.product-evaluator.v2")
+    behavior["labels"]=body
+    assert worker.sync_labels()=={"imported":0,"rejected":1,"truncated":False}
+
+
+def test_conflicting_criterion_revision_still_quarantines_existing_human_feedback(website):
+    worker,req,_,remote,behavior,_=website
+    server_audit=deepcopy(behavior["content"]["audit"])
+    assert worker.run_once()["state"]=="completed"
+    behavior["labels"]=blinded_website_label_export(worker,req,remote,server_audit,criterion=LABEL_SEMANTICS["criterion"][0])
+    assert worker.sync_labels()["imported"]==1
+    body=blinded_website_label_export(worker,req,remote,server_audit,criterion=LABEL_SEMANTICS["criterion"][1])
+    item=body["items"][0]
+    item["humanResultCommitment"]="sha256:"+"f"*64
+    item["evidenceLineage"].update(humanResultCommitment=item["humanResultCommitment"],lifecycleRevision=2)
+    body["exportDigest"]=commitment({key:value for key,value in body.items() if key!="exportDigest"},"rateloop.product-evaluator.v2")
+    behavior["labels"]=body
+    assert worker.sync_labels()=={"imported":0,"rejected":1,"truncated":False}
+    with worker.connector.learning.transaction() as db:
+        assert len(db["feedback"])==2
+        assert all("human_disagreement" in row["quarantine_reasons"] for row in db["feedback"].values())
 
 
 @pytest.mark.parametrize("field,value",[("kind","mandatory"),("selectionProbabilityBps",10000),("selectionProbabilityBps",True)])

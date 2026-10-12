@@ -1,0 +1,31 @@
+{
+  "schemaVersion": "rateloop.evaluator-label-semantics.v1",
+  "criterion": [
+    {
+      "humanOutcome": "positive",
+      "questionId": "overall_approval",
+      "labelScope": "criterion_human_verdict",
+      "criterionTrainingRequiresAdjudication": false,
+      "criterionLabel": "approved",
+      "learningEligibility": {
+        "eligible": true,
+        "exclusionReasons": []
+      }
+    },
+    {
+      "humanOutcome": "negative",
+      "questionId": "overall_approval",
+      "labelScope": "criterion_human_verdict",
+      "criterionTrainingRequiresAdjudication": false,
+      "criterionLabel": "rejected",
+      "learningEligibility": {
+        "eligible": true,
+        "exclusionReasons": []
+      }
+    }
+  ],
+  "legacy": {
+    "labelScope": "overall_human_verdict",
+    "criterionTrainingRequiresAdjudication": true
+  }
+}

@@ -212,7 +212,7 @@ The encrypted outbox survives process restarts. Temporary failures retry with bo
 
 ## Import independent human labels
 
-The current RateLoop export contains **overall human verdicts**, not labels for every criterion. Automatic import therefore supports exactly one explicitly mapped question:
+The RateLoop export distinguishes an exact, independently reviewed binary criterion from a legacy overall human verdict. Automatic import supports one explicitly mapped question:
 
 ```python
 report = connector.fetch_and_import_labels(
@@ -225,7 +225,9 @@ report = connector.fetch_and_import_labels(
 
 Choose this mapping only when the overall human review actually answers that question. A narrow tone criterion is not interchangeable with an overall approval unless the review itself was defined that way. Multi-question evaluations require separately authenticated criterion-level adjudication; this connector does not invent those labels.
 
-Import checks the export digest and current grant watermark, exact local case/input/template/model/result bindings, a conclusive human verdict, the stored pre-scoring audit, and lack of AI exposure. It retains the provenance as an authenticated overall human consensus, not an invented individual reviewer vote. AI-only cases cannot contribute human labels, including through the local feedback API. Mismatches, inconclusive verdicts, exposed judgments and multi-question mappings are rejected with reasons. Repeated imports are idempotent. The subsequent snapshot builder keeps correlated cases in the same partition.
+Import checks the export digest and current grant watermark, exact local case/input/template/model/result bindings, a conclusive human verdict, the stored pre-scoring audit, and lack of AI exposure. A `criterion_human_verdict` additionally requires no adjudication, explicit learning eligibility without exclusions, the exact question and frozen label polarity, server-enforced independent review, and matching permission, opportunity, content, result, audit and collection-time lineage. A supplied mapping cannot reverse the criterion's labels. Legacy `overall_human_verdict` imports retain the explicit single-question mapping above and must declare that criterion adjudication is required; they do not become criterion-qualified exports. Any explicit learning exclusion is refused in either path.
+
+The evidence remains an authenticated panel consensus, not an invented individual reviewer vote. AI-only cases cannot contribute human labels, including through the local feedback API. Mismatches, inconclusive verdicts, exposed judgments and multi-question mappings are rejected with reasons. Repeated imports are idempotent; conflicting later verdicts still quarantine the local feedback. The subsequent snapshot builder keeps correlated cases in the same partition. `contracts/evaluator-label-semantics.v1.json` is shared with the application's authenticated export regression.
 
 `truncated: true` means the server's bounded export did not contain every result. Do not treat it as a complete training dataset. Use narrower server export windows through a future explicitly bounded import extension rather than silently accepting missing records.
 

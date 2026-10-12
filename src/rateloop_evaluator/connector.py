@@ -666,7 +666,7 @@ class RateLoopConnector:
 
     def fetch_and_import_labels(self, grant_id: str, *, question_id: str, template_commitment: str,
                                 outcome_labels: dict[str,str]) -> dict:
-        """Import overall human verdicts only through an explicit single-question mapping.
+        """Import exact criterion labels or explicitly mapped single-question verdicts.
 
         This does not manufacture criterion labels from an overall verdict. A
         multi-question rubric requires separate authenticated human adjudication.
@@ -729,14 +729,46 @@ class RateLoopConnector:
                     raise ValueError("Human export references a different automated result")
                 if item.get("templateCommitment") != template_commitment or item.get("modelBundleId") not in permitted_bundles:
                     raise ValueError("Human result is outside the exported grant scope")
-                if item.get("labelScope") != "overall_human_verdict" or item.get("criterionTrainingRequiresAdjudication") is not True:
+                criterion_bound = item.get("labelScope") == "criterion_human_verdict"
+                if not ((criterion_bound and item.get("criterionTrainingRequiresAdjudication") is False)
+                        or (item.get("labelScope") == "overall_human_verdict"
+                            and item.get("criterionTrainingRequiresAdjudication") is True)):
                     raise ValueError("Unknown human-label semantics")
                 questions=row["template"]["questions"]
                 if len(questions)!=1 or questions[0]["id"] != question_id or not set(outcome_labels.values()) <= {x["id"] for x in questions[0]["labels"]}:
                     raise ValueError("Overall verdict mapping requires exactly one matching question")
+                eligibility=item.get("learningEligibility")
+                if "learningEligibility" in item and (not isinstance(eligibility,dict)
+                        or eligibility.get("eligible") is not True or eligibility.get("exclusionReasons") != []):
+                    raise ValueError("Human label is not eligible for learning")
                 remote_audit=item.get("audit",{})
                 if not isinstance(remote_audit,dict):
                     raise ValueError("Human label audit is invalid")
+                if criterion_bound:
+                    if (not isinstance(eligibility,dict) or eligibility.get("eligible") is not True
+                            or eligibility.get("exclusionReasons") != []
+                            or item.get("questionId") != question_id
+                            or item.get("humanOutcome") not in outcome_labels
+                            or item.get("criterionLabel") != outcome_labels[item["humanOutcome"]]
+                            or len(questions[0]["labels"]) != 2
+                            or item.get("criterionLabel") != questions[0]["labels"][0 if item["humanOutcome"]=="positive" else 1]["id"]
+                            or remote_audit.get("blindingAssurance") != "server_enforced"
+                            or remote_audit.get("aiExposed") is not False
+                            or _timestamp(remote_audit.get("resultsReleasedAt")) < _timestamp(remote_audit.get("reviewFrozenAt"))):
+                        raise ValueError("Criterion label lacks exact eligible question binding")
+                    lineage=item.get("evidenceLineage")
+                    if (not isinstance(lineage,dict) or lineage.get("permissionId") != grant_id
+                            or lineage.get("opportunityId") != _opaque(audit.get("response",{}).get("opportunityId"))
+                            or any(lineage.get(key) != item.get(key) for key in
+                                ("sourceContentHash","suggestedContentHash","humanResultCommitment"))
+                            or lineage.get("auditIds") != [remote_audit.get("auditId")]
+                            or lineage.get("aiExposed") is not False
+                            or type(lineage.get("lifecycleRevision")) is not int or not 1 <= lineage["lifecycleRevision"] <= 2**53-1
+                            or _timestamp(lineage.get("observedAt")) != _timestamp(item.get("observedAt"))
+                            or collection.get("trainingAllowed") is not True or collection.get("reviewMode") != "ai_and_human"
+                            or _timestamp(lineage.get("collectedAt")) != _timestamp(collection.get("createdAt"))):
+                        raise ValueError("Criterion label changed the permission or evidence lineage")
+                    _hash(lineage.get("requestProfileHash")); _hash(lineage.get("resultEnvelopeCommitment"))
                 _audit_selection(remote_audit)
                 causal=False
                 if remote_audit.get("blindingAssurance") == "server_enforced":
@@ -775,4 +807,4 @@ class RateLoopConnector:
             except (ValueError,PermissionError,KeyError,TypeError) as error:
                 rejected.append({"itemCommitment":item_key,"reason":str(error)})
         return {"imported":imported,"duplicates":duplicates,"rejected":rejected,"truncated":response.get("truncated") is True,
-                "labelProvenance":"Authenticated RateLoop overall human consensus, mapped explicitly to one question."}
+                "labelProvenance":"Authenticated RateLoop human consensus, bound to one exact question; no individual votes are inferred."}
